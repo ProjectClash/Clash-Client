@@ -8,7 +8,7 @@ English · [简体中文](README.zh-CN.md)
 
 [![Website](https://img.shields.io/badge/Website-Official-2563EB)](https://clash.md/)
 [![App Store Download](https://img.shields.io/badge/App_Store-Download-black?logo=apple&logoColor=white)](https://apps.apple.com/app/id6794257189)
-[![Telegram Channel](https://img.shields.io/badge/Telegram-Channel-26A5E4?logo=telegram&logoColor=white)](https://t.me/clashbyhako)
+[![Telegram Channel](https://img.shields.io/badge/Telegram-Channel-26A5E4?logo=telegram&logoColor=white)](https://t.me/clashbyclash)
 [![Telegram Group](https://img.shields.io/badge/Telegram-Group-26A5E4?logo=telegram&logoColor=white)](https://t.me/+t__WNRvjUbk3M2Nl)
 
 **A native, rule-based proxy client for iPhone, iPad, Mac and Apple TV, powered by the [Clash core](https://github.com/ProjectClash/Clash).**
