@@ -68,6 +68,12 @@ public enum UpstreamListDefault {
         "sniffer.skip-dst-address": PinnedDefault([]),
         "sniffer.port-whitelist": PinnedDefault([]),
         "sniffer.sniffing": PinnedDefault([]),
+        "mitm.hosts": PinnedDefault([]),
+        "mitm.skip-domain": PinnedDefault([]),
+        "mitm.skip-dst-address": PinnedDefault([]),
+        "mitm.https-ports": PinnedDefault([]),
+        "mitm.http-ports": PinnedDefault([]),
+        "mitm.rewrite": PinnedDefault([]),
     ]
 
     public static func pinned(for keyPath: String) -> PinnedDefault<[String]> {

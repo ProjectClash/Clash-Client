@@ -137,7 +137,7 @@ struct ClashMacSearchField: Hashable, Identifiable {
      
     static func index(_ catalog: ConfigurationFieldCatalog, copy: ConfigurationFieldCopy, locale: Locale,
                       lanShareKeys: Set<String> = []) -> [ClashMacSearchField] {
-        let pages: Set<ConfigurationOutlineSection> = [.general, .dns, .sniffer, .inbound, .ntp, .experimental]
+        let pages: Set<ConfigurationOutlineSection> = [.general, .dns, .sniffer, .mitm, .inbound, .ntp, .experimental]
         return catalog.fields.compactMap { field in
             guard !field.path.contains("["), !field.path.contains("*") else { return nil }
             let parts = field.path.split(separator: ".").map(String.init)

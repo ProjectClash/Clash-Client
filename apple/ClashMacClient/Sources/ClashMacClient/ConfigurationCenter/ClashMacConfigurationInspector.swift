@@ -777,7 +777,7 @@ public struct ClashMacConfigurationInspector: View {
          
          
          
-        case .general, .dns, .sniffer, .inbound, .ntp, .experimental:
+        case .general, .dns, .sniffer, .mitm, .inbound, .ntp, .experimental:
             guard let editing = actions.settingsSection else { return actions.outlineDestination(section) }
             let known = ConfigurationOutline.knownTopLevelKeys.filter { ConfigurationOutline.section(forTopLevelKey: $0) == section }
             return .page {

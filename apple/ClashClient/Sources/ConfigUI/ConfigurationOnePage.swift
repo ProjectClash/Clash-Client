@@ -915,7 +915,7 @@ enum ConfigurationSectionRoute: Equatable {
          
          
          
-        case .general, .dns, .sniffer, .inbound, .ntp, .experimental: return .settings([])
+        case .general, .dns, .sniffer, .mitm, .inbound, .ntp, .experimental: return .settings([])
         case .tunnels: return .objectList(["tunnels"])
         case .customRules: return .customRules
         case .overrideScript: return .overrideScript

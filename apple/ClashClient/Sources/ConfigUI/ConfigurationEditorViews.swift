@@ -4101,6 +4101,7 @@ enum ConfigurationEditorCopy {
         case .general: "General Configuration (Configuration Chapter)"
         case .dns: "DNS"
         case .sniffer: "Domain Sniffing (Configuration Chapter)"
+        case .mitm: "MITM Interception (Configuration Chapter)"
         case .inbound: "Inbounds (Configuration Chapter)"
         case .proxies: "Proxies (Configuration Chapter)"
         case .proxyProviders: "Proxy Providers (Configuration Chapter)"
@@ -4131,6 +4132,7 @@ enum ConfigurationEditorCopy {
         switch section {
         case .dns: "dns"
         case .sniffer: "sniffer"
+        case .mitm: "mitm"
         default: section.rawValue
         }
     }
@@ -4146,6 +4148,9 @@ enum ConfigurationEditorCopy {
         switch row.section {
         case .sniffer:
             return snifferEnabled.map { .copy($0 ? "On" : "Off") }
+        case .mitm:
+            if ConfigurationOutline.showsDefaults(row.section) { return nil }
+            return row.count > 0 ? .verbatim(String(row.count)) : nil
         case .overrideScript:
             return nil
         default:

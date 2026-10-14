@@ -67,7 +67,7 @@ public extension ConfigurationFieldCatalog {
      
      
      
-    static let auditedSwitchPaths: Set<String> = ["sniffer.enable", "ntp.enable", "tuic-server.enable", "iptables.enable"]
+    static let auditedSwitchPaths: Set<String> = ["sniffer.enable", "mitm.enable", "ntp.enable", "tuic-server.enable", "iptables.enable"]
     static let auditedSwitchSuffixes = [
         ".smux.enabled", ".smux.brutal-opts.enabled", ".ech-opts.enable", ".realm-opts.enable", ".ss-opts.enabled",
         ".transport-layer-padding.enabled", ".mux-option.brutal.enabled", ".shadow-tls.enable", ".res-tls.enable",

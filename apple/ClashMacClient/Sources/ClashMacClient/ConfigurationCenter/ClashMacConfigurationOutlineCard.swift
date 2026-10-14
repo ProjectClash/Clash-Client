@@ -308,6 +308,7 @@ struct ClashMacConfigurationOutlineCard: View {
         case .general: return .copy("General Configuration (Configuration Chapter)")
         case .dns: return .copy("DNS")
         case .sniffer: return .copy("Domain Sniffing (Configuration Chapter)")
+        case .mitm: return .copy("MITM Interception (Configuration Chapter)")
         case .inbound: return .copy("Inbounds (Configuration Chapter)")
         case .proxies: return .copy("Proxies (Configuration Chapter)")
         case .proxyProviders: return .copy("Proxy Providers (Configuration Chapter)")
@@ -352,6 +353,8 @@ struct ClashMacConfigurationOutlineCard: View {
             switch (row.section, row.enabled) {
             case (.sniffer, false?): return (.copy("Off"), nil)
             case (.sniffer, true?): return (.copy("On"), nil)
+            case (.mitm, false?): return (.copy("Off"), nil)
+            case (.mitm, true?): return (.copy("On"), nil)
             default: return (.verbatim(""), nil)
             }
         }
