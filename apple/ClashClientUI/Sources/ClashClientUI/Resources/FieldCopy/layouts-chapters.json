@@ -290,6 +290,67 @@
           "*"
         ]
       }
+    ],
+    "mitm": [
+      {
+        "id": "basic",
+        "title": {
+          "en": "Basics",
+          "zh-Hans": "基本",
+          "zh-Hant": "基本"
+        },
+        "footer": {
+          "en": "Terminates TLS for the gated hosts and answers from the rewritten request. Install and trust the CA first.",
+          "zh-Hans": "对拦截域名终结 TLS，按重写策略应答。请先安装并信任 CA。",
+          "zh-Hant": "對攔截網域終結 TLS，依改寫策略應答。請先安裝並信任 CA。"
+        },
+        "keys": [
+          "enable",
+          "store-dir"
+        ]
+      },
+      {
+        "id": "gates",
+        "title": {
+          "en": "Scope",
+          "zh-Hans": "拦截范围",
+          "zh-Hant": "攔截範圍"
+        },
+        "keys": [
+          "hosts",
+          "skip-domain",
+          "skip-dst-address",
+          "https-ports",
+          "http-ports"
+        ]
+      },
+      {
+        "id": "rewrite",
+        "title": {
+          "en": "Rewrite Policies",
+          "zh-Hans": "重写策略",
+          "zh-Hant": "改寫策略"
+        },
+        "footer": {
+          "en": "Ordered rules: the first match answers redirect/reject or edits headers, then the request leaves through the normal proxy.",
+          "zh-Hans": "按顺序匹配：首个命中的执行重定向、拒绝或改写请求头，之后请求仍走正常代理。",
+          "zh-Hant": "依序比對：首個命中的執行重新導向、拒絕或改寫請求標頭，之後請求仍走正常代理。"
+        },
+        "keys": [
+          "rewrite"
+        ]
+      },
+      {
+        "id": "more",
+        "title": {
+          "en": "More Settings",
+          "zh-Hans": "更多设置",
+          "zh-Hant": "更多設定"
+        },
+        "keys": [
+          "*"
+        ]
+      }
     ]
   }
 }

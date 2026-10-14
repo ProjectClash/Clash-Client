@@ -1,0 +1,109 @@
+{
+  "mitm": {
+    "title": {"en": "MITM Interception", "zh-Hans": "MITM 拦截", "zh-Hant": "MITM 攔截"},
+    "summary": {"en": "Terminates TLS on hosts you control, rewrites requests, and forwards them through the normal rule path.",
+                "zh-Hans": "对自己掌控的域名终结 TLS，改写请求后仍走正常的规则链路。",
+                "zh-Hant": "對自己掌控的網域終結 TLS，改寫請求後仍走正常的規則鏈路。"}
+  },
+  "mitm.enable": {
+    "title": {"en": "MITM Interception", "zh-Hans": "启用 MITM 拦截", "zh-Hant": "啟用 MITM 攔截"},
+    "summary": {"en": "Gated connections get a locally generated certificate. Install and trust the CA from the app before enabling.",
+                "zh-Hans": "被拦截的连接会收到本地生成的证书。启用前请先在应用内安装并信任 CA。",
+                "zh-Hant": "被攔截的連線會收到本地產生的憑證。啟用前請先在 App 內安裝並信任 CA。"}
+  },
+  "mitm.store-dir": {
+    "title": {"en": "CA Store Directory", "zh-Hans": "CA 存储目录", "zh-Hant": "CA 儲存目錄"},
+    "summary": {"en": "Persists the generated CA so restarts keep the same trust profile. Empty regenerates on every launch.",
+                "zh-Hans": "持久化生成的 CA，重启后保持同一个信任配置。留空则每次启动重新生成。",
+                "zh-Hant": "持久化產生的 CA，重啟後保持同一個信任設定。留空則每次啟動重新產生。"}
+  },
+  "mitm.hosts": {
+    "title": {"en": "Intercept Hosts", "zh-Hans": "拦截的域名", "zh-Hant": "攔截的網域"},
+    "summary": {"en": "Domains whose TLS is terminated. +.example.com covers every name under it.",
+                "zh-Hans": "终结这些域名的 TLS。+.example.com 覆盖其下所有子域。",
+                "zh-Hant": "終結這些網域的 TLS。+.example.com 涵蓋其下所有子網域。"},
+    "unset": {"en": "None", "zh-Hans": "无", "zh-Hant": "無"},
+    "example": "+.example.com"
+  },
+  "mitm.skip-domain": {
+    "title": {"en": "Never Intercept · Domain", "zh-Hans": "强制不拦截 · 域名", "zh-Hant": "強制不攔截 · 網域"},
+    "summary": {"en": "These domains are never intercepted, even inside the host gates.",
+                "zh-Hans": "这些域名永远不拦截，即使命中上方的域名列表。",
+                "zh-Hant": "這些網域一律不攔截，即使命中上方的網域清單。"},
+    "unset": {"en": "None", "zh-Hans": "无", "zh-Hant": "無"},
+    "example": "auth.example.com"
+  },
+  "mitm.skip-dst-address": {
+    "title": {"en": "Never Intercept · Destination Range", "zh-Hans": "强制不拦截 · 目标网段", "zh-Hant": "強制不攔截 · 目標網段"},
+    "summary": {"en": "Connections to these ranges are never intercepted.",
+                "zh-Hans": "发往这些网段的连接不拦截。",
+                "zh-Hant": "發往這些網段的連線不攔截。"},
+    "unset": {"en": "None", "zh-Hans": "无", "zh-Hant": "無"},
+    "example": "10.0.0.0/8"
+  },
+  "mitm.https-ports": {
+    "title": {"en": "HTTPS Ports", "zh-Hans": "HTTPS 端口", "zh-Hant": "HTTPS 連接埠"},
+    "summary": {"en": "Destination ports intercepted as HTTPS. Defaults to 443.",
+                "zh-Hans": "按 HTTPS 拦截的目标端口。默认 443。",
+                "zh-Hant": "按 HTTPS 攔截的目標連接埠。預設 443。"},
+    "unset": {"en": "443", "zh-Hans": "443", "zh-Hant": "443"},
+    "example": "443, 8443-8444"
+  },
+  "mitm.http-ports": {
+    "title": {"en": "HTTP Ports", "zh-Hans": "HTTP 端口", "zh-Hant": "HTTP 連接埠"},
+    "summary": {"en": "Destination ports intercepted as plain HTTP. Defaults to 80.",
+                "zh-Hans": "按明文 HTTP 拦截的目标端口。默认 80。",
+                "zh-Hant": "按明文 HTTP 攔截的目標連接埠。預設 80。"},
+    "unset": {"en": "80", "zh-Hans": "80", "zh-Hant": "80"},
+    "example": "80, 8080-8880"
+  },
+  "mitm.rewrite": {
+    "title": {"en": "Rewrite Policies", "zh-Hans": "重写策略", "zh-Hant": "改寫策略"},
+    "summary": {"en": "Ordered; the first matching policy wins.",
+                "zh-Hans": "按顺序匹配，首个命中的生效。",
+                "zh-Hant": "依序比對，首個命中的生效。"},
+    "unset": {"en": "None", "zh-Hans": "无", "zh-Hant": "無"}
+  },
+  "mitm.rewrite[].url-pattern": {
+    "title": {"en": "URL Pattern", "zh-Hans": "URL 匹配", "zh-Hant": "URL 對應"},
+    "summary": {"en": "Matches the host and its subdomains under /api/; a bare /api/ matches any gated host.",
+                "zh-Hans": "匹配该主机及其子域的 /api/ 路径；仅填 /api/ 则匹配所有已拦截主机。",
+                "zh-Hant": "符合該主機及其子網域的 /api/ 路徑；僅填 /api/ 則符合所有已攔截主機。"}
+  },
+  "mitm.rewrite[].redirect": {
+    "title": {"en": "Redirect To", "zh-Hans": "重定向到", "zh-Hant": "重新導向到"},
+    "summary": {"en": "Answers 302 without dialing. A bare host keeps the original path and query.",
+                "zh-Hans": "直接返回 302，不建立上游连接。仅填主机名时保留原路径与查询参数。",
+                "zh-Hant": "直接回傳 302，不建立上游連線。僅填主機名稱時保留原路徑與查詢參數。"}
+  },
+  "mitm.rewrite[].reject": {
+    "title": {"en": "Reject With", "zh-Hans": "拒绝并返回", "zh-Hant": "拒絕並回傳"},
+    "summary": {"en": "Answers this 4xx status without dialing, for example 404.",
+                "zh-Hans": "直接返回该 4xx 状态码，不建立上游连接，例如 404。",
+                "zh-Hant": "直接回傳該 4xx 狀態碼，不建立上游連線，例如 404。"}
+  },
+  "mitm.rewrite[].headers": {
+    "title": {"en": "Header Rules", "zh-Hans": "请求头改写", "zh-Hant": "請求標頭改寫"},
+    "summary": {"en": "Applied to the request before it leaves for the upstream.",
+                "zh-Hans": "在请求发往上游之前执行。",
+                "zh-Hant": "在請求送往上游之前執行。"}
+  },
+  "mitm.rewrite[].headers[].action": {
+    "title": {"en": "Action", "zh-Hans": "动作", "zh-Hant": "動作"},
+    "summary": {"en": "set replaces the header, add appends a value, remove deletes it.",
+                "zh-Hans": "set 替换该请求头，add 追加一个值，remove 删除。",
+                "zh-Hant": "set 取代該標頭，add 附加一個值，remove 刪除。"}
+  },
+  "mitm.rewrite[].headers[].name": {
+    "title": {"en": "Header", "zh-Hans": "请求头名称", "zh-Hant": "標頭名稱"}
+  },
+  "mitm.rewrite[].headers[].value": {
+    "title": {"en": "Value", "zh-Hans": "值", "zh-Hant": "值"}
+  },
+  "mitm.rewrite[].headers[].value-prefix": {
+    "title": {"en": "Value Prefix", "zh-Hans": "值前缀", "zh-Hant": "值字首"},
+    "summary": {"en": "Prepended to the value the client already sends, for example “Bearer ”.",
+                "zh-Hans": "拼在客户端已发送的值前面，例如 “Bearer ”。",
+                "zh-Hant": "接在用戶端已傳送的值前面，例如 “Bearer ”。"}
+  }
+}

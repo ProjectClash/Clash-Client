@@ -67,10 +67,11 @@ public enum ConfigurationFieldValidation {
      
     static let trieDomainPaths: Set<String> = [
         "sniffer.skip-domain", "sniffer.force-domain", "dns.fake-ip-filter", "dns.fallback-filter.domain",
+        "mitm.skip-domain",
     ]
 
      
-    static let ipMatcherPaths: Set<String> = ["sniffer.skip-src-address", "sniffer.skip-dst-address"]
+    static let ipMatcherPaths: Set<String> = ["sniffer.skip-src-address", "sniffer.skip-dst-address", "mitm.skip-dst-address"]
 
      
      

@@ -72,6 +72,7 @@ public enum UpstreamBoolDefault {
         "disable-keep-alive": .init(false),
         "ntp.enable": .init(false),
         "sniffer.enable": .init(false),
+        "mitm.enable": .init(false),
         "sniffer.force-dns-mapping": .init(true),      
         "sniffer.parse-pure-ip": .init(true),
         "sniffer.override-destination": .init(true),   

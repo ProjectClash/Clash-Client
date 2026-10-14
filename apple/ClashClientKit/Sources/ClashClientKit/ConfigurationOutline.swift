@@ -7,7 +7,7 @@ import Foundation
  
  
 public enum ConfigurationOutlineSection: String, CaseIterable, Sendable {
-    case general, dns, sniffer, inbound, proxies, proxyProviders, proxyGroups, rules, ruleProviders, subRules
+    case general, dns, sniffer, mitm, inbound, proxies, proxyProviders, proxyGroups, rules, ruleProviders, subRules
     case tunnels, ntp, experimental, unknown
      
      
@@ -87,8 +87,9 @@ public enum ConfigurationOutline {
         ("dns", .dns), ("hosts", .dns),
          
         ("sniffer", .sniffer),
-         
-         
+
+        ("mitm", .mitm),
+
         ("port", .inbound), ("socks-port", .inbound), ("mixed-port", .inbound), ("redir-port", .inbound),
         ("tproxy-port", .inbound), ("inbound-tfo", .inbound), ("inbound-mptcp", .inbound), ("tun", .inbound),
         ("listeners", .inbound), ("ss-config", .inbound), ("vmess-config", .inbound), ("tuic-server", .inbound),
@@ -119,7 +120,7 @@ public enum ConfigurationOutline {
      
      
     public static func sections(for form: ConfigurationOutlineForm) -> [ConfigurationOutlineSection] {
-        [.general, .dns, .sniffer, .inbound, .proxies, .proxyProviders, .proxyGroups, .rules,
+        [.general, .dns, .sniffer, .mitm, .inbound, .proxies, .proxyProviders, .proxyGroups, .rules,
          .ruleProviders, .subRules, .tunnels, .ntp, .experimental, .unknown, .customRules, .overrideScript]
     }
 
@@ -127,7 +128,7 @@ public enum ConfigurationOutline {
      
      
     public static func showsDefaults(_ section: ConfigurationOutlineSection) -> Bool {
-        [.general, .dns, .sniffer, .inbound, .ntp, .experimental].contains(section)
+        [.general, .dns, .sniffer, .mitm, .inbound, .ntp, .experimental].contains(section)
     }
 
      
@@ -223,6 +224,10 @@ public enum ConfigurationOutline {
                 let sniffer = value("sniffer")
                 let protocols = field(sniffer, "sniff") ?? field(sniffer, "sniffing")
                 return .init(section: section, count: size(protocols), enabled: isTrue(field(sniffer, "enable")))
+            case .mitm:
+                let mitm = value("mitm")
+                let policies = field(mitm, "rewrite")
+                return .init(section: section, count: size(policies), enabled: isTrue(field(mitm, "enable")))
             case .unknown:
                 return .init(section: section, count: Set(pairs.map(\.key).filter { sectionIndex[$0] == nil }).count)
             }
