@@ -4144,13 +4144,13 @@ enum ConfigurationEditorCopy {
      
      
      
-    static func value(of row: ConfigurationOutlineRow, snifferEnabled: Bool? = nil) -> ClashDisplayText? {
+    static func value(of row: ConfigurationOutlineRow, snifferEnabled: Bool? = nil,
+                      mitmEnabled: Bool? = nil) -> ClashDisplayText? {
         switch row.section {
         case .sniffer:
             return snifferEnabled.map { .copy($0 ? "On" : "Off") }
         case .mitm:
-            if ConfigurationOutline.showsDefaults(row.section) { return nil }
-            return row.count > 0 ? .verbatim(String(row.count)) : nil
+            return mitmEnabled.map { .copy($0 ? "On" : "Off") }
         case .overrideScript:
             return nil
         default:
@@ -4169,6 +4169,14 @@ enum ConfigurationEditorCopy {
      
     @MainActor static func snifferEnabled(in session: ConfigurationEditorSession) -> Bool? {
         switch session.settingsValue(at: ["sniffer", "enable"]) {
+        case .scalar(let token)?: return token == "true" ? true : token == "false" ? false : nil
+        case .string(let text)?: return text == "true" ? true : text == "false" ? false : nil
+        default: return nil
+        }
+    }
+
+    @MainActor static func mitmEnabled(in session: ConfigurationEditorSession) -> Bool? {
+        switch session.settingsValue(at: ["mitm", "enable"]) {
         case .scalar(let token)?: return token == "true" ? true : token == "false" ? false : nil
         case .string(let text)?: return text == "true" ? true : text == "false" ? false : nil
         default: return nil

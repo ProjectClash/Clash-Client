@@ -467,7 +467,9 @@ struct ConfigurationPageSections: View {
             valueRow(ConfigurationEditorCopy.title(of: row.section),
                      value: row.section == .overrideScript ? overrideScriptName
                         : ConfigurationEditorCopy.value(of: row, snifferEnabled: row.section == .sniffer
-                        ? ConfigurationEditorCopy.snifferEnabled(in: session) : nil))
+                        ? ConfigurationEditorCopy.snifferEnabled(in: session) : nil,
+                        mitmEnabled: row.section == .mitm
+                        ? ConfigurationEditorCopy.mitmEnabled(in: session) : nil))
         }
         .accessibilityIdentifier("configuration-editor.section.\(row.section.rawValue)")
     }

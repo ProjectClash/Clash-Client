@@ -64,46 +64,46 @@
                 "zh-Hant": "依序比對，首個命中的生效。"},
     "unset": {"en": "None", "zh-Hans": "无", "zh-Hant": "無"}
   },
-  "mitm.rewrite.*.url-pattern": {
+  "mitm.rewrite[].url-pattern": {
     "title": {"en": "URL Pattern", "zh-Hans": "URL 匹配", "zh-Hant": "URL 對應"},
-    "summary": {"en": "host.example.com/api/ pins the host; /api/ matches any gated host.",
-                "zh-Hans": "host.example.com/api/ 锁定主机；/api/ 匹配所有已拦截主机。",
-                "zh-Hant": "host.example.com/api/ 鎖定主機；/api/ 比對所有已攔截主機。"}
+    "summary": {"en": "Matches the host and its subdomains under /api/; a bare /api/ matches any gated host.",
+                "zh-Hans": "匹配该主机及其子域的 /api/ 路径；仅填 /api/ 则匹配所有已拦截主机。",
+                "zh-Hant": "符合該主機及其子網域的 /api/ 路徑；僅填 /api/ 則符合所有已攔截主機。"}
   },
-  "mitm.rewrite.*.redirect": {
+  "mitm.rewrite[].redirect": {
     "title": {"en": "Redirect To", "zh-Hans": "重定向到", "zh-Hant": "重新導向到"},
     "summary": {"en": "Answers 302 without dialing. A bare host keeps the original path and query.",
                 "zh-Hans": "直接返回 302，不建立上游连接。仅填主机名时保留原路径与查询参数。",
                 "zh-Hant": "直接回傳 302，不建立上游連線。僅填主機名稱時保留原路徑與查詢參數。"}
   },
-  "mitm.rewrite.*.reject": {
+  "mitm.rewrite[].reject": {
     "title": {"en": "Reject With", "zh-Hans": "拒绝并返回", "zh-Hant": "拒絕並回傳"},
     "summary": {"en": "Answers this 4xx status without dialing, for example 404.",
                 "zh-Hans": "直接返回该 4xx 状态码，不建立上游连接，例如 404。",
                 "zh-Hant": "直接回傳該 4xx 狀態碼，不建立上游連線，例如 404。"}
   },
-  "mitm.rewrite.*.headers": {
+  "mitm.rewrite[].headers": {
     "title": {"en": "Header Rules", "zh-Hans": "请求头改写", "zh-Hant": "請求標頭改寫"},
     "summary": {"en": "Applied to the request before it leaves for the upstream.",
                 "zh-Hans": "在请求发往上游之前执行。",
                 "zh-Hant": "在請求送往上游之前執行。"}
   },
-  "mitm.rewrite.*.headers.*.action": {
+  "mitm.rewrite[].headers[].action": {
     "title": {"en": "Action", "zh-Hans": "动作", "zh-Hant": "動作"},
     "summary": {"en": "set replaces the header, add appends a value, remove deletes it.",
                 "zh-Hans": "set 替换该请求头，add 追加一个值，remove 删除。",
                 "zh-Hant": "set 取代該標頭，add 附加一個值，remove 刪除。"}
   },
-  "mitm.rewrite.*.headers.*.name": {
+  "mitm.rewrite[].headers[].name": {
     "title": {"en": "Header", "zh-Hans": "请求头名称", "zh-Hant": "標頭名稱"}
   },
-  "mitm.rewrite.*.headers.*.value": {
+  "mitm.rewrite[].headers[].value": {
     "title": {"en": "Value", "zh-Hans": "值", "zh-Hant": "值"}
   },
-  "mitm.rewrite.*.headers.*.value-prefix": {
+  "mitm.rewrite[].headers[].value-prefix": {
     "title": {"en": "Value Prefix", "zh-Hans": "值前缀", "zh-Hant": "值字首"},
-    "summary": {"en": "Prepended to the value, for example a scheme like “Bearer ”.",
-                "zh-Hans": "拼在值的前面，例如 “Bearer ” 这样的前缀。",
-                "zh-Hant": "接在值的前面，例如 “Bearer ” 這樣的字首。"}
+    "summary": {"en": "Prepended to the value the client already sends, for example “Bearer ”.",
+                "zh-Hans": "拼在客户端已发送的值前面，例如 “Bearer ”。",
+                "zh-Hant": "接在用戶端已傳送的值前面，例如 “Bearer ”。"}
   }
 }
