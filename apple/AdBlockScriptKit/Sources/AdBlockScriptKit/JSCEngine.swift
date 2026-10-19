@@ -46,6 +46,12 @@ public final class JSCEngine: JSEngine, @unchecked Sendable {
         EngineRegistry.register(self, for: context)
     }
 
+    /// How many engines are alive right now.
+    ///
+    /// Exposed for the leak test: a run that finishes has to take its context
+    /// with it, and a number that climbs across runs is a leak.
+    public static var liveEngines: Int { EngineRegistry.liveCount }
+
     deinit {
         EngineRegistry.unregister(context)
         JSGlobalContextRelease(context)
@@ -205,6 +211,17 @@ private enum EngineRegistry {
     static func engine(for context: JSContextRef) -> JSCEngine? {
         lock.lock(); defer { lock.unlock() }
         return engines[UnsafeRawPointer(context)]?.value
+    }
+
+    /// How many contexts are still registered.
+    ///
+    /// A run that finishes must take its engine with it; a count that climbs
+    /// across runs is a leak, and this is the only way to see one from a test.
+    static var liveCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        // A box whose engine has gone is a leftover registration, not a live
+        // context, so the count is of the ones still holding an engine.
+        return engines.values.filter { $0.value != nil }.count
     }
 }
 
