@@ -1,6 +1,7 @@
 #if os(iOS) || os(macOS)
 import AdBlockScriptKit
 import Foundation
+import UserNotifications
 import os
 
 /// Runs the `cron` and `generic` scripts the installed modules declare.
@@ -70,14 +71,21 @@ enum AdBlockCronRunner {
     }
 
     private static func task(script: AdBlockScript, module: String, format: AdBlockModuleFormat,
-                             locations: AdBlockModuleLocations) -> AdBlockCronTask? {
-        // A cron needs a schedule; a generic script has none and is run by the
-        // app's own menu, which this build does not have yet, so it is left out
-        // rather than run on a made-up cadence.
-        guard script.phase == .cron,
-              let text = script.cronFields?.first,
-              let schedule = AdBlockCronSchedule.parse(text),
-              let sha = script.bodySHA256,
+                             locations: AdBlockModuleLocations, scheduled: Bool = true) -> AdBlockCronTask? {
+        // A cron needs a schedule; a generic script has none and is run when the
+        // user asks for it, which `runGeneric` does. A schedule is required for
+        // one and absent for the other rather than invented for either.
+        let schedule: AdBlockCronSchedule.Schedule?
+        if scheduled {
+            guard script.phase == .cron,
+                  let text = script.cronFields?.first,
+                  let parsed = AdBlockCronSchedule.parse(text) else { return nil }
+            schedule = parsed
+        } else {
+            guard script.phase == .generic else { return nil }
+            schedule = nil
+        }
+        guard let sha = script.bodySHA256,
               let data = try? Data(contentsOf: locations.script(module, sha256: sha)),
               let source = String(data: data, encoding: .utf8) else { return nil }
         let key = script.scriptURL.isEmpty ? script.pattern : script.scriptURL
@@ -124,6 +132,66 @@ enum AdBlockCronRunner {
         if ran > 0 { log.notice("ran \(ran) scheduled script(s)") }
         return ran
     }
+
+    /// The `generic` scripts of one installed module, newest first.
+    ///
+    /// A generic script has no schedule and no URL: Loon's own words are "as a
+    /// script that can be run manually from the app", and Surge's are the same.
+    /// The hub publishes two plugins that are nothing but generic scripts, so
+    /// without this they install and then do nothing at all.
+    static func genericScripts(module moduleID: String, locations: AdBlockModuleLocations? = .production) -> [AdBlockCronTask] {
+        guard let locations else { return [] }
+        guard let data = try? Data(contentsOf: locations.moduleManifest(moduleID)),
+              let module = try? JSONDecoder().decode(PublishedModule.self, from: data) else { return [] }
+        return module.scripts
+            .filter { $0.phase == .generic }
+            .compactMap { task(script: $0, module: moduleID, format: module.manifest.format, locations: locations, scheduled: false) }
+    }
+
+    /// Runs one generic script now and calls back on the main queue.
+    ///
+    /// There is no scheduler here and no due time: the user asked for it. The
+    /// callback carries what the script answered so the page can say something
+    /// other than "ran", which for a script the user is watching is the whole
+    /// point — these are node checks and unlock tests, not silent maintenance.
+    static func runGeneric(_ task: AdBlockCronTask, locations: AdBlockModuleLocations? = .production,
+                           completion: @escaping @Sendable (ScriptOutcome) -> Void) {
+        guard let locations else {
+            completion(.unavailable("the module container is not available"))
+            return
+        }
+        let storage = locations.container.appendingPathComponent("adblock-scripts.json")
+        let runner = ScriptRunner(limits: ScriptRunLimits(defaultTimeout: 300, grace: 5),
+                                  services: AdBlockCronServices(storageURL: storage),
+                                  makeEngine: { _, _ in try JSCEngine() })
+        // The run happens on its own thread; the answer is carried back through
+        // a box because the completion is `@Sendable` and `runScheduled` may
+        // call it from anywhere. The semaphore is only about waiting, and what
+        // it waits for is the timeout the script already declared.
+        final class Answer: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: ScriptOutcome?
+            func store(_ outcome: ScriptOutcome) {
+                lock.lock(); value = outcome; lock.unlock()
+            }
+            var outcome: ScriptOutcome? {
+                lock.lock(); defer { lock.unlock() }
+                return value
+            }
+        }
+        let answer = Answer()
+        let finished = DispatchSemaphore(value: 0)
+        runner.runScheduled(script: task.script, identity: task.identity) { outcome in
+            answer.store(outcome)
+            finished.signal()
+        }
+        // The run gets its declared budget; the extra second is slack for the
+        // thread to unwind, not more time for the script.
+        _ = finished.wait(timeout: .now() + (task.timeout ?? 300) + 1)
+        let outcome = answer.outcome ?? .timedOut
+        log.notice("ran generic script \(task.script.name, privacy: .public)")
+        DispatchQueue.main.async { completion(outcome) }
+    }
 }
 #endif
 
@@ -142,6 +210,42 @@ final class AdBlockCronServices: ScriptHostServices, ScriptSynchronousServices, 
 
     func perform(_ call: ScriptHostCall, completion: @escaping @Sendable (ScriptHostAnswer) -> Void) {
         completion(.failure("a scheduled script cannot use \(call.name)"))
+    }
+
+    /// A scheduled script's `console.log` goes to the app's log.
+    ///
+    /// It has nowhere else to go: there is no page and no tunnel journal
+    /// attached, and a script that logged into the void would be undebuggable
+    /// exactly when the user is trying to find out why their check-in script
+    /// said nothing. The logger is a static of its own so this method does not
+    /// shadow it.
+    private static let journal = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Clash",
+                                        category: "AdBlockCronScript")
+
+    func log(_ line: String, level: String) {
+        switch level {
+        case "error": Self.journal.error("\(line, privacy: .public)")
+        case "warning": Self.journal.warning("\(line, privacy: .public)")
+        default: Self.journal.info("\(line, privacy: .public)")
+        }
+    }
+
+    /// A notification from a scheduled script is posted as a local one.
+    ///
+    /// This is often the whole reason a scheduled script exists — a check-in
+    /// that reports its result, a ticket or stock watcher — so it is delivered
+    /// rather than dropped. The app can present its own notifications, unlike
+    /// the tunnel, which may only schedule them.
+    func notify(_ notification: ScriptNotification) {
+        let content = UNMutableNotificationContent()
+        content.title = notification.title
+        content.subtitle = notification.subtitle
+        content.body = notification.body
+        if let url = notification.openURL { content.userInfo["openUrl"] = url }
+        if let clipboard = notification.clipboard { content.userInfo["clipboard"] = clipboard }
+        if notification.sound == true { content.sound = .default }
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 
     func synchronousAnswer(name: String, payload: Data) -> String {

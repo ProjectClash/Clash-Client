@@ -24,9 +24,23 @@ public struct AdBlockCronTask: Equatable {
     public var module: String
     /// The identity its platform APIs follow.
     public var identity: ScriptIdentity
-    public var schedule: AdBlockCronSchedule.Schedule
+    /// Absent for a `generic` script, which has no cadence: the app runs it
+    /// when the user asks, and the scheduler owns only what is due by itself.
+    public var schedule: AdBlockCronSchedule.Schedule?
     /// The declaration's own timeout, in seconds.
     public var timeout: TimeInterval?
+
+    /// The app builds these from what the publisher wrote, which is a different
+    /// module from this one, so the initialiser has to be public. The tests are
+    /// `@testable` and would not have caught its absence.
+    public init(script: ScriptSource, module: String, identity: ScriptIdentity,
+                schedule: AdBlockCronSchedule.Schedule?, timeout: TimeInterval?) {
+        self.script = script
+        self.module = module
+        self.identity = identity
+        self.schedule = schedule
+        self.timeout = timeout
+    }
 }
 
 /// Where the last run of a task is remembered. A file in the app group, so the
@@ -90,7 +104,8 @@ public final class AdBlockCronScheduler {
         var out: [(AdBlockCronTask, Date)] = []
         for task in tasks {
             let key = Self.key(task)
-            guard let due = AdBlockCronSchedule.latestDue(task.schedule, after: bookkeeping.lastRun(for: key),
+            guard let schedule = task.schedule,
+                  let due = AdBlockCronSchedule.latestDue(schedule, after: bookkeeping.lastRun(for: key),
                                                           now: now, calendar: calendar) else { continue }
             out.append((task, due))
         }
@@ -127,7 +142,7 @@ public final class AdBlockCronScheduler {
     public func nextWake(_ tasks: [AdBlockCronTask], after now: Date = Date()) -> Date? {
         var earliest: Date?
         for task in tasks {
-            guard let next = nextDue(task.schedule, after: now) else { continue }
+            guard let schedule = task.schedule, let next = nextDue(schedule, after: now) else { continue }
             if let current = earliest, current <= next { continue }
             earliest = next
         }

@@ -18,6 +18,35 @@ final class CronSchedulerTests: XCTestCase {
                         schedule: AdBlockCronSchedule.parse(schedule)!, timeout: nil)
     }
 
+    /// A `generic` script has no cadence, so it carries no schedule and the
+    /// scheduler must never pick it up — the app runs it when the user asks.
+    /// `AdBlockCronRunner.genericScripts` builds exactly this shape.
+    private func manualTask(key: String = "g") -> AdBlockCronTask {
+        AdBlockCronTask(script: ScriptSource(name: key, key: key, text: ""), module: "m",
+                        identity: ScriptIdentity(platform: .loon),
+                        schedule: nil, timeout: nil)
+    }
+
+    func testAGenericScriptIsNeverDue() {
+        let memory = Memory()
+        let scheduler = AdBlockCronScheduler(bookkeeping: memory, calendar: calendar)
+        // A cron beside it so the call has work to do either way.
+        let jobs = [task("* * * * *", key: "cron"), manualTask()]
+        let due = scheduler.due(jobs, now: date(15, 12, 0))
+        XCTAssertEqual(due.map(\.task.script.key), ["cron"],
+                       "only the scheduled script may be due")
+    }
+
+    /// And it cannot become due later, however far the clock is wound.
+    func testAGenericScriptIsNeverADueTimeOrAWakeTime() {
+        let scheduler = AdBlockCronScheduler(bookkeeping: Memory(), calendar: calendar)
+        let jobs = [manualTask()]
+        XCTAssertTrue(scheduler.due(jobs, now: date(15, 12, 0)).isEmpty)
+        XCTAssertNil(scheduler.nextWake(jobs, after: date(15, 12, 0)),
+                     "a generic script must not schedule a wake-up")
+        XCTAssertTrue(scheduler.due(jobs, now: date(15, 12, 1)).isEmpty)
+    }
+
     private final class Memory: AdBlockCronBookkeeping {
         var dates: [String: Date] = [:]
         func lastRun(for key: String) -> Date? { dates[key] }
