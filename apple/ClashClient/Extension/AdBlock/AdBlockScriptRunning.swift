@@ -136,13 +136,21 @@ final class AdBlockNoScripts: AdBlockScriptRunning {
  
  
 final class AdBlockScriptCall {
-     
-    static let defaultTimeout = 5
-     
-     
-     
+    /// The budget a script gets when its declaration names none, per Loon's
+    /// documentation: a request or response script must answer while the
+    /// request is held open, so it gets 20 seconds, while a scheduled or
+    /// manually-run script has 300. A single 5-second default cut off scripts
+    /// that the hub explicitly gives `timeout=300` or `timeout=600`, and gave
+    /// the ones that say nothing less than half of what the platform does.
+    static func defaultTimeout(for phase: AdBlockRewritePhase) -> Int {
+        switch phase {
+        case .request, .response: return 20
+        case .cron, .generic: return 300
+        }
+    }
+
     static let maximumTimeout = 300
-     
+
     static let grace: TimeInterval = 5
 
     enum Answer: Equatable, Sendable {
@@ -154,7 +162,8 @@ final class AdBlockScriptCall {
 
      
     static func limit(for script: AdBlockScript, grace: TimeInterval = AdBlockScriptCall.grace) -> TimeInterval {
-        TimeInterval(min(maximumTimeout, max(0, script.timeout ?? defaultTimeout))) + max(0, grace)
+        let asked = script.timeout ?? defaultTimeout(for: script.phase)
+        return TimeInterval(min(maximumTimeout, max(0, asked))) + max(0, grace)
     }
 
     private var timer: DispatchSourceTimer?

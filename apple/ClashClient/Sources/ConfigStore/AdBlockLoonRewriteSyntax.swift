@@ -73,7 +73,7 @@ enum AdBlockLoonRewriteSyntax {
         // The `then script(` pair is required, not just the phase word: Surge
         // writes its scripts as `generic = type=generic, script-path=…`, and
         // that line has to keep reaching the Surge reader.
-        guard ["cron", "generic"].contains(phase) else { return false }
+        guard ["cron", "generic", "network-changed"].contains(phase) else { return false }
         let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
         guard let then = parts.firstIndex(where: { $0.lowercased() == "then" }),
               parts.count > then + 1 else { return false }
@@ -87,7 +87,11 @@ enum AdBlockLoonRewriteSyntax {
         character.isASCII && (character.isLetter || character == "_")
     }
     private static func isWordCharacter(_ character: Character) -> Bool {
-        character.isASCII && (character.isLetter || character.isNumber || character == "_" || character == ".")
+        // `-` is a word character because a phase word is spelled with one:
+        // `network-changed then script(…)` is a rule of its own, and splitting
+        // it made the line start with a word no phase matches.
+        character.isASCII && (character.isLetter || character.isNumber || character == "_" || character == "."
+                              || character == "-")
     }
     private static func isDigit(_ character: Character) -> Bool { character.isASCII && character.isNumber }
 
@@ -1572,7 +1576,11 @@ private extension AdBlockLoonRewriteSyntax.Reader {
         switch phaseWord.lowercased() {
         case "request": phase = .request
         case "response": phase = .response
-        case "cron", "generic": phase = phaseWord.lowercased() == "cron" ? .cron : .generic
+        case "cron": phase = .cron
+        // A network-changed script is a menu script the app may run when the
+        // network changes; Loon's own docs give it the same shape as `generic`,
+        // and the Surge reader already maps it the same way.
+        case "generic", "network-changed": phase = .generic
         default: throw AdBlockIgnoredReason.unreadableLine
         }
         // `request if <condition> then script(…)` is the HTTP shape. A
