@@ -350,6 +350,95 @@ final class JSEngineTests: XCTestCase {
         """, platform: .loon) { outcome, _ in XCTAssertEqual(outcome, .unchanged) }
     }
 
+    /// Shadowrocket and JSBox, the two platforms with no corpus of their own.
+    ///
+    /// They are the two a script cannot mistake for another: Env.js reads
+    /// `$rocket` after `$task` and `$loon` and before nothing else, and JSBox is
+    /// reached through globals no proxy client has. `@nsnanocat/util` orders them
+    /// `$task → $loon → $rocket → Egern → surge-version → stash-version`, so a
+    /// Shadowrocket run that also carried `$loon` would be read as Loon.
+    func testShadowrocketIsNotMistakenForAnotherPlatform() {
+        let probe = """
+        function has(n) { return typeof globalThis[n] !== 'undefined'; }
+        var seen = [];
+        if (has('$task')) seen.push('$task');
+        if (has('$loon')) seen.push('$loon');
+        if (has('$rocket')) seen.push('$rocket');
+        // `typeof` rather than a truthiness test: Shadowrocket has no
+        // `$environment` at all, and Env.js's own guard is written this way for
+        // exactly that reason.
+        if (typeof $environment !== 'undefined') {
+          if ($environment['surge-version']) seen.push('surge-version');
+          if ($environment['stash-version']) seen.push('stash-version');
+        }
+        """
+        // The order below is `@nsnanocat/util`'s, so the first match is the name
+        // the script will believe.
+        run(probe + """
+        var app = seen.indexOf('$task') >= 0 ? 'Quantumult X'
+          : seen.indexOf('$loon') >= 0 ? 'Loon'
+          : seen.indexOf('$rocket') >= 0 ? 'Shadowrocket'
+          : seen.indexOf('surge-version') >= 0 ? 'Surge'
+          : seen.indexOf('stash-version') >= 0 ? 'Stash' : 'undefined';
+        $done({ body: app + ' | ' + seen.join(',') });
+        """, platform: .shadowrocket, phase: .response, response: makeResponse()) { outcome, _ in
+            guard case .response(let response) = outcome else { return XCTFail("got \(outcome)") }
+            guard let body = response.body.flatMap({ String(data: $0, encoding: .utf8) }) else {
+                return XCTFail("no body")
+            }
+            XCTAssertEqual(body, "Shadowrocket | $rocket", "a Shadowrocket run must be seen as one")
+        }
+    }
+
+    /// `$persistentStore` is Shadowrocket's storage, the same call Surge and
+    /// Loon answer to — Env.js groups all three under one case.
+    func testShadowrocketStorageAndNotification() {
+        let services = FakeServices()
+        run("""
+        $persistentStore.write('v', 'k');
+        var back = $persistentStore.read('k');
+        $notification.post('t', 's', 'b');
+        $done({ body: String(back) });
+        """, platform: .shadowrocket, phase: .response, response: makeResponse(), services: services) { outcome, _ in
+            guard case .response(let response) = outcome else { return XCTFail("got \(outcome)") }
+            XCTAssertEqual(response.body.flatMap { String(data: $0, encoding: .utf8) }, "v")
+        }
+    }
+
+    /// JSBox is Promise based and names its fields differently: `$http` resolves
+    /// `{ data, response }`, `$cache` is synchronous, `$push` takes an object.
+    func testJSBoxGetsItsOwnAPIAndNothingElse() {
+        run("""
+        if (typeof $http !== 'function') { throw new Error('no $http'); }
+        if (typeof $cache !== 'object') { throw new Error('no $cache'); }
+        if (typeof $push !== 'function') { throw new Error('no $push'); }
+        if (typeof $httpClient !== 'undefined') { throw new Error('JSBox must not have $httpClient'); }
+        if (typeof $task !== 'undefined') { throw new Error('JSBox must not have $task'); }
+        if (typeof $loon !== 'undefined') { throw new Error('JSBox must not have $loon'); }
+        if (typeof $rocket !== 'undefined') { throw new Error('JSBox must not have $rocket'); }
+        $cache.set('k', 'v');
+        $http({ url: 'https://example.com/', method: 'GET' }).then(function (r) {
+            $done({ body: $cache.get('k') + '|' + r.response.status });
+        });
+        """, platform: .jsbox, phase: .response, response: makeResponse()) { outcome, _ in
+            guard case .response(let response) = outcome else { return XCTFail("got \(outcome)") }
+            XCTAssertEqual(response.body.flatMap { String(data: $0, encoding: .utf8) }, "v|200")
+        }
+    }
+
+    /// QX has `$task`/`$prefs`/`$notify` and nothing else. It used to also carry
+    /// JSBox's `$http`/`$cache`/`$push`, which no Quantumult X document lists and
+    /// which let a script take a JSBox branch on a client that is not JSBox.
+    func testQuantumultXDoesNotCarryJSBoxAPI() {
+        run("""
+        if (typeof $http !== 'undefined') { throw new Error('QX must not have $http'); }
+        if (typeof $cache !== 'undefined') { throw new Error('QX must not have $cache'); }
+        if (typeof $push !== 'undefined') { throw new Error('QX must not have $push'); }
+        if (typeof $task === 'undefined') { throw new Error('no $task'); }
+        $done({});
+        """, platform: .quantumultX) { outcome, _ in XCTAssertEqual(outcome, .unchanged) }
+    }
+
     func testEnvironmentProbeMatchesEnvJsOrder() {
         // The exact probe from chavyleung/scripts Env.js, run verbatim.
         let probe = """

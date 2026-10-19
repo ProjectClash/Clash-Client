@@ -754,11 +754,6 @@
         notify(title, subtitle, body, options);
       };
       global.$environment = { app: 'Quantumult X', variables: state.argument };
-      global.$http = jsboxHTTP;
-      global.$cache = jsboxCache();
-      global.$push = function (payloadObject) {
-        notify((payloadObject && payloadObject.title) || 'JSBox', '', (payloadObject && payloadObject.body) || '', {});
-      };
     } else if (platform === 'jsbox') {
       global.$http = jsboxHTTP;
       global.$cache = jsboxCache();

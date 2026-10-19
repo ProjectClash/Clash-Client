@@ -28,6 +28,24 @@ final class CompatibilityLibraryTests: XCTestCase {
         return text
     }()
 
+    /// A production script with a second environment library embedded.
+    ///
+    /// `Env.js` is not the only one in circulation: `VirgilClyne/GetSomeFries`
+    /// ships `@nsnanocat/util` inside every script it publishes, and that
+    /// library orders its globals differently — `surge-version`/`stash-version`
+    /// first, then `$task`, `$loon`, `$rocket`, `Egern`. A host that satisfies
+    /// one library can still be misread by the other, so the real script is run
+    /// and asked to name its own platform. Checked in under `Fixtures/`,
+    /// GPL-3.0, unmodified.
+    private static let friesScript: String = {
+        let url = Bundle.module.url(forResource: "TikTok.request", withExtension: "js", subdirectory: "Fixtures")
+            ?? Bundle.module.url(forResource: "TikTok.request", withExtension: "js")
+        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else {
+            fatalError("the TikTok.request.js fixture is missing from the test bundle")
+        }
+        return text
+    }()
+
     private func run(_ script: String, platform: ScriptPlatform,
                      services: FakeServices, argument: ScriptArgument = .none,
                      timeout: TimeInterval = 5,
@@ -44,6 +62,45 @@ final class CompatibilityLibraryTests: XCTestCase {
             done.fulfill()
         }
         wait(for: [done], timeout: timeout + 5)
+    }
+
+    /// The real script names its own platform, on every platform this host
+    /// offers. This is the check that one compatibility library could not make:
+    /// `@nsnanocat/util`'s order differs from `Env.js`'s, and it is the library
+    /// the ES6 rewrite scripts actually ship.
+    func testAFriesScriptNamesItsOwnPlatform() {
+        let expected: [(ScriptPlatform, String)] = [
+            (.loon, "Loon"),
+            (.surge, "Surge"),
+            (.stash, "Stash"),
+            (.quantumultX, "Quantumult X"),
+            (.shadowrocket, "Shadowrocket"),
+            // JSBox is not in this library's chain at all: its sequence ends at
+            // `$rocket` and falls through to `undefined`. The host must not
+            // invent a branch the library cannot read.
+            (.jsbox, "undefined"),
+        ]
+        for (platform, name) in expected {
+            let runner = ScriptRunner(limits: ScriptRunLimits(defaultTimeout: 5, grace: 0.5),
+                                      services: FakeServices(), makeEngine: { _, _ in try JSCEngine() })
+            let done = expectation(description: "\(platform)")
+            // `ENV` is the class the script defines; its `platform()` is the
+            // same probe the script uses on itself, called directly so the
+            // script's own network work never runs.
+            let probe = Self.friesScript + "\n$done({ response: { status: 200, body: String(ENV.prototype.platform.call({})) } });"
+            runner.run(script: ScriptSource(name: "fries", key: "fries", text: probe),
+                       request: makeRequest(), response: nil,
+                       identity: ScriptIdentity(platform: platform)) { outcome in
+                guard case .response(let mock) = outcome else {
+                    XCTFail("\(platform): expected an answer, got \(outcome)")
+                    return done.fulfill()
+                }
+                let body = String(decoding: mock.body ?? Data(), as: UTF8.self)
+                XCTAssertEqual(body, name, "a \(platform) run must be reported as \(name)")
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 10)
+        }
     }
 
     /// JSBox is its own ecosystem and has no Env.js branch — the library does
