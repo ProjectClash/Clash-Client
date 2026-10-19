@@ -161,7 +161,8 @@ enum AdBlockCronRunner {
             return
         }
         let storage = locations.container.appendingPathComponent("adblock-scripts.json")
-        let runner = ScriptRunner(limits: ScriptRunLimits(defaultTimeout: 300, grace: 5),
+        let limits = ScriptRunLimits(defaultTimeout: 300, grace: 5)
+        let runner = ScriptRunner(limits: limits,
                                   services: AdBlockCronServices(storageURL: storage),
                                   makeEngine: { _, _ in try JSCEngine() })
         // The run happens on its own thread; the answer is carried back through
@@ -185,11 +186,20 @@ enum AdBlockCronRunner {
             answer.store(outcome)
             finished.signal()
         }
-        // The run gets its declared budget; the extra second is slack for the
-        // thread to unwind, not more time for the script.
-        _ = finished.wait(timeout: .now() + (task.timeout ?? 300) + 1)
+        // Wait for the runner's own budget, grace included, so a script that
+        // runs out of time is reported by the runner as a timeout rather than
+        // by this wait as a missing answer. A second on top covers the callback
+        // hopping back to this thread; it is not more time for the script.
+        _ = finished.wait(timeout: .now() + limits.budget(for: task.timeout) + 1)
         let outcome = answer.outcome ?? .timedOut
-        log.notice("ran generic script \(task.script.name, privacy: .public)")
+        switch outcome {
+        case .timedOut:
+            log.notice("generic script \(task.script.name, privacy: .public) ran out of time")
+        case .unavailable(let reason):
+            log.notice("generic script \(task.script.name, privacy: .public) unavailable: \(reason, privacy: .public)")
+        default:
+            log.notice("ran generic script \(task.script.name, privacy: .public)")
+        }
         DispatchQueue.main.async { completion(outcome) }
     }
 }
