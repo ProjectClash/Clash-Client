@@ -348,12 +348,16 @@ final class AdBlockInterceptor: AdBlockIntercepting {
 struct AdBlockEngineStorage {
     let leaves: URL?
     let bodies: URL?
+    /// Where a script's `$persistentStore` lives. One file for every script, as
+    /// the platforms have one store per host.
+    var scripts: URL?
 
-     
     static var tunnel: AdBlockEngineStorage {
         AdBlockEngineStorage(leaves: AdBlockLeafStore.defaultDirectory(),
                              bodies: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-                                 .appendingPathComponent("adblock-bodies", isDirectory: true))
+                                 .appendingPathComponent("adblock-bodies", isDirectory: true),
+                             scripts: ClashAppIdentifiers.appGroupContainer?
+                                 .appendingPathComponent("adblock-scripts.json"))
     }
 }
 
@@ -428,10 +432,21 @@ enum AdBlockEngineAssembly {
         } else {
             allowance = AdBlockFullAllowance()
         }
+        // A module's scripts are run by a runner whose HTTP goes through the
+        // same connector as the intercepted traffic, and whose storage is one
+        // file in the container. The runner is built here, where the connector
+        // and the storage are known.
+        let scriptRunner: AdBlockScriptRunning
+        if let js = scripts as? AdBlockScriptRunner {
+            js.adopt(upstreams: connector, storageURL: storage.scripts)
+            scriptRunner = js
+        } else {
+            scriptRunner = scripts
+        }
         let services = AdBlockExchangeServices(
             queue: engine.queue, program: program,
             budget: previous?.services.budget ?? AdBlockBodyBudget(limits: .current, metrics: engine.metrics, spillDirectory: storage.bodies),
-            allowance: allowance, scripts: scripts, upstreams: connector, metrics: engine.metrics, log: engine.log,
+            allowance: allowance, scripts: scriptRunner, upstreams: connector, metrics: engine.metrics, log: engine.log,
             rejects: previous?.services.rejects ?? AdBlockRejectUpgradeBox(), now: reporter.now,
             headTimeout: engine.headTimeout, finalSendTimeout: engine.finalSendTimeout)
          

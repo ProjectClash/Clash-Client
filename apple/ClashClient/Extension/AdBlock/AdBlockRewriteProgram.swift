@@ -1072,6 +1072,7 @@ final class AdBlockRewriteProgram {
     private struct ScriptRule {
         let script: AdBlockScript
         let moduleID: String
+        let moduleFormat: AdBlockModuleFormat
         let bodyFile: URL?
         let origin: AdBlockRuleOrigin
     }
@@ -1256,6 +1257,7 @@ final class AdBlockRewriteProgram {
             for script in input.scripts {
                 let origin = AdBlockRuleOrigin(moduleName: input.module.name, section: script.origin.section, line: script.origin.line)
                 scriptRules.append((script.pattern, ScriptRule(script: script, moduleID: input.module.id,
+                                                               moduleFormat: input.manifest.format,
                                                                bodyFile: script.bodySHA256.flatMap { scriptFile(input.module.id, $0) },
                                                                origin: origin)))
             }
@@ -2504,7 +2506,8 @@ final class AdBlockRewriteProgram {
     func script(phase: AdBlockRewritePhase, urls: AdBlockRequestURLs, budget: inout AdBlockRequestBudget) -> AdBlockScriptMatch? {
         guard let hit = scriptMatcher.firstMatch(urls.all, budget: &budget, where: { scripts[$0].script.phase == phase }) else { return nil }
         let rule = scripts[hit.rule]
-        return AdBlockScriptMatch(script: rule.script, moduleID: rule.moduleID, bodyFile: rule.bodyFile, origin: rule.origin, url: hit.url)
+        return AdBlockScriptMatch(script: rule.script, moduleID: rule.moduleID, moduleFormat: rule.moduleFormat,
+                                  bodyFile: rule.bodyFile, origin: rule.origin, url: hit.url)
     }
 
     func script(phase: AdBlockRewritePhase, urls: AdBlockRequestURLs) -> AdBlockScriptMatch? {

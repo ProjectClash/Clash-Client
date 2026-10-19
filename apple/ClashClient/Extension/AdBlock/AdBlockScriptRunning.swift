@@ -12,6 +12,10 @@ import Foundation
 struct AdBlockScriptMatch {
     let script: AdBlockScript
     let moduleID: String
+    /// The dialect of the module the script came from. A script's identity —
+    /// which platform's globals it sees — follows the module, because that is
+    /// the host its author wrote it for.
+    let moduleFormat: AdBlockModuleFormat
      
     let bodyFile: URL?
     let origin: AdBlockRuleOrigin

@@ -16,10 +16,20 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
      
      
     private lazy var adBlockHost: AdBlockEngineHost? = AdBlockEngineLocations.production.map { locations in
-        AdBlockEngineHost(locations: locations, log: AdBlockEngineLog { line in
+        // Scripts are run in-process, in their own JavaScriptCore context per
+        // request. The runner is built here, without a connector: the engine
+        // assembly hands it one when a configuration starts, so a script's HTTP
+        // follows the same routing as the app's traffic.
+        let scripts = AdBlockScriptRunner(queue: DispatchQueue(label: "adblock.scripts", qos: .userInitiated),
+                                          log: AdBlockEngineLog { line in
+                                              PacketTunnelProvider.adBlockLog.notice("\(line, privacy: .public)")
+                                              ClashLogStore.shared.append(line, stream: .app)
+                                          },
+                                          argumentChoices: AdBlockScriptSettings.choices())
+        return AdBlockEngineHost(locations: locations, log: AdBlockEngineLog { line in
             PacketTunnelProvider.adBlockLog.notice("\(line, privacy: .public)")
             ClashLogStore.shared.append(line, stream: .app)
-        }, scripts: nil, carriesEngineProxy: { revision in
+        }, scripts: scripts, carriesEngineProxy: { revision in
             PacketTunnelProvider.runtimeDocument(in: locations.container, revision)
                 .map { AdBlockRuntimeDocumentScan.carriesInjectedEngine(at: $0, known: .read(locations)) } ?? false
         }, configure: { engine, inputs, reporter, scripts in

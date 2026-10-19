@@ -75,6 +75,22 @@ struct AdBlockModuleArgument: Sendable {
         var desc: String?
     }
 
+    /// The declaration's own word for the argument's type (`select`, `switch`,
+    /// `input`, ...), when the module used one.
+    var declaredKind: String? { details.map { _ in kindWord } }
+
+    private var kindWord: String {
+        guard let details else { return "text" }
+        switch details.detail.kind {
+        case .text: return details.detail.valueType ?? "text"
+        case .toggle: return "switch"
+        case .choice: return "select"
+        case .input: return "input"
+        case .storedChoice: return "select"
+        case .storedInput: return "input"
+        }
+    }
+
     private final class Details: Sendable {
         let detail: Detail
         init(_ detail: Detail) { self.detail = detail }
@@ -1149,6 +1165,20 @@ struct AdBlockScript: Codable, Equatable, Sendable {
      
      
     var imageURL: String? = nil
+
+    /// The module's declared arguments and their defaults, as they stood when
+    /// the module was read. `argumentNames` says which ones the script asked
+    /// for; this says what they default to, and what type each one is, so
+    /// `$argument` can carry a boolean where a boolean was declared.
+    var argumentDefaults: [AdBlockScriptArgument]? = nil
+}
+
+/// One declared argument, as a script needs it.
+struct AdBlockScriptArgument: Codable, Equatable, Sendable {
+    var name: String
+    /// `select`, `switch`, `input`, `number` — the declaration's own word.
+    var kind: String?
+    var defaultValue: String?
 }
 
  

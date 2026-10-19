@@ -19,6 +19,8 @@ settings:
     OTHER_LDFLAGS:
     - -lresolv
 packages:
+  AdBlockScriptKit:
+    path: ../AdBlockScriptKit
   ClashClientKit:
     path: ../ClashClientKit
   ClashClientUI:
@@ -254,6 +256,8 @@ targets:
     - target: Clash
       embed: false
     - sdk: NetworkExtension.framework
+    - package: AdBlockScriptKit
+      product: AdBlockScriptKit
     - package: swift-certificates
       product: X509
     - package: swift-crypto
@@ -659,6 +663,8 @@ targets:
     - target: ClashMacCore
       embed: false
     - sdk: NetworkExtension.framework
+    - package: AdBlockScriptKit
+      product: AdBlockScriptKit
     - package: swift-certificates
       product: X509
     - package: swift-crypto

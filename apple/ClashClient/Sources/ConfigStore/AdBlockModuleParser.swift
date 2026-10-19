@@ -1074,6 +1074,16 @@ enum AdBlockModuleParser {
         settingsSectionsHoldWhole(&ir)
         if loon { manifest.format = .loon }
         ir.manifest = manifest
+        // A script carries the defaults of the arguments it asked for, so the
+        // tunnel can build `$argument` without re-reading the module.
+        let defaults = Dictionary(manifest.arguments.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        for index in ir.scripts.indices {
+            guard let names = ir.scripts[index].argumentNames, !names.isEmpty else { continue }
+            ir.scripts[index].argumentDefaults = names.map { name in
+                AdBlockScriptArgument(name: name, kind: defaults[name]?.declaredKind,
+                                      defaultValue: defaults[name]?.defaultValue)
+            }
+        }
         return .success(ir)
     }
 
