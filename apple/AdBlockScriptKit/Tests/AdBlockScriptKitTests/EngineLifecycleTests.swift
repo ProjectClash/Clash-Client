@@ -72,17 +72,25 @@ final class EngineLifecycleTests: XCTestCase {
                        "3 abandoned waiters left \(JSCEngine.liveEngines - baseline) contexts behind")
     }
 
-    /// A script that never yields cannot be interrupted, so its context is
-    /// lost — but only once per run, and after `timeoutsBeforeRefusal` the
-    /// script is refused outright, so the loss stops.
-    func testSpinningScriptsAreBoundedAndThenRefused() {
+    /// A script that never yields is stopped by the engine, not merely
+    /// abandoned — and its thread and context come back.
+    ///
+    /// This used to be the one case the library could not fix: the comment here
+    /// said JavaScriptCore's public C API had no way to interrupt a script, so a
+    /// `while (true)` kept its thread until the process ended. That is not true.
+    /// `JSContextGroupSetExecutionTimeLimit` terminates it, and the engine now
+    /// sets that limit from the script's own budget. So a spin costs one timeout
+    /// and nothing else: no leaked thread, no leaked context, and no bounded-but-
+    /// permanent loss.
+    func testSpinningScriptsAreTerminatedNotJustAbandoned() {
         let baseline = JSCEngine.liveEngines
-        let limits = ScriptRunLimits(defaultTimeout: 0.15, grace: 0.05,
+        let limits = ScriptRunLimits(defaultTimeout: 0.2, grace: 0.05,
                                      concurrentRuns: 4, timeoutsBeforeRefusal: 2)
         let runner = runner(limits: limits)
 
         let wedged = expectation(description: "wedged")
         wedged.expectedFulfillmentCount = 2
+        let started = Date()
         for index in 0..<2 {
             runner.run(script: ScriptSource(name: "spin", key: "spin", text: "while (true) {}"),
                        request: makeRequest(), response: nil,
@@ -94,12 +102,18 @@ final class EngineLifecycleTests: XCTestCase {
         wait(for: [wedged], timeout: 15)
         settle()
 
+        // The engine stops the script at its own limit, so the whole thing takes
+        // about the budget rather than the watchdog's separate patience.
+        XCTAssertLessThan(Date().timeIntervalSince(started), 6,
+                          "a spun script must be stopped, not waited out")
         let afterSpins = JSCEngine.liveEngines
         XCTAssertLessThanOrEqual(afterSpins - baseline, 2,
                                  "each spin may cost at most its own context")
 
         // The third run is refused before an engine is ever created, so the
-        // count must not move again.
+        // count must not move again. Refusal still matters: a script that
+        // cannot finish in its budget once will keep failing, and every attempt
+        // still costs a context.
         let refused = expectation(description: "refused")
         runner.run(script: ScriptSource(name: "spin", key: "spin", text: "while (true) {}"),
                    request: makeRequest(), response: nil,

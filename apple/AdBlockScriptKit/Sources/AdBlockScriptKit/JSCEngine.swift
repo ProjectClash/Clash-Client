@@ -52,6 +52,27 @@ public final class JSCEngine: JSEngine, @unchecked Sendable {
     /// with it, and a number that climbs across runs is a leak.
     public static var liveEngines: Int { EngineRegistry.liveCount }
 
+    /// Stops the script if it is still executing after `seconds`.
+    ///
+    /// The runner abandons a slow run at its deadline, but abandoning is not
+    /// stopping: a script in `while (true)` would keep its thread and its CPU
+    /// until the process died. JavaScriptCore can terminate it — the same
+    /// `JSContextGroupSetExecutionTimeLimit` the Objective-C `JSContext` uses —
+    /// and with no callback it throws "JavaScript execution terminated" out of
+    /// the evaluation, which the run reports as its timeout.
+    ///
+    /// The limit is per context group, so it is set on the engine that owns one
+    /// and cleared when the run ends: a later run reusing this group would
+    /// otherwise inherit a budget it did not ask for.
+    public func setExecutionTimeLimit(_ seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+        JSContextGroupSetExecutionTimeLimit(group, seconds, nil, nil)
+    }
+
+    public func clearExecutionTimeLimit() {
+        JSContextGroupClearExecutionTimeLimit(group)
+    }
+
     deinit {
         EngineRegistry.unregister(context)
         JSGlobalContextRelease(context)

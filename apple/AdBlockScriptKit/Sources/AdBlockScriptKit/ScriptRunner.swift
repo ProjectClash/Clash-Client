@@ -176,7 +176,8 @@ public final class ScriptRunner: @unchecked Sendable {
         }
 
         let run = ScriptRun(script: script, request: request, response: response, services: services,
-                            identity: identity, makeEngine: makeEngine)
+                            identity: identity, makeEngine: makeEngine,
+                            defaultTimeout: limits.defaultTimeout)
         let finished = RunCompletion(completion: completion, runner: self)
 
         // The watchdog runs on its own queue so a busy script queue cannot delay
@@ -199,6 +200,16 @@ public final class ScriptRunner: @unchecked Sendable {
             watchdog.cancel()
             guard finished.claim() else { return }
             guard let self else { return }
+            // A timeout can now arrive from the run itself: the engine stops a
+            // spinning script at its limit, so the run finishes before the
+            // watchdog fires. Counting the timeout only in the watchdog would
+            // make `timeoutsBeforeRefusal` never trip for exactly the scripts it
+            // exists for, which is how this was found — the spin test stopped
+            // being refused.
+            if case .timedOut = outcome {
+                self.noteTimeout(key)
+                self.count { $0.timedOut += 1; $0.timedOutTotal += 1 }
+            }
             self.record(outcome, script: script)
             finished.deliver(outcome)
         }

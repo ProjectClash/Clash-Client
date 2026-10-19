@@ -22,11 +22,18 @@ public protocol JSEngine: AnyObject, Sendable {
     func setSynchronousServices(_ services: ScriptSynchronousServices?)
     /// Marks a context that outlived its budget as no longer worth talking to.
     func abandon()
+    /// Stops a script that is still executing after `seconds`.
+    ///
+    /// Distinct from `abandon`: that one stops listening, this one stops the
+    /// script. An engine that cannot interrupt leaves the default, which only
+    /// silences the run — the behaviour before this existed.
+    func setExecutionTimeLimit(_ seconds: TimeInterval)
 }
 
 public extension JSEngine {
     func setSynchronousServices(_ services: ScriptSynchronousServices?) {}
     func abandon() {}
+    func setExecutionTimeLimit(_ seconds: TimeInterval) {}
 }
 
 /// The four things JavaScript can do to the host.

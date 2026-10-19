@@ -28,6 +28,9 @@ final class ScriptRun: @unchecked Sendable {
     private let identity: ScriptIdentity
     private let makeEngine: EngineFactory
     private let phase: ScriptPhase
+    /// The budget a declaration that names none still gets. Needed here, not
+    /// only in the runner: the engine's own execution limit is set from it.
+    private let defaultTimeout: TimeInterval
 
     private let lock = NSLock()
     private var finished = false
@@ -44,13 +47,15 @@ final class ScriptRun: @unchecked Sendable {
     private var pending: [() -> Void] = []
 
     init(script: ScriptSource, request: ScriptRequest, response: ScriptResponse?,
-         services: ScriptHostServices, identity: ScriptIdentity, makeEngine: @escaping EngineFactory) {
+         services: ScriptHostServices, identity: ScriptIdentity, makeEngine: @escaping EngineFactory,
+         defaultTimeout: TimeInterval) {
         self.script = script
         self.request = request
         self.response = response
         self.services = services
         self.identity = identity
         self.makeEngine = makeEngine
+        self.defaultTimeout = defaultTimeout
         self.phase = response == nil ? .request : .response
     }
 
@@ -116,15 +121,42 @@ final class ScriptRun: @unchecked Sendable {
         }
         do {
             try engine.evaluate("__clashBootstrap(\(bootstrap));", sourceURL: "clash-bootstrap.js")
+            // The prelude and the bootstrap are trusted and cheap; the script
+            // is neither. Its declared budget is what the limit is: a script
+            // that loops forever is stopped by JavaScriptCore at the same
+            // moment the runner would otherwise only stop listening, so it
+            // cannot hold a thread — or one of the runner's `concurrentRuns`
+            // slots — for the life of the process.
+            engine.setExecutionTimeLimit(script.timeout ?? defaultTimeout)
             try engine.evaluate(script.text, sourceURL: script.sourceURL)
         } catch {
-            finish(.aborted("the script threw: \(error)"))
+            // Termination is reported as a timeout, not as a script error: the
+            // script did not throw, the engine stopped it, and the request it
+            // was holding has already been let through unchanged.
+            if isTermination(error) {
+                finish(.timedOut)
+            } else {
+                finish(.aborted("the script threw: \(error)"))
+            }
             return
         }
 
         // The script may have finished synchronously. If it did not, the thread
         // now serves its callbacks and timers until the run ends.
         drain()
+    }
+
+    /// Whether the engine stopped the script rather than the script throwing.
+    ///
+    /// JavaScriptCore reports termination as an ordinary exception whose text is
+    /// "JavaScript execution terminated." — there is no error code to test, so
+    /// this reads the message. A script that threw a `SyntaxError` mentioning
+    /// the same words would be misread, which is why the whole phrase is matched
+    /// rather than a substring of it.
+    private func isTermination(_ error: Error) -> Bool {
+        guard let engineError = error as? JSEngineError else { return false }
+        return engineError.message == "JavaScript execution terminated."
+            || engineError.message == "JavaScript execution terminated"
     }
 
     /// Runs queued work until the run finishes. Returns when `finish` has run or
