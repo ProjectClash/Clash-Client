@@ -26,7 +26,7 @@ final class AdBlockScriptRunner: AdBlockScriptRunning {
 
     private let queue: DispatchQueue
     private let log: AdBlockEngineLog
-    private let argumentChoices: [String: String]
+    private let readChoices: @Sendable () -> [String: String]
     private var host: AdBlockScriptHost?
     private var runner: ScriptRunner
     private let lock = NSLock()
@@ -35,12 +35,14 @@ final class AdBlockScriptRunner: AdBlockScriptRunning {
     private var sink: AdBlockScriptSink?
     private var available = false
 
+    /// `readChoices` is read at run time rather than captured, so a choice the
+    /// user makes in the editor is picked up by the tunnel without a restart.
     init(queue: DispatchQueue, log: AdBlockEngineLog,
-         argumentChoices: [String: String] = [:],
+         readChoices: @escaping @Sendable () -> [String: String] = { [:] },
          limits: ScriptRunLimits = ScriptRunLimits()) {
         self.queue = queue
         self.log = log
-        self.argumentChoices = argumentChoices
+        self.readChoices = readChoices
         self.limits = limits
         // Until the tunnel hands over its connector and storage, a run has
         // nowhere to send a script's HTTP; `nil` services answer "unavailable",
@@ -179,7 +181,7 @@ final class AdBlockScriptRunner: AdBlockScriptRunning {
     private func arguments(for script: AdBlockScript) -> [String: ScriptArgumentValue] {
         var out: [String: ScriptArgumentValue] = [:]
         for argument in script.argumentDefaults ?? [] {
-            let chosen = argumentChoices[argumentKey(script: script, name: argument.name)]
+            let chosen = readChoices()[argumentKey(script: script, name: argument.name)]
             guard let value = chosen ?? argument.defaultValue else { continue }
             out[argument.name] = ScriptArgumentValue(value, kind: argument.kind)
         }

@@ -25,7 +25,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                                               PacketTunnelProvider.adBlockLog.notice("\(line, privacy: .public)")
                                               ClashLogStore.shared.append(line, stream: .app)
                                           },
-                                          argumentChoices: AdBlockScriptSettings.choices())
+                                          readChoices: AdBlockScriptSettings.choices)
         return AdBlockEngineHost(locations: locations, log: AdBlockEngineLog { line in
             PacketTunnelProvider.adBlockLog.notice("\(line, privacy: .public)")
             ClashLogStore.shared.append(line, stream: .app)
