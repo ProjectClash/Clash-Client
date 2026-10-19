@@ -314,6 +314,42 @@ final class JSEngineTests: XCTestCase {
         XCTAssertFalse(rendered.contains("\n\n"), rendered)
     }
 
+    /// Each module's platform decides which globals exist, and a script written
+    /// for one platform must be able to tell it is not on another.
+    ///
+    /// This is the contract the hub's corpus depends on: `app2smile/rules`
+    /// ships one `.js` behind both a `.sgmodule` and a `.conf`, and the script
+    /// branches on `typeof $task`, `$loon` and `$httpClient`. It is also why
+    /// QX has no `$notification` — Env.js, `@nsnanocat/util` and QX's own sample
+    /// all spell it `$notify`, and a QX run that answered `$notification` would
+    /// silently take the Surge branch instead.
+    func testEachPlatformGetsItsOwnGlobals() {
+        // Surge and Loon have `$httpClient`; QX has `$task`; neither has the
+        // other's, which is how 27 scripts in the corpus sniff the platform.
+        run("""
+        if (typeof $httpClient === 'undefined') { throw new Error('no $httpClient'); }
+        if (typeof $notification === 'undefined') { throw new Error('no $notification'); }
+        if (typeof $task !== 'undefined') { throw new Error('Surge must not have $task'); }
+        $done({});
+        """, platform: .surge) { outcome, _ in XCTAssertEqual(outcome, .unchanged) }
+
+        run("""
+        if (typeof $task === 'undefined') { throw new Error('no $task'); }
+        if (typeof $notify === 'undefined') { throw new Error('no $notify'); }
+        if (typeof $httpClient !== 'undefined') { throw new Error('QX must not have $httpClient'); }
+        if (typeof $notification !== 'undefined') { throw new Error('QX must not have $notification'); }
+        $done({});
+        """, platform: .quantumultX) { outcome, _ in XCTAssertEqual(outcome, .unchanged) }
+
+        run("""
+        if (typeof $loon === 'undefined') { throw new Error('no $loon'); }
+        // The value is a contract: `$loon.split(" ")` is device/version/ios.
+        if ($loon.split(' ').length !== 3) { throw new Error('$loon shape: ' + $loon); }
+        if (typeof $task !== 'undefined') { throw new Error('Loon must not have $task'); }
+        $done({});
+        """, platform: .loon) { outcome, _ in XCTAssertEqual(outcome, .unchanged) }
+    }
+
     func testEnvironmentProbeMatchesEnvJsOrder() {
         // The exact probe from chavyleung/scripts Env.js, run verbatim.
         let probe = """
