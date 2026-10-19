@@ -99,7 +99,11 @@ enum AdBlockModuleParser {
         let manifest = AdBlockModuleManifest(
             name: nil, desc: nil, author: nil, icon: nil, system: [], arguments: [], format: .surge,
             sourceURL: sourceURL, fetchedAt: fetchedAt, contentSHA256: AdBlockJSON.sha256(data))
-        if isQuantumultX(text, sourceURL: sourceURL) { return .failure(.quantumultX) }
+        if isQuantumultX(text, sourceURL: sourceURL) {
+            return try AdBlockQuantumultXParser.parse(text, manifest: manifest, sourceURL: sourceURL,
+                                                       platform: platform, environment: environment,
+                                                       check: check).map(bounded)
+        }
         if isStash(text, sourceURL: sourceURL) {
             return try AdBlockStashParser.parse(text, manifest: manifest, platform: platform, check: check).map(bounded)
         }

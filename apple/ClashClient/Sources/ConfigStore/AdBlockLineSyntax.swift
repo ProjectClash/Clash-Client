@@ -604,6 +604,9 @@ enum AdBlockLineSyntax {
         case "http-request": phase = .request
         case "http-response": phase = .response
          
+         
+        case "cron": phase = .cron
+        case "generic", "network-changed", "dns": phase = .generic
         default: return .failure(.unsupportedScriptType(type))
         }
         if ["0", "false", "no"].contains((values["enable"] ?? "").lowercased()) {

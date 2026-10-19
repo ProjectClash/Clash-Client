@@ -215,7 +215,7 @@ enum AdBlockStoredSentence {
      
      
     private static let addTimeRefusals: [String: AdBlockModuleRefusal] = {
-        let all: [AdBlockModuleRefusal] = [.quantumultX, .notAModule, .otherPlatform([]), .notText, .tooLarge(0),
+        let all: [AdBlockModuleRefusal] = [.quantumultX(""), .notAModule, .otherPlatform([]), .notText, .tooLarge(0),
                                            .unreadableYAML(""), .notAnAddress, .requirementNotMet]
         var keys: [String: AdBlockModuleRefusal] = [:]
         for refusal in all {
@@ -363,7 +363,9 @@ extension AdBlockModuleRefusal {
          
          
          
-        case .quantumultX: return .app("This kind of module isn't supported.")
+        case .quantumultX(let section):
+            return .app(section.isEmpty ? "This kind of module isn't supported."
+                            : "This kind of module has a section this build cannot use (\(section)).")
         case .notAModule, .notText: return .app("This isn't a module, so it wasn't added.")
         case .otherPlatform: return .app("This module is for another kind of device, so it wasn't added.")
         case .tooLarge: return .app("This module is too large, so it wasn't added.")

@@ -542,9 +542,14 @@ enum AdBlockLoonRewriteSyntax {
             switch phaseWord.lowercased() {
             case "request": phase = .request
             case "response": phase = .response
+            case "cron": phase = .cron
+            case "generic": phase = .generic
             default: throw AdBlockIgnoredReason.unreadableLine
             }
             let expression = try or()
+            // Loon's v2 rules read `then script(...)`, but the same line shape
+            // with `then script(...)` is what a cron or generic rule also uses;
+            // the phase is the only difference.
             guard case .word(let thenWord)? = next(), thenWord.lowercased() == "then" else { throw AdBlockIgnoredReason.unreadableLine }
             var calls: [Call] = [try call()]
             while index < tokens.count {
@@ -1552,6 +1557,7 @@ private extension AdBlockLoonRewriteSyntax.Reader {
         switch phaseWord.lowercased() {
         case "request": phase = .request
         case "response": phase = .response
+        case "cron", "generic": phase = phaseWord.lowercased() == "cron" ? .cron : .generic
         default: throw AdBlockIgnoredReason.unreadableLine
         }
         let expression = try or()
@@ -1597,8 +1603,10 @@ private extension AdBlockLoonRewriteSyntax.Reader {
          
         guard index == tokens.count else { throw AdBlockIgnoredReason.unreadableLine }
 
+        // A cron or generic rule has no URL gate: it runs on a schedule or from
+        // the app's own menu. An empty gate is what a phase-only script reads.
         let condition = Self.root(try lower(expression))
-        let gate = Self.scriptGate(of: condition)
+        let gate = phase == .cron || phase == .generic ? "" : Self.scriptGate(of: condition)
          
          
         let pattern = gate.isEmpty ? "^" : AdBlockLoonRewriteSyntax.unescapingSlashes(gate)

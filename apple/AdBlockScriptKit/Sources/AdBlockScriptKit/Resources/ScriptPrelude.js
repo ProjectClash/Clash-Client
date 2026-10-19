@@ -47,6 +47,9 @@
   var state = {
     platform: 'loon',
     phase: 'request',
+    // The URL of the request being processed. Quantumult X's own scripts
+    // rewrite `$done({path: ...})` and expect the host to rebuild the URL.
+    requestURL: '',
     argument: {},
     binaryBody: false,
     callbacks: {},
@@ -149,6 +152,17 @@
 
   // Bytes cross the host boundary as `{"$clashBytes": "<base64>"}`. Only bodies
   // and explicitly binary API results take this path.
+  function schemeOf(url) {
+    var match = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url || '');
+    return match ? match[1].toLowerCase() : '';
+  }
+
+  function pathOf(url) {
+    var rest = String(url || '').replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '');
+    var slash = rest.indexOf('/');
+    return slash < 0 ? '/' : rest.slice(slash);
+  }
+
   function wireBytes(bytes) {
     if (!bytes) { return null; }
     return { $clashBytes: base64Encode(bytes) };
@@ -422,6 +436,12 @@
     hostNative('done', JSON.stringify(normalizeDone(out)), -1);
   }
 
+  function withPath(path) {
+    var match = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/]+)(.*)$/.exec(state.requestURL || '');
+    if (!match) { return path; }
+    return match[1] + (path.charAt(0) === '/' ? path : '/' + path);
+  }
+
   function normalizeDone(payload) {
     var out = {};
     for (var key in payload) {
@@ -430,6 +450,10 @@
       if (value === undefined) { continue; }
       if (key === 'body' || key === 'bodyBytes') {
         out[key] = typeof value === 'string' ? value : wireBytes(toBytes(value));
+      } else if (key === 'path' && typeof value === 'string') {
+        // Quantumult X's own scripts rewrite `$done({path: ...})`; the host
+        // rebuilds the URL from it rather than handing the script a full URL.
+        out.url = withPath(value);
       } else if (key === 'response' && value && typeof value === 'object') {
         out.response = normalizeDone(value);
       } else if (key === 'headers' && value && typeof value === 'object') {
@@ -638,6 +662,7 @@
     state.phase = payload.phase || 'request';
     state.argument = payload.argument || {};
     state.binaryBody = payload.binaryBody === true;
+    state.requestURL = payload.request ? payload.request.url : '';
 
     var request = null, response = null;
     if (payload.request) {
@@ -646,6 +671,12 @@
         method: payload.request.method,
         headers: payload.request.headers || {},
         h2_trailers: {}
+      };
+      // Quantumult X exposes these and no other platform does; a script
+      // published for it reaches for them unguarded.
+      if (payload.platform === 'quantumultX') {
+        request.scheme = schemeOf(request.url);
+        request.path = pathOf(request.url);
       };
       if (payload.request.body !== undefined && payload.request.body !== null) {
         var bytes = unwireBytes(payload.request.body);
@@ -658,6 +689,9 @@
         statusCode: payload.response.status,
         headers: payload.response.headers || {},
         h2_trailers: {}
+      };
+      if (payload.platform === 'quantumultX') {
+        response.headers = Object.assign({}, payload.response.headers || {});
       };
       if (payload.response.body !== undefined && payload.response.body !== null) {
         var resBytes = unwireBytes(payload.response.body);

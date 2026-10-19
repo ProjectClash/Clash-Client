@@ -18,6 +18,10 @@ enum AdBlockModuleFormat: String, Codable, Equatable, Sendable {
     case loon
      
     case stash
+     
+     
+     
+    case quantumultX
 }
 
  
@@ -430,6 +434,11 @@ struct AdBlockHostList: Codable, Equatable, Sendable {
 enum AdBlockRewritePhase: String, Codable, Equatable, Sendable {
     case request
     case response
+     
+     
+     
+    case cron
+    case generic
 }
 
 enum AdBlockHeaderOperation: String, Codable, Equatable, Sendable {
@@ -1166,6 +1175,11 @@ struct AdBlockScript: Codable, Equatable, Sendable {
      
     var imageURL: String? = nil
 
+    /// The schedule a cron declaration asked for. Quantumult X writes a
+    /// five- or six-field cron line; Surge and Loon write five. Both are kept
+    /// here as the fields the declaration had.
+    var cronFields: [String]?
+
     /// The module's declared arguments and their defaults, as they stood when
     /// the module was read. `argumentNames` says which ones the script asked
     /// for; this says what they default to, and what type each one is, so
@@ -1329,7 +1343,7 @@ struct AdBlockIgnoredEntry: Codable, Equatable, Sendable {
  
 enum AdBlockModuleRefusal: Error, Equatable, Sendable {
      
-    case quantumultX
+    case quantumultX(String)
     case notAModule
      
     case otherPlatform([String])

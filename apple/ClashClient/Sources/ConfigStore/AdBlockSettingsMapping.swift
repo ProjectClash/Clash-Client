@@ -141,7 +141,9 @@ enum AdBlockSettingsMapping {
 
     private static let surge: Set<AdBlockModuleFormat> = [.surge]
     private static let loon: Set<AdBlockModuleFormat> = [.loon]
-    private static let both: Set<AdBlockModuleFormat> = [.surge, .loon]
+    /// The rows both Surge and Loon share, and that Quantumult X spells the
+    /// same way as Surge. A Quantumult X module gets these settings too.
+    private static let both: Set<AdBlockModuleFormat> = [.surge, .loon, .quantumultX]
 
      
      
@@ -150,6 +152,7 @@ enum AdBlockSettingsMapping {
     static let rows: [String: Row] = [
          
         "skip-proxy": Row(families: both, kind: .special(skipProxy)),
+
         "always-real-ip": Row(families: surge, kind: .special(realIP)),
         "real-ip": Row(families: loon, kind: .special(realIP)),
         "tun-excluded-routes": Row(families: surge, kind: .list(["tun", "route-exclude-address"], .routes)),

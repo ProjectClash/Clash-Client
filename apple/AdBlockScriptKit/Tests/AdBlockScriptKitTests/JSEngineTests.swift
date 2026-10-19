@@ -262,3 +262,70 @@ final class JSEngineTests: XCTestCase {
         }
     }
 }
+
+/// The Quantumult X specifics: `$request.scheme`, `$request.path` and the
+/// `$done({path: ...})` that its own sample scripts use.
+final class JSEngineQuantumultXTests: XCTestCase {
+    func testRequestExposesSchemeAndPath() {
+        JSEngineTestsSupport.run("$done({ body: $request.scheme + '|' + $request.path });",
+                                 platform: .quantumultX, phase: .response,
+                                 request: ScriptRequest(method: "GET", url: "https://example.com/api/v1?a=1",
+                                                        headers: ScriptHeaders(), body: nil),
+                                 response: makeResponse()) { outcome in
+            guard case .response(let response) = outcome else { return XCTFail("expected a response, got \(outcome)") }
+            XCTAssertEqual(String(decoding: response.body ?? Data(), as: UTF8.self), "https|/api/v1?a=1")
+        }
+    }
+
+    func testDonePathRewritesTheRequestUrl() {
+        JSEngineTestsSupport.run("""
+        const headers = Object.assign({}, $request.headers);
+        $done({ path: '/api2/abc?k=v', headers: headers });
+        """, platform: .quantumultX, phase: .request,
+            request: ScriptRequest(method: "GET", url: "https://example.com/api/abc",
+                                   headers: ScriptHeaders(), body: nil),
+            response: nil) { outcome in
+            guard case .request(let next) = outcome else { return XCTFail("expected a changed request, got \(outcome)") }
+            XCTAssertEqual(next.url, "https://example.com/api2/abc?k=v")
+        }
+    }
+
+    func testDoneStatusLineOnQuantumultX() {
+        JSEngineTestsSupport.run("""
+        $done({ status: 'HTTP/1.1 200 OK', headers: { 'Content-Type': 'text/plain' }, body: 'rewritten' });
+        """, platform: .quantumultX, phase: .response,
+            response: ScriptResponse(status: 200, headers: ScriptHeaders(), body: Data("original".utf8))) { outcome in
+            guard case .response(let response) = outcome else { return XCTFail("expected a response, got \(outcome)") }
+            XCTAssertEqual(response.status, 200)
+            XCTAssertEqual(response.body, Data("rewritten".utf8))
+        }
+    }
+
+    func testQuantumultXHasNoLoonGlobals() {
+        JSEngineTestsSupport.run("""
+        if (typeof $loon !== 'undefined' || typeof $httpClient !== 'undefined' || typeof $persistentStore !== 'undefined') {
+          throw new Error('Quantumult X must not expose Surge globals');
+        }
+        $done({});
+        """, platform: .quantumultX, phase: .response, response: makeResponse()) { outcome in
+            XCTAssertEqual(outcome, .unchanged)
+        }
+    }
+}
+
+enum JSEngineTestsSupport {
+    static func run(_ script: String, platform: ScriptPlatform = .loon, phase: ScriptPhase = .request,
+                    request: ScriptRequest = makeRequest(), response: ScriptResponse? = nil,
+                    binaryBody: Bool = false, services: FakeServices = FakeServices(),
+                    then check: @escaping @Sendable (ScriptOutcome) -> Void) {
+        let runner = ScriptRunner(limits: ScriptRunLimits(defaultTimeout: 5, grace: 0.5),
+                                  services: services, makeEngine: { _, _ in try JSCEngine() })
+        let done = XCTestExpectation(description: "outcome")
+        runner.run(script: ScriptSource(name: "test", key: "test", text: script, binaryBody: binaryBody),
+                   request: request, response: response, identity: ScriptIdentity(platform: platform)) { outcome in
+            check(outcome)
+            done.fulfill()
+        }
+        _ = XCTWaiter.wait(for: [done], timeout: 12)
+    }
+}

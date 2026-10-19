@@ -2503,7 +2503,11 @@ final class AdBlockRewriteProgram {
     }
 
      
+    /// A rule's phase decides whether it runs on a request, on a response, or
+    /// on its own. Only the first two are chosen by a URL; a cron or generic
+    /// rule is scheduled by the engine instead, so it is never matched here.
     func script(phase: AdBlockRewritePhase, urls: AdBlockRequestURLs, budget: inout AdBlockRequestBudget) -> AdBlockScriptMatch? {
+        guard phase == .request || phase == .response else { return nil }
         guard let hit = scriptMatcher.firstMatch(urls.all, budget: &budget, where: { scripts[$0].script.phase == phase }) else { return nil }
         let rule = scripts[hit.rule]
         return AdBlockScriptMatch(script: rule.script, moduleID: rule.moduleID, moduleFormat: rule.moduleFormat,

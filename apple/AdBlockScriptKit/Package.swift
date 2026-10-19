@@ -27,9 +27,8 @@ let package = Package(
         .testTarget(
             name: "AdBlockScriptKitTests",
             dependencies: ["AdBlockScriptKit"],
-            // The real compatibility library scripts ship with, so the platform
-            // sniffing they do is tested against them rather than a stand-in.
-            resources: [.copy("Fixtures/Env.js")]
-        )
+            // The fixtures are what the tests read: the real compatibility
+            // library scripts ship with, and real plugin files to parse.
+            resources: [.copy("Fixtures")])
     ]
 )
