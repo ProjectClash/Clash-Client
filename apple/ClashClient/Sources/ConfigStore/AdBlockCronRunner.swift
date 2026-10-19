@@ -148,6 +148,28 @@ enum AdBlockCronRunner {
             .compactMap { task(script: $0, module: moduleID, format: module.manifest.format, locations: locations, scheduled: false) }
     }
 
+    /// The generic script of an installed module whose body hashes to `sha256`.
+    ///
+    /// The detail page identifies a script by its hash — that is what `Item`'s
+    /// action carries — because the page does not know which module it is
+    /// looking at beyond the one it is showing. Searching the installed,
+    /// enabled modules for the hash finds it either way.
+    static func genericScript(bodySHA256 sha: String, locations: AdBlockModuleLocations? = .production) -> AdBlockCronTask? {
+        guard let locations else { return nil }
+        let store = AdBlockModuleStore.shared(locations.container)
+        guard let state = try? store.state() else { return nil }
+        for record in state.modules where record.enabled {
+            guard let data = try? Data(contentsOf: locations.moduleManifest(record.id)),
+                  let module = try? JSONDecoder().decode(PublishedModule.self, from: data) else { continue }
+            guard let script = module.scripts.first(where: { $0.phase == .generic && $0.bodySHA256 == sha }) else { continue }
+            if let task = task(script: script, module: record.id, format: module.manifest.format,
+                               locations: locations, scheduled: false) {
+                return task
+            }
+        }
+        return nil
+    }
+
     /// Runs one generic script now and calls back on the main queue.
     ///
     /// There is no scheduler here and no due time: the user asked for it. The

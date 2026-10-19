@@ -491,8 +491,25 @@ final class AdBlockPageModel: ObservableObject {
         case .notice(.retryAfterMemoryStop):
              
             run { deps.readiness.noteRetry() }
-        case .notice(.runScriptAgain):
-            break  
+        case .notice(.runScriptAgain(let sha)):
+            // A `generic` script's row carries the hash of the body it would
+            // run; the task is found by it and run now. What the script
+            // answered goes to the log, because these are node checks and
+            // unlock tests whose whole purpose is telling the user something —
+            // dropping the answer would leave the button looking inert.
+            guard let task = AdBlockCronRunner.genericScript(bodySHA256: sha,
+                                                            locations: AdBlockModuleLocations(container: deps.container)) else {
+                return
+            }
+            let container = deps.container
+            run {
+                let outcome = await withCheckedContinuation { (continuation: CheckedContinuation<ScriptOutcome, Never>) in
+                    AdBlockCronRunner.runGeneric(task, locations: AdBlockModuleLocations(container: container)) { outcome in
+                        continuation.resume(returning: outcome)
+                    }
+                }
+                ClashLogStore.shared.append("ran \(task.script.name): \(outcome)", stream: .app)
+            }
         case .newModule:
             editor = ClashAdBlockModuleEditorSnapshot()
             publishEditor()

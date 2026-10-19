@@ -330,7 +330,17 @@ enum AdBlockModuleDetailBuilder {
             ("settings", "Settings", settingItems(ir, written: written), nil),
              
             ("scripts", "Scripts", ir.scripts.enumerated().map {
-                Item(id: "script-\($0.offset)", text: $0.element.name, secondary: $0.element.pattern)
+                // A `generic` script is the one kind the app runs on request:
+                // it has no URL to match and no schedule, so the row is also
+                // the place it is started from. The others run on their own —
+                // an HTTP script when its pattern matches, a cron one when its
+                // schedule comes round — and offering a button for those would
+                // mean running them outside the conditions they were written
+                // for.
+                let script = $0.element
+                let runnable = script.phase == .generic ? script.bodySHA256 : nil
+                return Item(id: "script-\($0.offset)", text: script.name, secondary: script.pattern,
+                            action: runnable.map { ClashAdBlockSnapshot.NoticeAction.runScriptAgain(sha256: $0) })
             }, waits),
             ("skipped", "Skipped", ir.ignored.enumerated().map {
                 Item(id: "skipped-\($0.offset)", text: $0.element.text, detail: $0.element.reason.authoredText.displayText,
