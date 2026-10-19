@@ -46,6 +46,27 @@ final class CompatibilityLibraryTests: XCTestCase {
         wait(for: [done], timeout: timeout + 5)
     }
 
+    /// JSBox is its own ecosystem and has no Env.js branch — the library does
+    /// not mention it at all — so its three interfaces are checked directly.
+    /// A JSBox script reaches for `$http`, `$cache` and `$push`, none of which
+    /// any of the proxy platforms define.
+    func testJSBoxInterfaces() {
+        let services = FakeServices()
+        run("""
+        if (typeof $http !== 'function') { throw new Error('no $http'); }
+        if (!($cache && typeof $cache.get === 'function' && typeof $cache.set === 'function')) { throw new Error('no $cache'); }
+        if (typeof $push !== 'function') { throw new Error('no $push'); }
+        $cache.set('k', 'v');
+        if ($cache.get('k') !== 'v') { throw new Error('$cache did not round-trip: ' + $cache.get('k')); }
+        $push({ title: 'T', body: 'B' });
+        $done({});
+        """, platform: .jsbox, services: services) { outcome, services in
+            XCTAssertEqual(outcome, .unchanged)
+            XCTAssertTrue(services.notified.contains { $0.title == "T" },
+                          "a JSBox `$push` must reach the notification surface")
+        }
+    }
+
     /// Each platform must be recognised as itself, not as whichever platform's
     /// global the prelude happens to install first.
     func testEnvJSSniffsEveryPlatform() {
