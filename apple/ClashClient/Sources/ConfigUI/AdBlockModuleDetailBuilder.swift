@@ -339,7 +339,14 @@ enum AdBlockModuleDetailBuilder {
                 // for.
                 let script = $0.element
                 let runnable = script.phase == .generic ? script.bodySHA256 : nil
-                return Item(id: "script-\($0.offset)", text: script.name, secondary: script.pattern,
+                // A generic script's row carries what it last answered, if it
+                // has been run: these scripts exist to produce that panel, and
+                // a row that shows only the script's name would hide the whole
+                // point of pressing the button.
+                let answered = script.bodySHA256.flatMap { facts.scriptResults[$0] }
+                return Item(id: "script-\($0.offset)", text: script.name,
+                            detail: answered.map { ClashDisplayText(verbatim: $0.plainText) },
+                            secondary: script.pattern,
                             action: runnable.map { ClashAdBlockSnapshot.NoticeAction.runScriptAgain(sha256: $0) })
             }, waits),
             ("skipped", "Skipped", ir.ignored.enumerated().map {

@@ -289,6 +289,31 @@ final class JSEngineTests: XCTestCase {
         }
     }
 
+    /// The result the user actually reads. Every `generic` panel in the hub
+    /// arrives as `htmlMessage`, so the conversion is what the screen shows —
+    /// these are the real strings from `NodeLinkCheck.js` and
+    /// `NetworkEntryAndExitQueries.js`, not invented examples.
+    func testGenericResultRendersAsText() {
+        let link = ScriptResult(title: "代理链路检测",
+                                htmlMessage: #"<p style="text-align: center"><br><b>⟦ 未 知 错 误 ⟧ </b><br><font color=#f00><small>--------</small></font></p>"#)
+        let text = link.plainText
+        XCTAssertTrue(text.hasPrefix("代理链路检测\n"), text)
+        XCTAssertTrue(text.contains("⟦ 未 知 错 误 ⟧"), text)
+        XCTAssertFalse(text.contains("<"), text)
+        XCTAssertFalse(text.contains("font"), text)
+
+        // The one that names the node, with the entity and the nested spans.
+        let entry = ScriptResult(
+            title: "入口落地查询",
+            htmlMessage: #"<div><br/><span style="font-weight: bold">IP</span>: -<br/><span style="font-weight: bold">节点</span>: <span style="color: #467fcf">HK-01 IEPL</span></div>"#)
+        let rendered = entry.plainText
+        XCTAssertTrue(rendered.contains("节点: HK-01 IEPL"), rendered)
+        XCTAssertTrue(rendered.contains("IP: -"), rendered)
+        XCTAssertFalse(rendered.contains("span"), rendered)
+        // Blank lines left by consecutive tags collapse instead of padding the row.
+        XCTAssertFalse(rendered.contains("\n\n"), rendered)
+    }
+
     func testEnvironmentProbeMatchesEnvJsOrder() {
         // The exact probe from chavyleung/scripts Env.js, run verbatim.
         let probe = """

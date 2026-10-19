@@ -39,7 +39,16 @@ struct AdBlockPageFacts {
      
      
     var actionFailure: AuthoredText? = nil
-     
+
+    /// What each `generic` script answered the last time it was run, keyed by
+    /// the body hash the row's button carries.
+    ///
+    /// These scripts exist to tell the user something — a node's country, its
+    /// unlock status — and Loon hands that answer back to the entry point that
+    /// started them. A run whose answer went only to the log would leave the
+    /// button looking like it did nothing, which is exactly the complaint this
+    /// feature exists to avoid.
+    var scriptResults: [String: ScriptResult] = [:]
      
     var actionModuleID: String? = nil
      

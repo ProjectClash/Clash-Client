@@ -397,6 +397,10 @@ final class AdBlockPageModel: ObservableObject {
      
     private func publish(_ facts: AdBlockPageFacts) {
         generation += 1
+        var facts = facts
+        // Every publish carries what the scripts have answered so far, so a
+        // refresh does not make a result the user is reading disappear.
+        facts.scriptResults = scriptResults
         lastFacts = facts
         var page = AdBlockPageSnapshotBuilder.page(facts, locale: locale)
         page.editor = editor
@@ -419,6 +423,11 @@ final class AdBlockPageModel: ObservableObject {
 
      
     private var lastFacts: AdBlockPageFacts?
+
+    /// The last answer of each `generic` script, keyed by body hash. Kept here
+    /// rather than in the facts so a republish (a refresh, a toggle) does not
+    /// wipe what the user just asked for and read.
+    private var scriptResults: [String: ScriptResult] = [:]
 
      
      
@@ -494,7 +503,7 @@ final class AdBlockPageModel: ObservableObject {
         case .notice(.runScriptAgain(let sha)):
             // A `generic` script's row carries the hash of the body it would
             // run; the task is found by it and run now. What the script
-            // answered goes to the log, because these are node checks and
+            // answered goes to the page, because these are node checks and
             // unlock tests whose whole purpose is telling the user something —
             // dropping the answer would leave the button looking inert.
             guard let task = AdBlockCronRunner.genericScript(bodySHA256: sha,
@@ -509,6 +518,14 @@ final class AdBlockPageModel: ObservableObject {
                     }
                 }
                 ClashLogStore.shared.append("ran \(task.script.name): \(outcome)", stream: .app)
+                // The result belongs on the screen, not only in the log: the
+                // hub's node checks answer with an HTML panel naming the node
+                // and its unlock status, and a user who pressed "run" is
+                // waiting for exactly that.
+                if case .result(let result) = outcome {
+                    scriptResults[sha] = result
+                    if let facts = lastFacts { publish(facts) }
+                }
             }
         case .newModule:
             editor = ClashAdBlockModuleEditorSnapshot()

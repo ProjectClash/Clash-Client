@@ -22,8 +22,46 @@ public struct ScriptResult: Equatable, Sendable {
     public var isEmpty: Bool { title == nil && content == nil && htmlMessage == nil }
 
     /// The text a client without an HTML view can show.
+    ///
+    /// Every result in the hub's corpus arrives as `htmlMessage` and none of
+    /// them as `content`: `NodeLinkCheck.js` answers with a centred `<p>` full
+    /// of `<br>` and `<span style=…>`, `NetworkEntryAndExitQueries.js` with a
+    /// `<div>` of labelled IPs. Rendering that markup is a UI decision, so this
+    /// reduces it to the text a plain label can carry — line breaks preserved
+    /// from `<br>` and block ends, tags dropped, entities decoded — rather than
+    /// showing raw markup or showing nothing.
     public var plainText: String {
-        [title, content].compactMap { $0 }.joined(separator: "\n")
+        if let content { return [title, content].compactMap { $0 }.joined(separator: "\n") }
+        guard let html = htmlMessage else { return title ?? "" }
+        return [title, ScriptResult.plain(html)].compactMap { $0 }
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    /// Markup to text, without a web view.
+    static func plain(_ html: String) -> String {
+        var text = html
+        // Only block elements end a line. `</span>` must not: the hub wraps its
+        // labels in spans, so treating it as a break splits "节点: HK-01 IEPL"
+        // into two lines — a rendering bug the tests caught.
+        for tag in ["<br/>", "<br />", "<br>", "</div>", "</p>", "</tr>", "<tr>"] {
+            text = text.replacingOccurrences(of: tag, with: "\n", options: .caseInsensitive)
+        }
+        // Drop everything else between angle brackets, inline tags included.
+        text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
+        text = text.replacingOccurrences(of: "&lt;", with: "<")
+        text = text.replacingOccurrences(of: "&gt;", with: ">")
+        text = text.replacingOccurrences(of: "&quot;", with: "\"")
+        text = text.replacingOccurrences(of: "&#39;", with: "'")
+        text = text.replacingOccurrences(of: "&amp;", with: "&")
+        // Collapse the runs of blank lines the tags leave behind.
+        var lines: [String] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty, lines.last?.isEmpty != false { continue }
+            lines.append(trimmed)
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
