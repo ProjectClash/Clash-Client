@@ -6,6 +6,31 @@ import Foundation
 /// `input`, `switch`), and scripts read `$argument.flag` expecting a boolean
 /// there and a string elsewhere. The declared type is therefore kept rather
 /// than flattening everything to text.
+/// What a script receives as `$argument`.
+///
+/// The platforms leave this to the plugin author rather than the host: Loon's
+/// script syntax takes an optional second argument, and what is written there
+/// *is* what the script gets — nothing when it is omitted, the string itself
+/// when it is a string, and an object of typed values when the plugin names its
+/// own `[Argument]` parameters. A host that always hands over an object makes
+/// every script that splits a string throw; one that always hands over a string
+/// breaks every script that reads `$argument.someName`. Both spellings are
+/// common in the wild, so which one arrives has to be preserved.
+public enum ScriptArgument: Equatable, Sendable {
+    case none
+    case text(String)
+    case values([String: ScriptArgumentValue])
+
+    /// Whether the script will see anything at all.
+    public var isEmpty: Bool {
+        switch self {
+        case .none: return true
+        case .text(let text): return text.isEmpty
+        case .values(let values): return values.isEmpty
+        }
+    }
+}
+
 public enum ScriptArgumentValue: Equatable, Sendable {
     case text(String)
     case number(Double)

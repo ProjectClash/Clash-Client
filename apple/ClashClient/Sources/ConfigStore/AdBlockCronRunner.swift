@@ -84,7 +84,7 @@ enum AdBlockCronRunner {
         let scriptSource = ScriptSource(name: script.name, key: key, text: source,
                                         timeout: script.timeout.map(TimeInterval.init),
                                         sourceURL: script.scriptURL,
-                                        argument: AdBlockScriptFace.arguments(for: script,
+                                        argument: AdBlockScriptFace.argument(for: script,
                                                                             choices: AdBlockScriptSettings.choices()))
         return AdBlockCronTask(script: scriptSource, module: module,
                                identity: AdBlockScriptFace.identity(for: format),

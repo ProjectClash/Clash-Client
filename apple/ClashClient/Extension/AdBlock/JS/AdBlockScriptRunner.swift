@@ -118,7 +118,7 @@ final class AdBlockScriptRunner: AdBlockScriptRunning {
             text: text,
             timeout: match.script.timeout.map(TimeInterval.init),
             sourceURL: match.script.scriptURL,
-            argument: arguments(for: match.script),
+            argument: argument(for: match.script),
             binaryBody: match.script.binaryBodyMode)
 
         let requestBody = match.script.requiresBody ? request.body : nil
@@ -149,8 +149,8 @@ final class AdBlockScriptRunner: AdBlockScriptRunning {
     /// A declaration with no default and no user choice is left out rather than
     /// given an empty string, because scripts test `typeof $argument.x`, and a
     /// boolean declaration must arrive as a boolean.
-    private func arguments(for script: AdBlockScript) -> [String: ScriptArgumentValue] {
-        AdBlockScriptFace.arguments(for: script, choices: readChoices())
+    private func argument(for script: AdBlockScript) -> [String: ScriptArgumentValue] {
+        AdBlockScriptFace.argument(for: script, choices: readChoices())
     }
 
     // MARK: - Reading

@@ -23,23 +23,36 @@ enum AdBlockScriptFace {
         return ScriptIdentity(platform: platform, device: device, systemVersion: systemVersion)
     }
 
-    /// The `$argument` tree, with the user's choices over the module's defaults.
+    /// The `$argument` the script receives, in the form the plugin wrote it.
     ///
-    /// A declaration with no default and no user choice is left out rather than
-    /// given an empty string, because scripts test `typeof $argument.x`, and a
-    /// boolean declaration must arrive as a boolean.
-    static func arguments(for script: AdBlockScript, choices: [String: String]) -> [String: ScriptArgumentValue] {
-        var out: [String: ScriptArgumentValue] = [:]
-        for argument in script.argumentDefaults ?? [] {
-            guard let value = choices[key(script: script, name: argument.name)] ?? argument.defaultValue else { continue }
-            out[argument.name] = ScriptArgumentValue(value, kind: argument.kind)
+    /// Loon's script syntax takes an optional second argument, and what is
+    /// written there is what the script gets: `script("x.js")` gives nothing,
+    /// `script("x.js", "a=1&b=2")` gives that string, and
+    /// `script("x.js", {${region}, ${level}})` gives an object whose values
+    /// keep the types the plugin declared. Scripts read the string with
+    /// `.split('&')` and the object by name, so the form has to be preserved
+    /// rather than normalised.
+    ///
+    /// A declaration with no default and no user choice is left out of the
+    /// object rather than given an empty string, because scripts test
+    /// `typeof $argument.x`.
+    static func argument(for script: AdBlockScript, choices: [String: String]) -> ScriptArgument {
+        if let names = script.argumentNames, !names.isEmpty {
+            var values: [String: ScriptArgumentValue] = [:]
+            for name in names {
+                let declared = script.argumentDefaults?.first { $0.name == name }
+                guard let value = choices[key(script: script, name: name)] ?? declared?.defaultValue else {
+                    // The plugin named the parameter but has no value for it
+                    // yet; Loon passes `null` rather than leaving the key out.
+                    values[name] = .empty
+                    continue
+                }
+                values[name] = ScriptArgumentValue(value, kind: declared?.kind)
+            }
+            return .values(values)
         }
-        // A script may also have been declared with a single `argument=` string;
-        // that string is the whole argument, as on Surge.
-        if out.isEmpty, let single = script.argument, !single.isEmpty {
-            out["argument"] = .text(single)
-        }
-        return out
+        if let single = script.argument, !single.isEmpty { return .text(single) }
+        return .none
     }
 
     /// The key a choice is stored under: the script's address and the argument's

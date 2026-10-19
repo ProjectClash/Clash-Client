@@ -11,7 +11,7 @@ final class JSEngineTests: XCTestCase {
                      binaryBody: Bool = false,
                      request: ScriptRequest = makeRequest(),
                      response: ScriptResponse? = nil,
-                     argument: [String: ScriptArgumentValue] = [:],
+                     argument: ScriptArgument = .none,
                      services: FakeServices = FakeServices(),
                      timeout: TimeInterval = 3,
                      file: StaticString = #filePath, line: UInt = #line,
@@ -146,12 +146,38 @@ final class JSEngineTests: XCTestCase {
         }
     }
 
+    /// Loon's object form: `script("x.js", {${region}, ${level}})` arrives as an
+    /// object whose values keep the types the plugin declared.
     func testArgumentObjectCarriesTypes() {
         run("""
         if ($argument.per_filter_video_thread !== false) { throw new Error('switch default did not arrive as a boolean'); }
         if ($argument.name !== 'x') { throw new Error('text default did not arrive as text'); }
         $done({});
-        """, argument: ["per_filter_video_thread": .boolean(false), "name": .text("x")]) { outcome, _ in
+        """, argument: .values(["per_filter_video_thread": .boolean(false), "name": .text("x")])) { outcome, _ in
+            XCTAssertEqual(outcome, .unchanged)
+        }
+    }
+
+    /// Loon's string form: `script("x.js", "a=1&b=2")` arrives as that string.
+    /// Scripts split it without a type check, so an object here is a throw.
+    func testArgumentStringArrivesAsAString() {
+        run("""
+        if (typeof $argument !== 'string') { throw new Error('expected a string, got ' + typeof $argument); }
+        const pairs = $argument.split('&').map((pair) => pair.split('='));
+        if (pairs[0][0] !== 'a' || pairs[0][1] !== '1') { throw new Error('the string did not split: ' + $argument); }
+        $done({});
+        """, argument: .text("a=1&b=2")) { outcome, _ in
+            XCTAssertEqual(outcome, .unchanged)
+        }
+    }
+
+    /// A `script("x.js")` with no second argument gives a script nothing, and
+    /// scripts test for that.
+    func testArgumentOmittedArrivesAsNull() {
+        run("""
+        if ($argument !== null) { throw new Error('expected null, got ' + JSON.stringify($argument)); }
+        $done({});
+        """, argument: .none) { outcome, _ in
             XCTAssertEqual(outcome, .unchanged)
         }
     }

@@ -29,7 +29,7 @@ final class CompatibilityLibraryTests: XCTestCase {
     }()
 
     private func run(_ script: String, platform: ScriptPlatform,
-                     services: FakeServices, argument: [String: ScriptArgumentValue] = [:],
+                     services: FakeServices, argument: ScriptArgument = .none,
                      timeout: TimeInterval = 5,
                      then check: @escaping @Sendable (ScriptOutcome, FakeServices) -> Void) {
         let runner = ScriptRunner(limits: ScriptRunLimits(defaultTimeout: timeout, grace: 0.5),

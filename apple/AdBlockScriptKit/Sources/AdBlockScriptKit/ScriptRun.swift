@@ -309,11 +309,11 @@ public struct ScriptEnvironment: Sendable {
     public var identity: ScriptIdentity
     public var request: ScriptRequest
     public var response: ScriptResponse?
-    public var argument: [String: ScriptArgumentValue]
+    public var argument: ScriptArgument
     public var scriptName: String
 
     public init(identity: ScriptIdentity, request: ScriptRequest, response: ScriptResponse? = nil,
-                argument: [String: ScriptArgumentValue] = [:], scriptName: String = "") {
+                argument: ScriptArgument = .none, scriptName: String = "") {
         self.identity = identity
         self.request = request
         self.response = response
@@ -336,8 +336,20 @@ public struct ScriptEnvironment: Sendable {
             "request": ScriptEnvironment.encode(request)
         ]
         var args: [String: Any] = [:]
-        for (key, value) in argument { args[key] = value.jsonObject }
-        object["argument"] = args
+        // The host sends the form, not a normalised object: the prelude
+        // installs exactly what the plugin wrote.
+        switch argument {
+        case .none:
+            object["argumentKind"] = "none"
+        case .text(let text):
+            object["argumentKind"] = "text"
+            object["argumentText"] = text
+        case .values(let values):
+            var args: [String: Any] = [:]
+            for (key, value) in values { args[key] = value.jsonObject }
+            object["argumentKind"] = "values"
+            object["argument"] = args
+        }
         if let response { object["response"] = ScriptEnvironment.encode(response) }
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
         return String(decoding: data, as: UTF8.self)

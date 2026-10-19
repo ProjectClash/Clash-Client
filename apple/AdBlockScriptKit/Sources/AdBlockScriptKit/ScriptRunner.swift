@@ -267,14 +267,15 @@ public struct ScriptSource: Equatable, Sendable {
     public var timeout: TimeInterval?
     /// The URL the script was fetched from, for stack traces.
     public var sourceURL: String?
-    /// The module's arguments, with the user's choices already applied.
-    public var argument: [String: ScriptArgumentValue]
+    /// What the script receives as `$argument`, in the form the plugin wrote
+    /// it: a string, an object of its `[Argument]` values, or nothing.
+    public var argument: ScriptArgument
     /// Whether the declaration said `binary-body-mode`, which decides whether
     /// the script sees `Uint8Array` or text.
     public var binaryBody: Bool
 
     public init(name: String, key: String, text: String, timeout: TimeInterval? = nil,
-                sourceURL: String? = nil, argument: [String: ScriptArgumentValue] = [:],
+                sourceURL: String? = nil, argument: ScriptArgument = .none,
                 binaryBody: Bool = false) {
         self.name = name
         self.key = key

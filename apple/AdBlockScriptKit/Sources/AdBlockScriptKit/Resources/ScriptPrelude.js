@@ -83,7 +83,13 @@
   }
 
   function utf8Encode(text) {
-    if (typeof TextEncoder !== 'undefined') { return new TextEncoder().encode(text); }
+    if (typeof TextEncoder !== 'undefined' && !global.__clashTextEncoder) {
+      return new TextEncoder().encode(text);
+    }
+    return utf8EncodeSlow(text);
+  }
+
+  function utf8EncodeSlow(text) {
     var out = [];
     for (var i = 0; i < text.length; i++) {
       var code = text.charCodeAt(i);
@@ -104,9 +110,13 @@
   }
 
   function utf8Decode(bytes) {
-    if (typeof TextDecoder !== 'undefined') {
+    if (typeof TextDecoder !== 'undefined' && !global.__clashTextDecoder) {
       try { return new TextDecoder('utf-8').decode(bytes); } catch (e) { /* fall through */ }
     }
+    return utf8DecodeSlow(bytes);
+  }
+
+  function utf8DecodeSlow(bytes) {
     var out = '';
     for (var i = 0; i < bytes.length;) {
       var byte = bytes[i++];
@@ -173,6 +183,176 @@
       return base64Decode(value.$clashBytes);
     }
     return value;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Standard globals the engine does not have
+  //
+  // JavaScriptCore implements ECMAScript and nothing else: there is no `URL`,
+  // no `URLSearchParams`, no `TextEncoder`/`TextDecoder` and no `atob`/`btoa`.
+  // Rewrite scripts use all of them — `new URL($request.url).pathname` is the
+  // most common line in the whole corpus — so they are provided here rather
+  // than being a surprise at run time. Each is only defined when absent.
+
+  function installStandardGlobals() {
+    if (typeof global.TextEncoder === 'undefined') {
+      global.TextEncoder = function TextEncoder() {};
+      global.TextEncoder.prototype.encode = function (text) { return utf8EncodeSlow(String(text)); };
+      global.__clashTextEncoder = true;
+    }
+    if (typeof global.TextDecoder === 'undefined') {
+      global.TextDecoder = function TextDecoder() {};
+      global.__clashTextDecoder = true;
+      global.TextDecoder.prototype.decode = function (bytes) {
+        return utf8DecodeSlow(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []));
+      };
+    }
+    if (typeof global.btoa === 'undefined') {
+      global.btoa = function (text) { return base64Encode(utf8EncodeSlow(String(text))); };
+    }
+    if (typeof global.atob === 'undefined') {
+      global.atob = function (text) { return utf8DecodeSlow(base64Decode(String(text))); };
+    }
+    if (typeof global.URL !== 'undefined') { return; }
+    // A URL good enough for what scripts ask it: the parts, the search params,
+    // and the ability to rebuild a string. Relative references resolve against
+    // the script's own request URL, which is what a script means by them.
+    function URLClass(input, base) {
+      var text = String(input === undefined ? '' : input);
+      var absolute = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text);
+      if (!absolute && base !== undefined) {
+        text = resolveURL(String(base), text);
+      }
+      var m = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^\/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/.exec(text);
+      this.href = text;
+      this.protocol = m ? m[1] + ':' : '';
+      this.host = m ? m[2] : '';
+      var at = this.host.lastIndexOf('@');
+      this.username = '';
+      this.password = '';
+      var hostPart = this.host;
+      if (at >= 0) {
+        var auth = this.host.slice(0, at).split(':');
+        this.username = auth[0] || '';
+        this.password = auth[1] || '';
+        hostPart = this.host.slice(at + 1);
+      }
+      var colon = hostPart.lastIndexOf(':');
+      var hasPort = colon >= 0 && /^[0-9]*$/.test(hostPart.slice(colon + 1));
+      this.hostname = hasPort ? hostPart.slice(0, colon) : hostPart;
+      this.port = hasPort ? hostPart.slice(colon + 1) : '';
+      this.pathname = m ? (m[3] || '/') : '';
+      this.search = m && m[4] ? m[4] : '';
+      this.hash = m && m[5] ? m[5] : '';
+      this.origin = this.protocol + '//' + this.host;
+      this.searchParams = new URLSearchParamsClass(this.search.replace(/^\?/, ''));
+    }
+    URLClass.prototype.toString = function () { return this.href; };
+    URLClass.prototype.toJSON = function () { return this.href; };
+    global.URL = URLClass;
+
+    function URLSearchParamsClass(init) {
+      var pairs = parsePairs(init);
+      var self = this;
+      function refresh() {
+        self._pairs = pairs;
+        self._text = pairs.map(function (p) {
+          return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]);
+        }).join('&');
+      }
+      this.get = function (name) {
+        for (var i = 0; i < pairs.length; i++) { if (pairs[i][0] === name) { return pairs[i][1]; } }
+        return null;
+      };
+      this.getAll = function (name) {
+        var out = [];
+        for (var i = 0; i < pairs.length; i++) { if (pairs[i][0] === name) { out.push(pairs[i][1]); } }
+        return out;
+      };
+      this.has = function (name) { return self.get(name) !== null; };
+      this.set = function (name, value) {
+        var found = false;
+        for (var i = 0; i < pairs.length; i++) {
+          if (pairs[i][0] === name) { pairs[i][1] = String(value); found = true; break; }
+        }
+        if (!found) { pairs.push([name, String(value)]); }
+        refresh();
+      };
+      this.append = function (name, value) { pairs.push([name, String(value)]); refresh(); };
+      this.delete = function (name) {
+        pairs = pairs.filter(function (p) { return p[0] !== name; });
+        refresh();
+      };
+      this.keys = function () { return pairs.map(function (p) { return p[0]; }); };
+      this.values = function () { return pairs.map(function (p) { return p[1]; }); };
+      this.entries = function () { return pairs.slice(); };
+      this.forEach = function (fn) {
+        for (var i = 0; i < pairs.length; i++) { fn(pairs[i][1], pairs[i][0], self); }
+      };
+      this.toString = function () { return self._text || ''; };
+      refresh();
+    }
+    global.URLSearchParams = URLSearchParamsClass;
+
+    function parsePairs(init) {
+      var out = [];
+      if (init === undefined || init === null || init === '') { return out; }
+      if (typeof init === 'string') {
+        var source = init.replace(/^\?/, '');
+        if (!source) { return out; }
+        source.split('&').forEach(function (item) {
+          if (!item) { return; }
+          var eq = item.indexOf('=');
+          var key = eq < 0 ? item : item.slice(0, eq);
+          var value = eq < 0 ? '' : item.slice(eq + 1);
+          out.push([safeDecode(key), safeDecode(value)]);
+        });
+        return out;
+      }
+      if (typeof init === 'object') {
+        if (Array.isArray(init)) {
+          init.forEach(function (pair) { out.push([String(pair[0]), String(pair[1])]); });
+        } else {
+          for (var key in init) {
+            if (Object.prototype.hasOwnProperty.call(init, key)) { out.push([key, String(init[key])]); }
+          }
+        }
+      }
+      return out;
+    }
+
+    function safeDecode(text) {
+      try { return decodeURIComponent(String(text).replace(/\+/g, ' ')); }
+      catch (e) { return String(text); }
+    }
+
+    function resolveURL(base, reference) {
+      if (reference.charAt(0) === '#') { return base.replace(/#.*$/, '') + reference; }
+      if (reference.charAt(0) === '?') { return base.replace(/[?#].*$/, '') + reference; }
+      var baseMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/]*)([^?#]*)/.exec(base);
+      if (!baseMatch) { return reference; }
+      var path = reference.charAt(0) === '/'
+        ? reference
+        : baseMatch[2].replace(/[^\/]*$/, '') + reference;
+      // Collapse `.` and `..` the way a real resolver does.
+      var parts = path.split('/');
+      var out = [];
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i] === '.') { if (i === parts.length - 1) { out.push(''); } continue; }
+        if (parts[i] === '..') { if (out.length > 1) { out.pop(); } if (i === parts.length - 1) { out.push(''); } continue; }
+        out.push(parts[i]);
+      }
+      return baseMatch[1] + out.join('/');
+    }
+  }
+
+  installStandardGlobals();
+
+  // The three forms a plugin can write, restored as written.
+  function argumentValue(kind, text, values) {
+    if (kind === 'text') { return text === undefined || text === null ? '' : String(text); }
+    if (kind === 'values') { return values || {}; }
+    return null;
   }
 
   // ---------------------------------------------------------------------------
@@ -526,7 +706,13 @@
     global.$request = payload.request;
     global.$response = payload.response;
     global.$done = done;
-    global.$argument = state.argument;
+    // `$argument` is whatever the plugin wrote in its `script(...)` line: a
+    // string (`script("x.js", "a=1&b=2")`), an object of the plugin's own
+    // `[Argument]` values (`script("x.js", {${a}, ${b}})`, values keeping their
+    // declared type), or nothing at all when the second argument is omitted.
+    // Scripts read the string with `.split('&')` and the object by name, and
+    // neither form is safe to substitute for the other.
+    global.$argument = argumentValue(payload.argumentKind, payload.argumentText, state.argument);
 
     if (platform === 'quantumultX') {
       // Quantumult X: $task, $prefs, $notify, $environment.variables.
@@ -681,6 +867,11 @@
       if (payload.request.body !== undefined && payload.request.body !== null) {
         var bytes = unwireBytes(payload.request.body);
         request.body = state.binaryBody ? bytes : utf8Decode(bytes);
+        // Surge, Loon and Stash all expose the raw bytes as `bodyBytes` in
+        // binary-body-mode, and scripts read that rather than `body`. It is
+        // the same bytes; the field is what makes a Protobuf or gRPC script
+        // able to run at all.
+        if (state.binaryBody) { request.bodyBytes = bytes; }
       }
     }
     if (payload.response) {
@@ -696,11 +887,14 @@
       if (payload.response.body !== undefined && payload.response.body !== null) {
         var resBytes = unwireBytes(payload.response.body);
         response.body = state.binaryBody ? resBytes : utf8Decode(resBytes);
+        if (state.binaryBody) { response.bodyBytes = resBytes; }
       }
     }
 
     install({
       platform: payload.platform,
+      argumentKind: payload.argumentKind,
+      argumentText: payload.argumentText,
       version: payload.version,
       device: payload.device,
       systemVersion: payload.systemVersion,
