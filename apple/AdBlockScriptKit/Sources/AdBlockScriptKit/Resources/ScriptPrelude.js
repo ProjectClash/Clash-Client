@@ -352,7 +352,11 @@
   function argumentValue(kind, text, values) {
     if (kind === 'text') { return text === undefined || text === null ? '' : String(text); }
     if (kind === 'values') { return values || {}; }
-    return null;
+    // Reached only if a caller asks for the value of a declaration that has
+    // none. `install` leaves the global off in that case; `undefined` keeps
+    // this helper honest rather than handing back a `null` that passes a
+    // `typeof` guard.
+    return undefined;
   }
 
   // ---------------------------------------------------------------------------
@@ -712,7 +716,16 @@
     // declared type), or nothing at all when the second argument is omitted.
     // Scripts read the string with `.split('&')` and the object by name, and
     // neither form is safe to substitute for the other.
-    global.$argument = argumentValue(payload.argumentKind, payload.argumentText, state.argument);
+    //
+    // A declaration with no argument installs **no** `$argument` rather than a
+    // `null` one. Surge documents the global as "only present if the parameter
+    // is configured", and the scripts rely on that: their guard is
+    // `typeof $argument != 'undefined'`, which a `null` value passes — and then
+    // the very next line calls `.split()` on it. Nine scripts in the hub's own
+    // corpus crash exactly there.
+    if (payload.argumentKind !== 'none') {
+      global.$argument = argumentValue(payload.argumentKind, payload.argumentText, state.argument);
+    }
 
     if (platform === 'quantumultX') {
       // Quantumult X: $task, $prefs, $notify, $environment.variables.

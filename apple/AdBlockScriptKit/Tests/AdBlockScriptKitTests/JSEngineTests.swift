@@ -171,11 +171,37 @@ final class JSEngineTests: XCTestCase {
         }
     }
 
-    /// A `script("x.js")` with no second argument gives a script nothing, and
-    /// scripts test for that.
-    func testArgumentOmittedArrivesAsNull() {
+    /// A `script("x.js")` with no second argument gives a script nothing.
+    ///
+    /// Loon documents the unconfigured value as "可能为 undefined 或 null" and
+    /// Surge as "only present if the parameter is configured", so a script must
+    /// cope with the global being absent, and the guard scripts actually write
+    /// is `typeof $argument != 'undefined'`. Installing a `null` instead makes
+    /// that guard pass and the next line — `$argument.split('&')` — throw;
+    /// nine scripts in the hub's corpus fail exactly there. So the global is
+    /// left off when the declaration has no argument, which satisfies both
+    /// documents and every guard.
+    func testArgumentOmittedIsAbsentRatherThanNull() {
         run("""
-        if ($argument !== null) { throw new Error('expected null, got ' + JSON.stringify($argument)); }
+        if (typeof $argument !== 'undefined') { throw new Error('expected no $argument, got ' + typeof $argument); }
+        $done({});
+        """, argument: .none) { outcome, _ in
+            XCTAssertEqual(outcome, .unchanged)
+        }
+    }
+
+    /// The guard the corpus writes, run against that absent global: the
+    /// `typeof` test takes the false branch and the object stays empty instead
+    /// of the script dying one line later.
+    func testTheCorpusArgumentGuardSurvivesAnOmittedArgument() {
+        run("""
+        let arg
+        if (typeof $argument != 'undefined') {
+          arg = Object.fromEntries($argument.split('&').map((item) => item.split('=')))
+        } else {
+          arg = {}
+        }
+        if (Object.keys(arg).length !== 0) { throw new Error('expected an empty object'); }
         $done({});
         """, argument: .none) { outcome, _ in
             XCTAssertEqual(outcome, .unchanged)
