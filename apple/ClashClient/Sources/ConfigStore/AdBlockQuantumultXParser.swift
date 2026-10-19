@@ -75,8 +75,16 @@ enum AdBlockQuantumultXParser {
                 section = String(line.dropFirst().dropLast()).lowercased()
                 continue
             }
-            let origin = AdBlockLineOrigin(section: section ?? "", line: index + 1)
-            switch section {
+            // A Quantumult X snippet is often published without section
+            // headers at all — `^https://… url 302 https://…` on its own, one
+            // rule per line, which is how it is pasted into `[rewrite_local]`.
+            // `section` is then nil and every line used to fall through the
+            // switch below and disappear without a word. The line's own shape
+            // says what it is: a `url` action is a rewrite, a `hostname =` is
+            // MITM, and everything else is a filter rule.
+            let effective = section ?? inferredSection(for: line)
+            let origin = AdBlockLineOrigin(section: effective, line: index + 1)
+            switch effective {
             case "rewrite_local": rewriteLines.append((origin, line))
             case "task_local": taskLines.append((origin, line))
             case "filter_local": filterRules.append((line, origin))
@@ -294,6 +302,21 @@ enum AdBlockQuantumultXParser {
             return AdBlockHostEntry(excluded: entry.excluded || disabled, pattern: entry.pattern, port: entry.port)
         }
         return AdBlockHostListLine(directive: .replace, entries: entries, origin: origin)
+    }
+
+    /// What a line is when the snippet carries no section headers.
+    ///
+    /// Quantumult X snippets are pasted one rule per line under the section
+    /// they belong to, and the hub publishes them that way. Three shapes cover
+    /// the corpus: `<pattern> url <action>` is a rewrite, `hostname = …` is
+    /// MITM, and anything else — `DOMAIN-SUFFIX,x,REJECT`, `IP-CIDR,…` — is a
+    /// filter rule.
+    private static func inferredSection(for line: String) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.lowercased().hasPrefix("hostname") { return "mitm" }
+        let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+        if parts.count >= 2, parts[1].lowercased() == "url" { return "rewrite_local" }
+        return "filter_local"
     }
 
     private static func stripComment(_ raw: String) -> String {
