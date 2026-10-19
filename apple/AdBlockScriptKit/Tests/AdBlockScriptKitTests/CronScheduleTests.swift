@@ -62,6 +62,34 @@ final class CronScheduleTests: XCTestCase {
         }
     }
 
+    /// Loon's argument defaults ship Quartz schedules — `0 0/2 * * * ?` — and
+    /// reading one as five fields shifts every field by one, which would run
+    /// the task in the wrong hour for the rest of its life.
+    ///
+    /// Quartz puts seconds first: `0 0/2 * * * ?` is seconds 0 and minutes
+    /// 0,2,4…; `0 0 */2 * * ?` is the every-two-hours shape.
+    func testQuartzSixFields() throws {
+        let everyTwoHours = try XCTUnwrap(AdBlockCronSchedule.parse("0 0 */2 * * ?"))
+        XCTAssertTrue(everyTwoHours.matches(date(2026, 10, 19, 10, 0), calendar: calendar))
+        XCTAssertTrue(everyTwoHours.matches(date(2026, 10, 19, 0, 0), calendar: calendar))
+        XCTAssertFalse(everyTwoHours.matches(date(2026, 10, 19, 11, 0), calendar: calendar))
+        XCTAssertFalse(everyTwoHours.matches(date(2026, 10, 19, 10, 1), calendar: calendar))
+
+        let everyTwoMinutes = try XCTUnwrap(AdBlockCronSchedule.parse("0 0/2 * * * ?"))
+        XCTAssertTrue(everyTwoMinutes.matches(date(2026, 10, 19, 13, 4), calendar: calendar))
+        XCTAssertFalse(everyTwoMinutes.matches(date(2026, 10, 19, 13, 5), calendar: calendar))
+
+        // `0 * * * * ?` is every minute at second zero, which is what the
+        // TestFlight monitor asks for.
+        let everyMinute = try XCTUnwrap(AdBlockCronSchedule.parse("0 * * * * ?"))
+        XCTAssertTrue(everyMinute.matches(date(2026, 10, 19, 13, 30), calendar: calendar))
+
+        // Seconds that are not zero cannot be honoured at minute granularity.
+        XCTAssertNil(AdBlockCronSchedule.parse("30 0 * * * ?"))
+        // A pinned year would need a rule this scheduler does not keep.
+        XCTAssertNil(AdBlockCronSchedule.parse("0 0 10 * * ? 2027"))
+    }
+
     func testQuotedAndKeywordForms() throws {
         XCTAssertNotNil(AdBlockCronSchedule.parse("cron \"0 10 * * *\""))
         XCTAssertNotNil(AdBlockCronSchedule.parse("0 10 * * * "))

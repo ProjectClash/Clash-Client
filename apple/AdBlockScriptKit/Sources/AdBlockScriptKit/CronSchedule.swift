@@ -60,6 +60,23 @@ public enum AdBlockCronSchedule {
         words = words.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) }.filter { !$0.isEmpty }
         // A leading `cron` keyword is part of Loon's condition, not a field.
         if let first = words.first, first.lowercased() == "cron" { words.removeFirst() }
+        // Quartz writes six fields — seconds first, year last — and spells "no
+        // particular value" as `?`. Loon's argument defaults use it (`0 0/2 * *
+        // * ?`), so both are read rather than refused.
+        if words.count == 6 || words.count == 7 {
+            // The first field is seconds. A schedule whose seconds are not 0
+            // cannot be expressed at minute granularity, so it is refused
+            // instead of silently running at the wrong second.
+            guard let seconds = Int(words[0]), seconds == 0 else { return nil }
+            words.removeFirst()
+            // A seventh field is the year. Pinning one would need a calendar
+            // rule this scheduler does not keep, so it is refused rather than
+            // run in the wrong year.
+            if words.count == 6 {
+                guard Int(words[5]) == nil else { return nil }
+                words.removeLast()
+            }
+        }
         guard words.count == 5 else { return nil }
         guard let minutes = field(words[0], range: 0...59),
               let hours = field(words[1], range: 0...23),
@@ -73,7 +90,9 @@ public enum AdBlockCronSchedule {
     /// comma-separated list of any of them.
     public static func field(_ text: String, range: ClosedRange<Int>) -> Field? {
         guard !text.isEmpty else { return nil }
-        if text == "*" { return Field(values: Set(range), isWildcard: true) }
+        // `?` is Quartz's "no particular value", which for a day field means
+        // the same thing `*` means here.
+        if text == "*" || text == "?" { return Field(values: Set(range), isWildcard: true) }
         var values: Set<Int> = []
         for part in text.split(separator: ",") {
             guard let parsed = Self.piece(part, range: range) else { return nil }
@@ -115,7 +134,11 @@ public enum AdBlockCronSchedule {
             bounds = low...high
         } else {
             guard let value = Int(body), range.contains(value) else { return nil }
-            bounds = value...value
+            // `0/2` means "from 0, every 2, to the end of the field" — the step
+            // widens a bare number to the field's upper bound, which is how
+            // Quartz writes every-two-minutes and every-two-hours. A bare
+            // number without a step is just that number.
+            bounds = step > 1 ? value...range.upperBound : value...value
         }
         // `5/10` means "5 and every 10 after", which is legal crontab, so a
         // step always applies from the lower bound.

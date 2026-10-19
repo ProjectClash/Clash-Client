@@ -100,8 +100,11 @@ enum AdBlockModuleParser {
             name: nil, desc: nil, author: nil, icon: nil, system: [], arguments: [], format: .surge,
             sourceURL: sourceURL, fetchedAt: fetchedAt, contentSHA256: AdBlockJSON.sha256(data))
         if isQuantumultX(text, sourceURL: sourceURL) {
+            // The reader reports a file it cannot read as an ignored module the
+            // user can see, rather than throwing; only a line inside it is
+            // reported per-line.
             return try AdBlockQuantumultXParser.parse(text, manifest: manifest, sourceURL: sourceURL,
-                                                       platform: platform, environment: environment,
+                                                       platform: platform,
                                                        check: check).map(bounded)
         }
         if isStash(text, sourceURL: sourceURL) {
@@ -1079,13 +1082,15 @@ enum AdBlockModuleParser {
         if loon { manifest.format = .loon }
         ir.manifest = manifest
         // A script carries the defaults of the arguments it asked for, so the
-        // tunnel can build `$argument` without re-reading the module.
-        let defaults = Dictionary(manifest.arguments.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        // tunnel can build `$argument` without re-reading the module. The
+        // declared kind is what decides whether a value is a boolean, a number
+        // or text, so the whole declaration is kept, not just its default.
+        let declared = Dictionary(manifest.arguments.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         for index in ir.scripts.indices {
             guard let names = ir.scripts[index].argumentNames, !names.isEmpty else { continue }
             ir.scripts[index].argumentDefaults = names.map { name in
-                AdBlockScriptArgument(name: name, kind: defaults[name]?.declaredKind,
-                                      defaultValue: defaults[name]?.defaultValue)
+                AdBlockScriptArgument(name: name, kind: declared[name]?.declaredKind,
+                                      defaultValue: declared[name]?.defaultValue)
             }
         }
         return .success(ir)

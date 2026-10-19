@@ -50,9 +50,11 @@ enum AdBlockQuantumultXParser {
     /// The actions that send the request somewhere else.
     private static let redirectActions: Set<String> = ["302", "307"]
 
-    static func parse(_ text: String, manifest: AdBlockModuleManifest, sourceURL: String?,
-                      platform: AdBlockPlatform, environment: [String: String],
-                      check: AdBlockRuleMapping.Check? = nil) throws -> AdBlockModuleIR {
+    static func parse(_ text: String, manifest base: AdBlockModuleManifest, sourceURL: String?,
+                      platform: AdBlockPlatform,
+                      check: AdBlockRuleMapping.Check = AdBlockRuleMapping.kernelCheck) throws -> Result<AdBlockModuleIR, AdBlockModuleRefusal> {
+        var manifest = base
+        manifest.format = .quantumultX
         var ir = AdBlockModuleIR.empty(manifest)
         var section: String?
         var hostLines: [AdBlockHostListLine] = []
@@ -63,6 +65,12 @@ enum AdBlockQuantumultXParser {
         for (index, raw) in text.split(separator: "\n").enumerated() {
             let line = stripComment(raw)
             if line.isEmpty { continue }
+            // `#!name=…` and friends are the module's metadata, as they are for
+            // Loon's `.lpx`; a Quantumult X snippet's comments are `;` or `#`.
+            if line.hasPrefix("#!") {
+                readHeader(line, into: &manifest, output: &ir, line: index + 1)
+                continue
+            }
             if line.hasPrefix("["), line.hasSuffix("]") {
                 section = String(line.dropFirst().dropLast()).lowercased()
                 continue
@@ -78,16 +86,10 @@ enum AdBlockQuantumultXParser {
         }
 
         ir.mitmHostLines = hostLines
-        // `[filter_local]` lines are rules like `[Rule]`'s. They are read with
-        // the kernel check when one is given, which is what a module being
-        // installed for the running kernel wants.
         // `[filter_local]` lines are rules like `[Rule]`'s, so they go through
-        // the same reader. A check is only given when the module is being
-        // installed for a kernel that can be asked; without one the reader
-        // accepts the line and the engine decides at run time.
+        // the same reader, with the kernel check the installer asked for.
         AdBlockRuleSetSyntax.takeSection("filter_local", lines: filterRules, family: .quantumultX,
-                                         platform: platform, check: check ?? AdBlockRuleMapping.kernelCheck,
-                                         into: &ir)
+                                         platform: platform, check: check, into: &ir)
 
         for (origin, line) in rewriteLines {
             switch rewrite(line, origin: origin, manifest: manifest) {
@@ -102,7 +104,38 @@ enum AdBlockQuantumultXParser {
             case .failure(let reason): ir.ignored.append(AdBlockIgnoredEntry(text: line, reason: reason, origin: origin))
             }
         }
-        return ir
+        // A script carries the defaults of the arguments it asked for, so the
+        // tunnel can build `$argument` without re-reading the module; this is
+        // the same pass the Surge/Loon reader runs.
+        let declared = Dictionary(manifest.arguments.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        for index in ir.scripts.indices {
+            let names = ir.scripts[index].argumentNames ?? []
+            guard !names.isEmpty else { continue }
+            ir.scripts[index].argumentDefaults = names.map { name in
+                AdBlockScriptArgument(name: name, kind: declared[name]?.declaredKind,
+                                      defaultValue: declared[name]?.defaultValue)
+            }
+        }
+        ir.manifest = manifest
+        return .success(ir)
+    }
+
+    /// The `#!key=value` header a module carries: its name, description, icon
+    /// and the arguments it declares. The keys the other readers accept are the
+    /// ones read here, so a module converted between formats keeps its metadata.
+    private static func readHeader(_ line: String, into manifest: inout AdBlockModuleManifest,
+                                   output ir: inout AdBlockModuleIR, line number: Int) {
+        guard let equals = line.firstIndex(of: "=") else { return }
+        let key = line[line.index(line.startIndex, offsetBy: 2)..<equals].trimmingCharacters(in: .whitespaces).lowercased()
+        let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return }
+        switch key {
+        case "name": manifest.name = value
+        case "desc", "description": manifest.desc = value
+        case "author": manifest.author = value
+        case "icon": manifest.icon = value
+        default: break
+        }
     }
 
     // MARK: - Rewrite lines
