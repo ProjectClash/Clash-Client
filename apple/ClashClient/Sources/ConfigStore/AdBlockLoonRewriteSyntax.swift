@@ -1551,16 +1551,27 @@ private extension AdBlockLoonRewriteSyntax.Reader {
      
     mutating func script(origin: AdBlockLineOrigin) throws -> AdBlockScript {
         self.origin = origin
-        guard case .word(let phaseWord)? = next(), case .word(let ifWord)? = next(), ifWord.lowercased() == "if" else {
-            throw AdBlockIgnoredReason.unreadableLine
-        }
+        guard case .word(let phaseWord)? = next() else { throw AdBlockIgnoredReason.unreadableLine }
         switch phaseWord.lowercased() {
         case "request": phase = .request
         case "response": phase = .response
         case "cron", "generic": phase = phaseWord.lowercased() == "cron" ? .cron : .generic
         default: throw AdBlockIgnoredReason.unreadableLine
         }
-        let expression = try or()
+        // `request if <condition> then script(…)` is the HTTP shape. A
+        // scheduled script has no condition to test — Loon writes
+        // `cron ${TaskCron} then script(…)`, with the schedule where the
+        // condition would be — so the `if` is optional for those phases and
+        // what follows is read as the schedule itself.
+        var scheduleOperand: AdBlockLoonRewriteSyntax.Operand?
+        if case .word(let ifWord)? = peek(), ifWord.lowercased() == "if" {
+            _ = next()
+        } else if phase == .cron || phase == .generic {
+            scheduleOperand = try operand()
+        } else {
+            throw AdBlockIgnoredReason.unreadableLine
+        }
+        let expression = scheduleOperand == nil ? try or() : .and([])
         guard case .word(let thenWord)? = next(), thenWord.lowercased() == "then", next() == .word("script") else {
             throw AdBlockIgnoredReason.unreadableLine
         }
@@ -1612,7 +1623,20 @@ private extension AdBlockLoonRewriteSyntax.Reader {
         // A cron rule's expression is its schedule, and the schedule is what
         // the scheduler needs; a generic rule's expression is its trigger. The
         // pattern an HTTP rule carries is not meaningful for either.
-        let schedule = phase == .cron ? Self.cronText(of: condition) : nil
+        // A schedule written without an `if` may be a `${Argument}` whose value
+        // is the crontab line, so it goes through the reader's own substitution
+        // rather than being taken literally.
+        var schedule: String?
+        if phase == .cron {
+            if let scheduleOperand {
+                // A schedule is fixed text: a placeholder that has a declared
+                // value is substituted, and one that does not is the reader's
+                // `.missingArgument`.
+                schedule = try fixedText(scheduleOperand)
+            } else {
+                schedule = Self.cronText(of: condition)
+            }
+        }
         let pattern = gate.isEmpty ? (schedule ?? "^") : AdBlockLoonRewriteSyntax.unescapingSlashes(gate)
         // An HTTP rule's pattern has to be a URL; a schedule does not, so it is
         // not held to that check.
