@@ -14,6 +14,14 @@ enum ClientUserAgent {
         case clash
         case flclash
         case clashVerge
+        // The platforms whose names the script hubs filter on. A hub that
+        // serves modules tends to serve them only to the app that can run them,
+        // so a request that means to fetch one has to look like that app.
+        case loon
+        case surge
+        case quantumultX
+        case stash
+        case shadowrocket
 
         var id: String { rawValue }
 
@@ -22,6 +30,11 @@ enum ClientUserAgent {
             case .clash: return "Clash (Default)"
             case .flclash: return "FlClash"
             case .clashVerge: return "Clash Verge"
+            case .loon: return "Loon"
+            case .surge: return "Surge"
+            case .quantumultX: return "Quantumult X"
+            case .stash: return "Stash"
+            case .shadowrocket: return "Shadowrocket"
             }
         }
 
@@ -46,11 +59,40 @@ enum ClientUserAgent {
             case .clashVerge:
                  
                 return "clash-verge/v2.4.2"
+            // These are the versions the hubs themselves see in the wild; a
+            // number far from them is as conspicuous as a wrong name.
+            case .loon: return "Loon/868 CFNetwork/1494.0.7 Darwin/23.4.0"
+            case .surge: return "Surge/5.10.0 CFNetwork/1494.0.7 Darwin/23.4.0"
+            case .quantumultX: return "Quantumult%20X/1.4.1 CFNetwork/1494.0.7 Darwin/23.4.0"
+            case .stash: return "Stash/2.5.0 CFNetwork/1494.0.7 Darwin/23.4.0"
+            case .shadowrocket: return "Shadowrocket/2.2.60 CFNetwork/1494.0.7 Darwin/23.4.0"
             }
         }
     }
 
     static let presetKey = "ua.preset"
+
+    /// A User-Agent chosen for module downloads alone.
+    ///
+    /// It is separate from `presetKey` because the two answer different
+    /// questions. `presetKey` is what this app calls itself when it fetches a
+    /// subscription — a hub that serves subscriptions recognises it. A module
+    /// hub usually serves one platform only and refuses the rest, so what a
+    /// module download should present is that platform, and a user who knows
+    /// which one should not have to change what their subscriptions announce.
+    static let modulePresetKey = "ua.modulePreset"
+
+    /// The user's override for module downloads, or `nil` when the module's own
+    /// dialect and address are left to decide.
+    static func moduleOverride(from d: UserDefaults = appGroupDefaults) -> Preset? {
+        guard let stored = d.string(forKey: modulePresetKey), !stored.isEmpty else { return nil }
+        return Preset(rawValue: stored)
+    }
+
+    static func saveModuleOverride(_ preset: Preset?, in d: UserDefaults = appGroupDefaults) {
+        guard let preset else { return d.removeObject(forKey: modulePresetKey) }
+        d.set(preset.rawValue, forKey: modulePresetKey)
+    }
     private static let maximumBytes = 512
 
     static var appGroupDefaults: UserDefaults {

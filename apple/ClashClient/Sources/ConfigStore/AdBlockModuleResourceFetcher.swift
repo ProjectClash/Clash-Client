@@ -9,9 +9,6 @@ extension AdBlockSentence: Error {}
  
  
  
-enum AdBlockModuleUserAgent {
-    static var value: String { ClientUserAgent.Preset.clash.value }
-}
 
  
  

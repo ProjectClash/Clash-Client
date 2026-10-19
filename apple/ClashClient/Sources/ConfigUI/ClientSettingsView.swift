@@ -74,6 +74,7 @@ struct ClientSettingsView: View {
     @State private var autoClose = NodeSwitchSettings.autoCloseOnSwitch()
     @State private var udpFallback = UDPFallbackSettings.policy()
     @State private var userAgentPreset = ClientUserAgent.preset()
+    @State private var moduleUserAgent = ClientUserAgent.moduleOverride()
      
      
      
@@ -197,6 +198,24 @@ struct ClientSettingsView: View {
                  
                  
                 Text("The app sends this when it downloads a Profile URL. Downloads the core makes for a configuration use that configuration’s Download User-Agent. Clash is recommended; FlClash is a compatibility fallback for panels that negotiate by client name.")
+            }
+
+
+            Section {
+                Picker("Module Downloads", selection: $moduleUserAgent) {
+                    Text(clash: .copy("Match the module’s platform")).tag(ClientUserAgent.Preset?.none)
+                    ForEach(ClientUserAgent.Preset.allCases) { preset in
+                        Text(clash: .copy(preset.label)).tag(ClientUserAgent.Preset?.some(preset))
+                    }
+                }
+                .onChange(of: moduleUserAgent) {
+                    ClientUserAgent.saveModuleOverride($0)
+                }
+                .accessibilityIdentifier("client.module-user-agent")
+            } header: {
+                Text("Module Download Identity")
+            } footer: {
+                Text("A module hub usually serves one platform only, so a module is fetched with the platform it belongs to — a Loon plugin with Loon’s name, a Surge module with Surge’s. Choose one here only if a hub asks for something else.")
             }
 
             if let externalController {

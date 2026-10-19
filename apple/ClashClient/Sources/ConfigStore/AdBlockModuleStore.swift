@@ -1258,7 +1258,8 @@ actor AdBlockModuleStore {
      
      
     func download(_ url: URL, maxBytes: Int, etag: String?, lastModified: String?, headers: [String: String] = [:],
-                  redirects: DownloadRedirectPolicy = .followAcrossOrigins(maxHops: 5)) async throws -> DownloadResult {
+                  redirects: DownloadRedirectPolicy = .followAcrossOrigins(maxHops: 5),
+                  format: AdBlockModuleFormat? = nil) async throws -> DownloadResult {
         var request = URLRequest(url: url)
          
          
@@ -1267,26 +1268,64 @@ actor AdBlockModuleStore {
          
          
          
-        request.setValue(AdBlockModuleUserAgent.value, forHTTPHeaderField: "User-Agent")
-        if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
-        if let lastModified { request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since") }
-        do {
-            return try await fetcher.fetch(request, maxBytes: maxBytes, redirectPolicy: redirects)
-        } catch where Self.isUnverifiedServer(error) {
-            log("ad-block download from \(url.absoluteString) refused: the server could not be verified (\(error.localizedDescription))")
-            throw AdBlockModuleStoreError.serverNotVerified
+        // A hub usually serves one platform only, so the download presents the
+        // platform this module belongs to, falling through to the others when
+        // the address named no type. See `AdBlockModuleUserAgent`.
+        let candidates = AdBlockModuleUserAgent.candidates(for: url, format: format)
+        var lastError: Error?
+        for (index, preset) in candidates.enumerated() {
+            request.setValue(preset.value, forHTTPHeaderField: "User-Agent")
+            if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+            if let lastModified { request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since") }
+            do {
+                return try await fetcher.fetch(request, maxBytes: maxBytes, redirectPolicy: redirects)
+            } catch where Self.isUnverifiedServer(error) {
+                log("ad-block download from \(url.absoluteString) refused: the server could not be verified (\(error.localizedDescription))")
+                throw AdBlockModuleStoreError.serverNotVerified
+            } catch {
+                lastError = error
+                // Only a refusal is worth another platform's name; a timeout or
+                // a network error would repeat for every candidate.
+                guard Self.isRefusal(error), index < candidates.count - 1 else { break }
+                log("ad-block download from \(url.absoluteString) refused for \(preset.value): trying another platform")
+            }
         }
+        throw lastError ?? DownloadError.badStatus(0)
+    }
+
+    /// Whether an error is the server turning the request away — a status a hub
+    /// uses for "wrong app", which another User-Agent may answer.
+    private static func isRefusal(_ error: Error) -> Bool {
+        guard case DownloadError.badStatus(let status) = error else { return false }
+        return status == 403 || status == 404 || status == 451 || (300...399).contains(status)
     }
 
      
      
      
-    func downloadModule(_ url: URL) async throws -> Data {
+    /// Fetches a module, presenting the platform it belongs to.
+    ///
+    /// `format` is the dialect the module was last read as, which is the
+    /// certain answer to "which app is this for"; a first fetch has none and
+    /// the address's extension is used instead. See `AdBlockModuleUserAgent`.
+    func downloadModule(_ url: URL, format: AdBlockModuleFormat? = nil) async throws -> Data {
         do {
-            return try await download(url, maxBytes: AdBlockModuleParser.maximumBytes)
+            return try await download(url, maxBytes: AdBlockModuleParser.maximumBytes, format: format)
         } catch DownloadError.tooLarge(let observed) {
             throw AdBlockModuleRefusal.tooLarge(observed)
         }
+    }
+
+    /// The dialect a module was last published as, read from what the store
+    /// already wrote for the tunnel. A module that has never been read has
+    /// none, which is what a first fetch is.
+    func publishedFormat(of id: String) -> AdBlockModuleFormat? {
+        struct Published: Decodable {
+            struct Manifest: Decodable { var format: AdBlockModuleFormat }
+            var manifest: Manifest?
+        }
+        guard let data = try? Data(contentsOf: locations.moduleManifest(id)) else { return nil }
+        return (try? JSONDecoder().decode(Published.self, from: data))?.manifest?.format
     }
 
     private func drawPorts(avoiding taken: Set<UInt16>) -> AdBlockPorts {
@@ -1786,11 +1825,15 @@ actor AdBlockModuleStore {
         }
         let passTime = passTime ?? now()
         let log = self.log
+        // A module's scripts live beside the module, so they are served to the
+        // same app: the dialect the module was read as decides the User-Agent
+        // for them too.
+        let dialect = ir.manifest.format
         let fetcher = AdBlockModuleResourceFetcher(
             locations: locations,
             download: { [unowned self] url, limit, etag, lastModified, headers in
                 try await self.download(url, maxBytes: limit, etag: etag, lastModified: lastModified, headers: headers,
-                                        redirects: .followWithinAModulesReach(maxHops: 5))
+                                        redirects: .followWithinAModulesReach(maxHops: 5), format: dialect)
             },
             isOutOfTime: { [unowned self] error in await self.isOutOfTime(error) },
             write: { [unowned self] data, url in try await self.write(data, to: url) },
@@ -2800,7 +2843,7 @@ extension AdBlockModuleStore {
         do {
             let data: Data
             if let link, refetchModule {
-                data = try await downloadModule(try Self.address(link))
+                data = try await downloadModule(try Self.address(link), format: publishedFormat(of: id))
             } else {
                 do {
                     data = try Data(contentsOf: locations.source(id))
