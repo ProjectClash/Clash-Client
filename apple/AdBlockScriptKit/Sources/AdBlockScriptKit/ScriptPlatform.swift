@@ -71,7 +71,7 @@ public enum ScriptPhase: String, Codable, Sendable {
 }
 
 /// The identity a run presents. Built by the host, read by the prelude.
-public struct ScriptIdentity: Sendable {
+public struct ScriptIdentity: Equatable, Sendable {
     public var platform: ScriptPlatform
     /// The version string the platform's globals carry, e.g. `3.2.0(1000)`.
     public var version: String

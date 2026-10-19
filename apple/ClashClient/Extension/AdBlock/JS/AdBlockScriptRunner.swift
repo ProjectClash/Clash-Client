@@ -137,41 +137,12 @@ final class AdBlockScriptRunner: AdBlockScriptRunning {
         // The exchange wraps the completion in a call that hops to the engine
         // queue itself, so answering from this thread is what it expects.
         runner.run(script: source, request: origin, response: originResponse,
-                   identity: identity(for: match)) { [weak self] outcome in
+                   identity: AdBlockScriptFace.identity(for: match.moduleFormat)) { [weak self] outcome in
             guard let self else { return }
             completion(self.translate(outcome))
         }
     }
 
-    /// The platform a script believes it is on.
-    ///
-    /// The module's dialect is the evidence: a `.lpx` plugin's scripts were
-    /// written for Loon, a `.sgmodule`'s for Surge, a Stash override's for
-    /// Stash, and a Quantumult X rewrite for Quantumult X. A script that was
-    /// published by one platform and written against another's API is common,
-    /// and this is what those scripts assume.
-    private func identity(for match: AdBlockScriptMatch) -> ScriptIdentity {
-        let platform = ScriptPlatform(moduleFormat: match.moduleFormat.rawValue) ?? .loon
-        return ScriptIdentity(platform: platform, device: Self.device, systemVersion: Self.systemVersion)
-    }
-
-    /// The system version as a script expects it: `18.0`, not
-    /// `Version 18.0 (Build 22A3354)`. `$loon` is split on spaces by the
-    /// libraries that read it, so a version with spaces in it would be read as
-    /// a build number.
-    private static var systemVersion: String {
-        let text = ProcessInfo.processInfo.operatingSystemVersionString
-        guard let range = text.range(of: #"\d+(\.\d+)*"#, options: .regularExpression) else { return "18.0" }
-        return String(text[range])
-    }
-
-    private static var device: String {
-#if os(macOS)
-        return "Mac"
-#else
-        return "iPhone"
-#endif
-    }
 
     /// `$argument`: the module's defaults, with the user's choices applied.
     ///
@@ -179,22 +150,7 @@ final class AdBlockScriptRunner: AdBlockScriptRunning {
     /// given an empty string, because scripts test `typeof $argument.x`, and a
     /// boolean declaration must arrive as a boolean.
     private func arguments(for script: AdBlockScript) -> [String: ScriptArgumentValue] {
-        var out: [String: ScriptArgumentValue] = [:]
-        for argument in script.argumentDefaults ?? [] {
-            let chosen = readChoices()[argumentKey(script: script, name: argument.name)]
-            guard let value = chosen ?? argument.defaultValue else { continue }
-            out[argument.name] = ScriptArgumentValue(value, kind: argument.kind)
-        }
-        // A script may also have been declared with a single `argument=` string;
-        // that string is the whole argument, as on Surge.
-        if out.isEmpty, let single = script.argument, !single.isEmpty {
-            out["argument"] = .text(single)
-        }
-        return out
-    }
-
-    private func argumentKey(script: AdBlockScript, name: String) -> String {
-        "\(script.scriptURL)#\(name)"
+        AdBlockScriptFace.arguments(for: script, choices: readChoices())
     }
 
     // MARK: - Reading

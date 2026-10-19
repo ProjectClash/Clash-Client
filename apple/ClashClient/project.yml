@@ -214,6 +214,9 @@ targets:
     - path: Sources/ConfigStore/AdBlockCertificateIssuing.swift
     - path: Sources/ConfigStore/AdBlockJQ
     - path: Sources/ConfigStore/AdBlockQuantumultXParser.swift
+    - path: Sources/ConfigStore/AdBlockScriptFace.swift
+    - path: Sources/ConfigStore/ScriptStore.swift
+    - path: Sources/ConfigStore/AdBlockScriptSettings.swift
     - Shared
     - path: ../ClashClientUI/Sources/ClashClientUI/Features/Widgets/ClashWidgetSnapshot.swift
       group: Shared

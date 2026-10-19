@@ -1609,8 +1609,16 @@ private extension AdBlockLoonRewriteSyntax.Reader {
         let gate = phase == .cron || phase == .generic ? "" : Self.scriptGate(of: condition)
          
          
-        let pattern = gate.isEmpty ? "^" : AdBlockLoonRewriteSyntax.unescapingSlashes(gate)
-        guard AdBlockLineSyntax.isValidPattern(pattern) else { throw AdBlockIgnoredReason.invalidPattern }
+        // A cron rule's expression is its schedule, and the schedule is what
+        // the scheduler needs; a generic rule's expression is its trigger. The
+        // pattern an HTTP rule carries is not meaningful for either.
+        let schedule = phase == .cron ? Self.cronText(of: condition) : nil
+        let pattern = gate.isEmpty ? (schedule ?? "^") : AdBlockLoonRewriteSyntax.unescapingSlashes(gate)
+        // An HTTP rule's pattern has to be a URL; a schedule does not, so it is
+        // not held to that check.
+        if phase != .cron && phase != .generic {
+            guard AdBlockLineSyntax.isValidPattern(pattern) else { throw AdBlockIgnoredReason.invalidPattern }
+        }
         let requiresBody = try flag(options["requires_body"], settings: false, otherwise: false)
         let binaryBodyMode = try flag(options["binary_body_mode"], settings: false, otherwise: false)
         _ = try flag(options["debug"], settings: true, otherwise: false)
@@ -1653,7 +1661,35 @@ private extension AdBlockLoonRewriteSyntax.Reader {
         return AdBlockScript(name: name, phase: phase, pattern: pattern, scriptURL: address, requiresBody: requiresBody,
                              binaryBodyMode: binaryBodyMode, maxSize: nil, timeout: timeout, argument: argument,
                              updateInterval: AdBlockLineSyntax.defaultScriptUpdateInterval, bodySHA256: nil, origin: origin,
-                             condition: asked, argumentNames: argumentNames, imageURL: imageURL.flatMap { $0.isEmpty ? nil : $0 })
+                             condition: asked, argumentNames: argumentNames, imageURL: imageURL.flatMap { $0.isEmpty ? nil : $0 },
+                             cronFields: schedule.map { [$0] })
+    }
+
+    /// The text of a `cron "0 10 * * *"` condition. Loon writes the schedule as
+    /// a string operand, so the expression is walked for the first string or
+    /// raw operand, which is the schedule itself.
+    static func cronText(of condition: AdBlockCondition) -> String? {
+        func operandText(_ operand: AdBlockLoonRewriteSyntax.Operand) -> String? {
+            switch operand {
+            case .string(let text), .raw(let text): return text
+            case .number(let value): return value == value.rounded() ? String(Int(value)) : String(value)
+            default: return nil
+            }
+        }
+        func walk(_ condition: AdBlockCondition) -> String? {
+            switch condition {
+            case .all(let parts), .any(let parts):
+                for part in parts { if let found = walk(part) { return found } }
+                return nil
+            case .match(_, _, let value, _):
+                switch value {
+                case .string(let text), .regex(let text): return text
+                case .number(let value): return value == value.rounded() ? String(Int(value)) : String(value)
+                case .null: return nil
+                }
+            }
+        }
+        return walk(condition)
     }
 
     static func captures(_ expression: AdBlockLoonRewriteSyntax.Expression) -> Bool {

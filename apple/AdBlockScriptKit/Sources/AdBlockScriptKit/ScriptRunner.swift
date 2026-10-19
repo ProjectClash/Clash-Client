@@ -116,6 +116,15 @@ public final class ScriptRunner: @unchecked Sendable {
         }
     }
 
+    /// A scheduled run, which has no traffic behind it: a cron or generic script
+    /// gets a request-shaped context with the platform's own placeholder so
+    /// scripts that read `$request.url` at the top do not throw.
+    public func runScheduled(script: ScriptSource, identity: ScriptIdentity,
+                             completion: @escaping @Sendable (ScriptOutcome) -> Void) {
+        let placeholder = ScriptRequest(method: "GET", url: "https://clash.invalid/cron", headers: ScriptHeaders())
+        run(script: script, request: placeholder, response: nil, identity: identity, completion: completion)
+    }
+
     // MARK: - Admission
 
     private func enqueue(_ work: @escaping @Sendable () -> Void) {

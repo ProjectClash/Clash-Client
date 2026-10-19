@@ -613,7 +613,19 @@ enum AdBlockLineSyntax {
             return .failure(.scriptTurnedOff)
         }
         if values["jq-path"] != nil { return .failure(.unsupportedRewriteType("jq-path")) }
-        guard let pattern = values["pattern"], !pattern.isEmpty else { return .failure(.unreadableLine) }
+        // A cron declaration has no URL: Surge writes its schedule as
+        // `cronexp`, and the schedule is what plays the part `pattern` plays
+        // for a request or response script. Requiring a pattern here rejected
+        // every cron module Surge and Loon publish.
+        let schedule = phase == .cron ? (values["cronexp"] ?? values["cron"] ?? values["pattern"]) : nil
+        let pattern: String
+        if let schedule, !schedule.isEmpty {
+            pattern = schedule
+        } else if let declared = values["pattern"], !declared.isEmpty {
+            pattern = declared
+        } else {
+            return .failure(.unreadableLine)
+        }
         let path = values["script-path"] ?? ""
         if path.lowercased().contains("boxjs") || pattern.lowercased().contains("boxjs") {
             return .failure(.boxJSNotSupported)
@@ -630,7 +642,10 @@ enum AdBlockLineSyntax {
          
          
         guard scheme == "https" else { return .failure(.scriptAddressNotSecure) }
-        guard isValidPattern(pattern) else { return .failure(.invalidPattern) }
+        // A cron schedule is not a URL pattern; the other phases' patterns are.
+        if phase != .cron {
+            guard isValidPattern(pattern) else { return .failure(.invalidPattern) }
+        }
         func flag(_ keys: String...) -> Bool {
             keys.contains { ["1", "true", "yes"].contains((values[$0] ?? "").lowercased()) }
         }
@@ -644,7 +659,8 @@ enum AdBlockLineSyntax {
             binaryBodyMode: flag("binary-body-mode", "binary-mode"),
             maxSize: number("max-size"), timeout: number("timeout") ?? number("time-out"),
             argument: values["argument"].flatMap { $0.isEmpty ? nil : $0 },
-            updateInterval: interval, bodySHA256: nil, origin: origin))
+            updateInterval: interval, bodySHA256: nil, origin: origin,
+            cronFields: schedule.map { [$0] }))
     }
 
      

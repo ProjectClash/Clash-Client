@@ -511,6 +511,15 @@ enum BackgroundRefresh {
             outcome.cancelled = true
             return outcome
         }
+        // Scheduled module scripts run from the app, not the tunnel, because
+        // the tunnel is only up while the VPN is. This refresh is the wake-up
+        // they ride on; a module that needs them is refreshed above first, so
+        // the schedule read here is the current one.
+        AdBlockCronRunner.runDue(now: now, locations: AdBlockModuleLocations(container: container))
+        if Task.isCancelled {
+            outcome.cancelled = true
+            return outcome
+        }
         outcome.nextEligibleAt = nextEligibility(now: now, containerURL: container)
         return outcome
     }
