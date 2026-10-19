@@ -24,6 +24,12 @@ let package = Package(
             // them, and the extension already builds with `-Osize` from its own
             // target settings.
         ),
-        .testTarget(name: "AdBlockScriptKitTests", dependencies: ["AdBlockScriptKit"])
+        .testTarget(
+            name: "AdBlockScriptKitTests",
+            dependencies: ["AdBlockScriptKit"],
+            // The real compatibility library scripts ship with, so the platform
+            // sniffing they do is tested against them rather than a stand-in.
+            resources: [.copy("Fixtures/Env.js")]
+        )
     ]
 )
