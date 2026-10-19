@@ -559,14 +559,26 @@
   // synchronously: storage is local on all four platforms, so a script may read
   // at the top of a file and use the value three lines later.
 
+  // Loon documents the key as optional: "省略 Key 时使用 $script.name 作为默认
+  // Key". Resolving it here rather than on the host keeps the contract in one
+  // place — the host is handed a key or nothing, and never has to know the
+  // script's name.
+  function resolvedKey(key) {
+    if (key === undefined || key === null) {
+      var name = state.scriptName;
+      return (name === undefined || name === null || name === '') ? null : String(name);
+    }
+    return String(key);
+  }
+
   function read(key) {
-    var answer = callNative('store.read', JSON.stringify({ key: key === undefined ? null : key }));
+    var answer = callNative('store.read', JSON.stringify({ key: resolvedKey(key) }));
     try { return JSON.parse(answer); } catch (e) { return null; }
   }
 
   function write(value, key, all) {
     var answer = callNative('store.write', JSON.stringify({
-      key: key === undefined ? null : key,
+      key: resolvedKey(key),
       value: value === undefined || value === null ? null : String(value),
       all: all === true
     }));
@@ -861,6 +873,8 @@
     state.phase = payload.phase || 'request';
     state.argument = payload.argument || {};
     state.binaryBody = payload.binaryBody === true;
+    // Loon's storage key defaults to `$script.name` when a script omits it.
+    state.scriptName = payload.scriptName;
     state.requestURL = payload.request ? payload.request.url : '';
 
     var request = null, response = null;

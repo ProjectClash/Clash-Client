@@ -208,6 +208,28 @@ final class JSEngineTests: XCTestCase {
         }
     }
 
+    /// Loon documents storage's key as optional: "省略 Key 时使用 `$script.name`
+    /// 作为默认 Key". The harness names every script `test`, so a value written
+    /// without a key has to be readable under that name — and a value written
+    /// under an explicit key must not collide with it.
+    func testStorageKeyDefaultsToTheScriptName() {
+        run("""
+        if ($persistentStore.write('by-default') !== true) { throw new Error('the write failed'); }
+        const explicit = $persistentStore.read('test');
+        if (explicit !== 'by-default') {
+          throw new Error('the default key was not the script name, got: ' + explicit);
+        }
+        if ($persistentStore.write('by-name', 'other') !== true) { throw new Error('the keyed write failed'); }
+        const untouched = $persistentStore.read('test');
+        if (untouched !== 'by-default') {
+          throw new Error('an explicit key overwrote the default one: ' + untouched);
+        }
+        $done({});
+        """) { outcome, _ in
+            XCTAssertEqual(outcome, .unchanged)
+        }
+    }
+
     func testEnvironmentProbeMatchesEnvJsOrder() {
         // The exact probe from chavyleung/scripts Env.js, run verbatim.
         let probe = """
