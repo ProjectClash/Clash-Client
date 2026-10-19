@@ -60,7 +60,24 @@ enum AdBlockLoonRewriteSyntax {
     static func isRule(_ line: String) -> Bool {
         let words = line.split(maxSplits: 2, whereSeparator: { $0 == " " || $0 == "\t" })
         guard words.count >= 2 else { return false }
-        return ["request", "response"].contains(words[0].lowercased()) && words[1].lowercased() == "if"
+        let phase = words[0].lowercased()
+        if ["request", "response"].contains(phase) { return words[1].lowercased() == "if" }
+        // A scheduled or menu script has no condition to test, so the word that
+        // follows the phase is `then` rather than `if`: Loon writes
+        // `cron ${TaskCron} then script(…)` and `generic then script(…)`. They
+        // are rules of the same shape and have to reach the same reader — while
+        // they were excluded here they fell through to the Surge reader, which
+        // has no `script-path` to find on such a line and set every one of them
+        // aside as `scriptWithoutAddress`.
+        //
+        // The `then script(` pair is required, not just the phase word: Surge
+        // writes its scripts as `generic = type=generic, script-path=…`, and
+        // that line has to keep reaching the Surge reader.
+        guard ["cron", "generic"].contains(phase) else { return false }
+        let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard let then = parts.firstIndex(where: { $0.lowercased() == "then" }),
+              parts.count > then + 1 else { return false }
+        return parts[then + 1].lowercased().hasPrefix("script(")
     }
 
      
@@ -1562,16 +1579,30 @@ private extension AdBlockLoonRewriteSyntax.Reader {
         // scheduled script has no condition to test — Loon writes
         // `cron ${TaskCron} then script(…)`, with the schedule where the
         // condition would be — so the `if` is optional for those phases and
-        // what follows is read as the schedule itself.
+        // what follows is read as the schedule itself. `generic then script(…)`
+        // carries neither a condition nor a schedule: `then` comes straight
+        // after the phase word.
+        enum Lead { case condition, schedule(AdBlockLoonRewriteSyntax.Operand), none }
         var scheduleOperand: AdBlockLoonRewriteSyntax.Operand?
+        let lead: Lead
         if case .word(let ifWord)? = peek(), ifWord.lowercased() == "if" {
             _ = next()
+            lead = .condition
         } else if phase == .cron || phase == .generic {
-            scheduleOperand = try operand()
+            if case .word(let word)? = peek(), word.lowercased() == "then" {
+                lead = .none
+            } else {
+                lead = .schedule(try operand())
+            }
         } else {
             throw AdBlockIgnoredReason.unreadableLine
         }
-        let expression = scheduleOperand == nil ? try or() : .and([])
+        let expression: AdBlockLoonRewriteSyntax.Expression
+        switch lead {
+        case .condition: expression = try or()
+        case .none: expression = .and([])
+        case .schedule(let operand): scheduleOperand = operand; expression = .and([])
+        }
         guard case .word(let thenWord)? = next(), thenWord.lowercased() == "then", next() == .word("script") else {
             throw AdBlockIgnoredReason.unreadableLine
         }
