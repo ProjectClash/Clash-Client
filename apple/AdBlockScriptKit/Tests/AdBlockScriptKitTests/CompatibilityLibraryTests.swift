@@ -18,8 +18,14 @@ import XCTest
 final class CompatibilityLibraryTests: XCTestCase {
     /// The library, as published.
     private static let envJS: String = {
-        let url = Bundle.module.url(forResource: "Env", withExtension: "js")!
-        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        // The whole `Fixtures` directory is copied into the test bundle, so the
+        // resource keeps its subdirectory.
+        let url = Bundle.module.url(forResource: "Env", withExtension: "js", subdirectory: "Fixtures")
+            ?? Bundle.module.url(forResource: "Env", withExtension: "js")
+        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else {
+            fatalError("the Env.js fixture is missing from the test bundle")
+        }
+        return text
     }()
 
     private func run(_ script: String, platform: ScriptPlatform,
