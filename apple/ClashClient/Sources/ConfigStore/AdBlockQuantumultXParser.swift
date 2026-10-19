@@ -63,7 +63,7 @@ enum AdBlockQuantumultXParser {
         var taskLines: [(origin: AdBlockLineOrigin, line: String)] = []
 
         for (index, raw) in text.split(separator: "\n").enumerated() {
-            let line = stripComment(raw)
+            let line = stripComment(String(raw))
             if line.isEmpty { continue }
             // `#!name=…` and friends are the module's metadata, as they are for
             // Loon's `.lpx`; a Quantumult X snippet's comments are `;` or `#`.
@@ -80,7 +80,7 @@ enum AdBlockQuantumultXParser {
             case "rewrite_local": rewriteLines.append((origin, line))
             case "task_local": taskLines.append((origin, line))
             case "filter_local": filterRules.append((line, origin))
-            case "mitm": hostLines.append(mitmLine(line, origin))
+            case "mitm": hostLines.append(mitmLine(line, origin: origin))
             default: break
             }
         }
@@ -250,7 +250,7 @@ enum AdBlockQuantumultXParser {
 
     private static func timeout(options: [String]) -> Int? {
         options.first(where: { $0.lowercased().hasPrefix("timeout=") })
-            .flatMap { Int(String($0.dropFirst("timeout=".count)).trimmingCharacters(in: .whitespacess)) }
+            .flatMap { Int(String($0.dropFirst("timeout=".count)).trimmingCharacters(in: .whitespaces)) }
     }
 
     private static func argument(options: [String]) -> String? {
@@ -285,20 +285,20 @@ enum AdBlockQuantumultXParser {
     private static func mitmLine(_ line: String, origin: AdBlockLineOrigin) -> AdBlockHostListLine {
         let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: true)
         guard parts.count == 2 else {
-            return AdBlockHostListLine(directive: .none, entries: [], origin: origin)
+            return AdBlockHostListLine(directive: .replace, entries: [], origin: origin)
         }
-        let names = parts[1].split(separator: ",").map { $0.trimmingCharacters(in: .whitespacess) }
+        let names = parts[1].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         let disabled = parts[0].trimmingCharacters(in: .whitespaces).lowercased() == "hostname-disabled"
         let entries = names.compactMap { name -> AdBlockHostEntry? in
             guard let entry = AdBlockHostList.entry(name) else { return nil }
-            return AdBlockHostEntry(pattern: entry.pattern, port: entry.port, excluded: entry.excluded || disabled)
+            return AdBlockHostEntry(excluded: entry.excluded || disabled, pattern: entry.pattern, port: entry.port)
         }
-        return AdBlockHostListLine(directive: .none, entries: entries, origin: origin)
+        return AdBlockHostListLine(directive: .replace, entries: entries, origin: origin)
     }
 
     private static func stripComment(_ raw: String) -> String {
-        let line = raw.hasSuffix("\r") ? String(raw.dropLast()) : String(raw)
+        var line = raw.hasSuffix("\r") ? String(raw.dropLast()) : String(raw)
         if let range = line.range(of: " #") { line = String(line[..<range.lowerBound]) }
-        return line.trimmingCharacters(in: .whitespacess)
+        return line.trimmingCharacters(in: .whitespaces)
     }
 }
