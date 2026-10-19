@@ -1,5 +1,32 @@
 import Foundation
 
+/// What a `cron` or `generic` script hands back for its entry point to show.
+///
+/// Loon's manual names `title` and `content`; the scripts in the hub also send
+/// `htmlMessage`, which is what a client with an HTML view renders instead of
+/// the plain text. All three are kept as written rather than flattened, because
+/// the caller decides how much of it it can show.
+public struct ScriptResult: Equatable, Sendable {
+    public var title: String?
+    public var content: String?
+    public var htmlMessage: String?
+
+    public init(title: String? = nil, content: String? = nil, htmlMessage: String? = nil) {
+        self.title = title
+        self.content = content
+        self.htmlMessage = htmlMessage
+    }
+
+    /// True when the script supplied none of the fields, which is the same as
+    /// it having said nothing.
+    public var isEmpty: Bool { title == nil && content == nil && htmlMessage == nil }
+
+    /// The text a client without an HTML view can show.
+    public var plainText: String {
+        [title, content].compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
 /// A `$done` payload, already read out of JavaScript.
 ///
 /// Deliberately not a `Codable` mirror of any one platform's object: the reader
@@ -25,11 +52,19 @@ public struct ScriptDonePayload: Equatable, Sendable {
     /// A nested response, which is how the request phase returns a mock on
     /// Loon; Surge and Stash spell it as top-level fields.
     public var nestedResponse: ScriptResponse?
+    /// What a `cron`/`generic` script hands back for its entry point to show.
+    ///
+    /// Loon's manual, §11.1: "Generic 脚本可以返回一个结果对象，供调用入口展示或消费：
+    /// `$done({ title: "查询完成", content: "当前任务已经执行完成" })`". The hub's node
+    /// checks all use it — `LocationDetection.js` answers with
+    /// `{title: "  地理位置查询", htmlMessage: message}` — so a run that drops it
+    /// has run the script for nothing.
+    public var result: ScriptResult?
 
     public init(status: String? = nil, statusCode: String? = nil, url: String? = nil,
                 headers: ScriptHeaders? = nil, text: String? = nil, bytes: Data? = nil,
                 hasBody: Bool = false, abort: Bool = false, policy: String? = nil,
-                nestedResponse: ScriptResponse? = nil) {
+                nestedResponse: ScriptResponse? = nil, result: ScriptResult? = nil) {
         self.status = status
         self.statusCode = statusCode
         self.url = url
@@ -40,12 +75,13 @@ public struct ScriptDonePayload: Equatable, Sendable {
         self.abort = abort
         self.policy = policy
         self.nestedResponse = nestedResponse
+        self.result = result
     }
 
     /// True when the script asked for nothing at all.
     public var isSilent: Bool {
         status == nil && statusCode == nil && url == nil && headers == nil && !hasBody
-            && !abort && policy == nil && nestedResponse == nil
+            && !abort && policy == nil && nestedResponse == nil && result == nil
     }
 
     /// The body as bytes, from whichever field carried it.
@@ -88,6 +124,10 @@ public enum ScriptDoneParsing {
     public static func requestOutcome(_ payload: ScriptDonePayload, base: ScriptRequest) -> ScriptOutcome {
         if payload.abort { return .aborted("the script aborted the request") }
         if let mock = payload.nestedResponse { return .response(mock) }
+        // A `cron`/`generic` script's answer is the result object itself. It
+        // comes before the change checks, because a result carries no request
+        // fields and would otherwise read as "no change".
+        if let result = payload.result { return .result(result) }
         if payload.isSilent { return .unchanged }
 
         // Surge documents a request script answering with a status as a mock,

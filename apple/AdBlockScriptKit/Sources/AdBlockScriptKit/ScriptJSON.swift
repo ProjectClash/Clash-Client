@@ -147,6 +147,13 @@ public enum ScriptJSON {
             let inner = Self.payload(nested)
             payload.nestedResponse = ScriptDoneParsing.response(from: inner, base: nil)
         }
+        // The result a `cron`/`generic` script shows. Loon documents `title` and
+        // `content`; the hub's scripts send `htmlMessage` for an HTML view, and
+        // some send `message` instead. A payload with none of them is silent.
+        let result = ScriptResult(title: string(object["title"]),
+                                  content: string(object["content"]) ?? string(object["message"]),
+                                  htmlMessage: string(object["htmlMessage"]))
+        if !result.isEmpty { payload.result = result }
         return payload
     }
 }

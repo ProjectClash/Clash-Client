@@ -117,4 +117,9 @@ public enum ScriptOutcome: Equatable, Sendable {
     case timedOut
     /// The run could not start at all.
     case unavailable(String)
+    /// What a `cron` or `generic` script handed back for its entry point to
+    /// show. Loon calls this "一个结果对象，供调用入口展示或消费"; the hub's node checks
+    /// exist only to produce it (a node's country, its unlock status), so an
+    /// outcome that dropped it would have run them for nothing.
+    case result(ScriptResult)
 }

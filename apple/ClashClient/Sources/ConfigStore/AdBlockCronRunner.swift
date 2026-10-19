@@ -116,9 +116,9 @@ enum AdBlockCronRunner {
         let runner = ScriptRunner(limits: ScriptRunLimits(defaultTimeout: 60, grace: 5),
                                   services: AdBlockCronServices(storageURL: storage),
                                   makeEngine: { _, _ in try JSCEngine() })
-        let ran = scheduler.drain(tasks, now: now, budget: budget) { task in
+        let ran = scheduler.drain(tasks, now: now, budget: budget) { [entryParameters = AdBlockRunEntry.parameters()] task in
             let done = DispatchSemaphore(value: 0)
-            runner.runScheduled(script: task.script, identity: task.identity) { outcome in
+            runner.runScheduled(script: task.script, identity: task.identity, parameters: entryParameters) { outcome in
                 if case .unavailable(let reason) = outcome {
                     log.notice("scheduled script \(task.script.name, privacy: .public) unavailable: \(reason, privacy: .public)")
                 }
@@ -204,7 +204,7 @@ enum AdBlockCronRunner {
         }
         let answer = Answer()
         let finished = DispatchSemaphore(value: 0)
-        runner.runScheduled(script: task.script, identity: task.identity) { outcome in
+        runner.runScheduled(script: task.script, identity: task.identity, parameters: AdBlockRunEntry.parameters()) { outcome in
             answer.store(outcome)
             finished.signal()
         }
@@ -228,6 +228,36 @@ enum AdBlockCronRunner {
 #endif
 
 #if os(iOS) || os(macOS)
+/// The node and policy a `cron`/`generic` script is run from.
+///
+/// Loon documents `$environment.params` as the entry parameters a script run
+/// "从节点、策略等入口" receives, and the hub's `NodeLinkCheck` and
+/// `NodeUnlockDetection` exist only to read them. The app already knows the
+/// answer: the user's picks are `Profile.selectedMap` (group → node) and the
+/// group they last looked at is `currentGroupName`. No engine call is involved,
+/// which is why this can run from a background wake-up as well as the UI.
+///
+/// Nothing invented: when the profile has no selection, or the selection names
+/// a group this build does not have a member for, the parameters are empty and
+/// `$environment` is left off rather than filled with a plausible guess — a
+/// node check that reports the wrong node is worse than one that reports none.
+enum AdBlockRunEntry {
+    static func parameters() -> ScriptRunParameters {
+        guard let state = NodeProfilePreferencesStore.live()?.load() else {
+            return ScriptRunParameters()
+        }
+        // The group the user last opened decides which pick is "the" node. A
+        // profile with a single group has only one answer anyway.
+        let group = state.currentGroupName.flatMap { name in
+            state.selectedMap[name] == nil ? nil : name
+        } ?? state.selectedMap.keys.sorted().first
+        guard let group, let node = state.selectedMap[group] else {
+            return ScriptRunParameters()
+        }
+        return ScriptRunParameters(node: node, policyGroup: group)
+    }
+}
+
 /// What a scheduled script can reach.
 ///
 /// Storage, because a task that cannot remember anything between runs is not

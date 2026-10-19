@@ -12,6 +12,7 @@ final class JSEngineTests: XCTestCase {
                      request: ScriptRequest = makeRequest(),
                      response: ScriptResponse? = nil,
                      argument: ScriptArgument = .none,
+                     parameters: ScriptRunParameters = ScriptRunParameters(),
                      services: FakeServices = FakeServices(),
                      timeout: TimeInterval = 3,
                      file: StaticString = #filePath, line: UInt = #line,
@@ -20,7 +21,7 @@ final class JSEngineTests: XCTestCase {
                                   services: services, makeEngine: { _, _ in try JSCEngine() })
         let done = expectation(description: "outcome")
         runner.run(script: ScriptSource(name: "test", key: "test", text: script, argument: argument,
-                                        binaryBody: binaryBody),
+                                        binaryBody: binaryBody, parameters: parameters),
                    request: request, response: response,
                    identity: ScriptIdentity(platform: platform)) { outcome in
             check(outcome, services)
@@ -227,6 +228,64 @@ final class JSEngineTests: XCTestCase {
         $done({});
         """) { outcome, _ in
             XCTAssertEqual(outcome, .unchanged)
+        }
+    }
+
+    /// Loon's manual for `$environment`: the parameters a generic script was run
+    /// from, and "没有运行参数时，`$environment` 可能不存在". The hub's two node
+    /// scripts need both halves: `NodeUnlockDetection.js` reads `params.node`,
+    /// and `NodeLinkCheck.js` treats `params` itself as the node name.
+    func testRunParametersAppearWhereLoonDocumentsThem() {
+        run("""
+        if (typeof $environment === 'undefined') { throw new Error('$environment should exist'); }
+        if ($environment.params.node !== 'HK-01') { throw new Error('node: ' + $environment.params.node); }
+        if ($environment.params.policyGroup !== 'Proxy') { throw new Error('policyGroup missing'); }
+        if (String($environment.params) !== 'HK-01') { throw new Error('the old string form is not the node'); }
+        if ($environment.params.search(/HK/) < 0) { throw new Error('search on params does not work'); }
+        if ($environment.params.entry !== 'HK-01') { throw new Error('entry missing'); }
+        $done({});
+        """, parameters: ScriptRunParameters(node: "HK-01", policyGroup: "Proxy")) { outcome, _ in
+            XCTAssertEqual(outcome, .unchanged)
+        }
+    }
+
+    /// With no entry parameters there is no `$environment` at all, because an
+    /// empty `params` answers `params.node` with `undefined` instead of letting
+    /// a script notice that the run had no parameters.
+    func testNoRunParametersMeansNoEnvironment() {
+        run("""
+        if (typeof $environment !== 'undefined') {
+          throw new Error('$environment should be absent, got ' + JSON.stringify($environment));
+        }
+        const environment = typeof $environment === 'undefined' ? {} : $environment;
+        const params = environment.params || {};
+        if (params.node !== undefined) { throw new Error('unexpected node'); }
+        $done({});
+        """) { outcome, _ in
+            XCTAssertEqual(outcome, .unchanged)
+        }
+    }
+
+    /// A `cron`/`generic` script answers with a result object, not with a change
+    /// to any traffic. Loon §11.1: "Generic 脚本可以返回一个结果对象，供调用入口展示或
+    /// 消费". The hub's node checks exist only to produce one.
+    func testGenericResultSurvivesTheRun() {
+        run("""
+        $done({ title: '  地理位置查询', htmlMessage: '<p>US</p>' });
+        """) { outcome, _ in
+            XCTAssertEqual(outcome, .result(ScriptResult(title: "  地理位置查询",
+                                                         htmlMessage: "<p>US</p>")))
+        }
+    }
+
+    /// The same answer in Loon's documented spelling, and a script that says
+    /// nothing must still read as "no change" rather than as an empty result.
+    func testGenericResultFromTheDocumentedShape() {
+        run("""
+        $done({ title: '查询完成', content: '当前任务已经执行完成' });
+        """) { outcome, _ in
+            XCTAssertEqual(outcome, .result(ScriptResult(title: "查询完成",
+                                                         content: "当前任务已经执行完成")))
         }
     }
 

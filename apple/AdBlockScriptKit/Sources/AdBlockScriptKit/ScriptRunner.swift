@@ -120,9 +120,16 @@ public final class ScriptRunner: @unchecked Sendable {
     /// gets a request-shaped context with the platform's own placeholder so
     /// scripts that read `$request.url` at the top do not throw.
     public func runScheduled(script: ScriptSource, identity: ScriptIdentity,
+                             parameters: ScriptRunParameters = ScriptRunParameters(),
                              completion: @escaping @Sendable (ScriptOutcome) -> Void) {
         let placeholder = ScriptRequest(method: "GET", url: "https://clash.invalid/cron", headers: ScriptHeaders())
-        run(script: script, request: placeholder, response: nil, identity: identity, completion: completion)
+        // The entry parameters travel on the source, because that is what the
+        // run reads: the same script run from two nodes must be able to report
+        // two different nodes, and a copy is the only way to say that.
+        var source = script
+        source.parameters = parameters
+        run(script: source, request: placeholder, response: nil, identity: identity,
+            completion: completion)
     }
 
     // MARK: - Admission
@@ -220,6 +227,9 @@ public final class ScriptRunner: @unchecked Sendable {
             case .aborted: metrics.aborted += 1
             case .timedOut: metrics.timedOut += 1
             case .unavailable: metrics.failed += 1
+            // A cron/generic script answering with a result changed nothing
+            // about any traffic; it produced something to show.
+            case .result: metrics.unchanged += 1
             }
         }
     }
@@ -257,6 +267,63 @@ private final class RunCompletion: @unchecked Sendable {
     }
 }
 
+/// What Loon puts in `$environment.params` when a script is run from the node
+/// or policy it is attached to.
+///
+/// Loon's manual, §3.4: "手动或 Generic 脚本从节点、策略等入口运行时，Loon 会把入口
+/// 参数放在 `$environment.params`。没有运行参数时，`$environment` 可能不存在。" The
+/// fields it lists are `node`, `nodeInfo`, `policyGroup` and `proxyChainInfo`.
+///
+/// The distinction that matters for compatibility is `nil` versus an empty
+/// value, and scripts disagree about which spelling they expect:
+///
+/// * `NodeLinkCheck.js` reads `$environment['params']` as a **string** — the old
+///   Loon form, where the entry parameter *was* the node name.
+/// * `NodeUnlockDetection.js` reads `$environment.params.node`.
+///
+/// So `params` cannot be normalised to one shape without breaking the other.
+/// `entry` carries the string form; the named fields carry the object form. A
+/// run with neither leaves `$environment` off entirely, which is what the
+/// manual says happens and what a `typeof $environment === "undefined"` guard
+/// (the one Loon's own example uses) is written for.
+public struct ScriptRunParameters: Equatable, Sendable {
+    /// The node name, and the old string form of `$environment.params`.
+    public var node: String?
+    /// A short description of the node, without credentials.
+    public var nodeInfo: String?
+    public var policyGroup: String?
+    public var proxyChainInfo: String?
+
+    public init(node: String? = nil, nodeInfo: String? = nil,
+                policyGroup: String? = nil, proxyChainInfo: String? = nil) {
+        self.node = node
+        self.nodeInfo = nodeInfo
+        self.policyGroup = policyGroup
+        self.proxyChainInfo = proxyChainInfo
+    }
+
+    /// Whether anything at all was supplied. A run with no entry parameters
+    /// must not carry a `params` object, because a script asking for
+    /// `params.node` would then get `undefined` instead of noticing that there
+    /// were no parameters at all.
+    public var isEmpty: Bool {
+        node == nil && nodeInfo == nil && policyGroup == nil && proxyChainInfo == nil
+    }
+
+    /// The object form, for scripts that read `params.node`.
+    var object: [String: Any] {
+        var out: [String: Any] = [:]
+        if let node { out["node"] = node }
+        if let nodeInfo { out["nodeInfo"] = nodeInfo }
+        if let policyGroup { out["policyGroup"] = policyGroup }
+        if let proxyChainInfo { out["proxyChainInfo"] = proxyChainInfo }
+        return out
+    }
+
+    /// The string form, for scripts that treat `params` as the node name.
+    var string: String? { node }
+}
+
 /// A script as the runner receives it: where it came from, what it costs, and
 /// how long it may take.
 public struct ScriptSource: Equatable, Sendable {
@@ -273,10 +340,14 @@ public struct ScriptSource: Equatable, Sendable {
     /// Whether the declaration said `binary-body-mode`, which decides whether
     /// the script sees `Uint8Array` or text.
     public var binaryBody: Bool
+    /// What Loon puts in `$environment.params`: the node or policy a generic
+    /// script was run from. Empty for every other phase, because a request
+    /// script has no entry parameters to report.
+    public var parameters: ScriptRunParameters
 
     public init(name: String, key: String, text: String, timeout: TimeInterval? = nil,
                 sourceURL: String? = nil, argument: ScriptArgument = .none,
-                binaryBody: Bool = false) {
+                binaryBody: Bool = false, parameters: ScriptRunParameters = ScriptRunParameters()) {
         self.name = name
         self.key = key
         self.text = text
@@ -284,6 +355,7 @@ public struct ScriptSource: Equatable, Sendable {
         self.sourceURL = sourceURL
         self.argument = argument
         self.binaryBody = binaryBody
+        self.parameters = parameters
     }
 
     public var byteCount: Int { text.utf8.count }

@@ -109,6 +109,7 @@ final class ScriptRun: @unchecked Sendable {
             identity: identity, request: request, response: response,
             argument: script.argument, scriptName: script.name)
         environment.binaryBody = script.binaryBody
+        environment.parameters = script.parameters
         guard let bootstrap = environment.bootstrapJSON else {
             finish(.unavailable("the environment could not be encoded"))
             return
@@ -351,6 +352,15 @@ public struct ScriptEnvironment: Sendable {
             object["argument"] = args
         }
         if let response { object["response"] = ScriptEnvironment.encode(response) }
+        // Loon only defines `$environment.params` when a script is run *from* a
+        // node or policy, which is the case for cron and generic scripts. An
+        // empty set is left out rather than sent as `{}`, because the manual
+        // says `$environment` may be absent and the guard scripts write is
+        // `typeof $environment === "undefined"`.
+        if !parameters.isEmpty {
+            object["parameters"] = parameters.object
+            if let node = parameters.string { object["parameterEntry"] = node }
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }
@@ -358,6 +368,10 @@ public struct ScriptEnvironment: Sendable {
     /// Whether the script was declared `binary-body-mode`, which decides whether
     /// `$request.body`/`$response.body` are `Uint8Array` or text.
     public var binaryBody = false
+
+    /// The node or policy a generic script was run from, for
+    /// `$environment.params`.
+    public var parameters = ScriptRunParameters()
 
     static func encode(_ request: ScriptRequest) -> [String: Any] {
         var object: [String: Any] = ["url": request.url, "method": request.method,

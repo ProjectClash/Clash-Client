@@ -816,10 +816,38 @@
     }
 
     if (platform === 'loon') {
-      // Loon: a bare version string, and $environment carrying run parameters
-      // for generic scripts only.
+      // Loon: a bare version string, and `$environment` carrying the run
+      // parameters when the script was started from a node or policy.
+      //
+      // Loon's manual, §3.4: "没有运行参数时，`$environment` 可能不存在", and the
+      // example it gives guards with `typeof $environment === "undefined"`. So
+      // the global is left off when there is nothing to report — an empty
+      // `{ params: {} }` would answer `params.node` with `undefined` instead,
+      // which is not the same thing to a script that tests for the global.
       global.$loon = payload.loon;
-      global.$environment = { params: {} };
+      if (payload.parameters) {
+        // Two shapes, because scripts disagree and Loon changed its mind:
+        // `NodeLinkCheck.js` treats `params` as the node name string — it calls
+        // `$environment.params.search(/IEPL/gi)` and concatenates the value into
+        // HTML — while `NodeUnlockDetection.js` reads `params.node`.
+        //
+        // The object is the current form, so it is what `params` is. The old
+        // string form is reachable two ways that cost nothing: `params.entry`
+        // for a script written for it, and `toString`/`search`/`indexOf` so a
+        // script that treats the whole value as a string still works instead of
+        // throwing `params.search is not a function`.
+        var params = payload.parameters;
+        var entry = payload.parameterEntry;
+        if (entry !== undefined && entry !== null) {
+          params.entry = entry;
+          params.toString = function () { return entry; };
+          params.valueOf = function () { return entry; };
+          params.search = function (pattern) { return entry.search(pattern); };
+          params.indexOf = function (needle, from) { return entry.indexOf(needle, from); };
+          params.match = function (pattern) { return entry.match(pattern); };
+        }
+        global.$environment = { params: params };
+      }
     } else if (platform === 'shadowrocket') {
       global.$rocket = { version: payload.version, device: payload.device };
     } else if (platform === 'surge' || platform === 'stash') {
@@ -928,6 +956,11 @@
       appName: payload.appName,
       loon: payload.loon,
       scriptName: payload.scriptName,
+      // Loon's entry parameters, when the run had any. Left off rather than
+      // passed as an empty object, because `install` decides whether
+      // `$environment` exists at all from their presence.
+      parameters: payload.parameters,
+      parameterEntry: payload.parameterEntry,
       request: request,
       response: response
     });
