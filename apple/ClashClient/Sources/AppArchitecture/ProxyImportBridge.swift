@@ -118,6 +118,13 @@ struct ProxyImportResult {
     let identities: [String]
     let shape: ProxyPayloadShape?
 
+    /// Split-DNS routing tables lifted from a mihomo configuration payload
+    /// (`dns.nameserver-policy` / `dns.proxy-server-nameserver-policy`). They let the airport's
+    /// DNS routing policy be append-merged into the user's main configuration instead of being
+    /// discarded when only nodes are extracted. `nil` when the payload carries no DNS policy.
+    var dnsNameServerPolicy: [String: Any]? = nil
+    var dnsProxyServerNameserverPolicy: [String: Any]? = nil
+
     var issues: [ProxyImportIssue] {
         skipped
     }
@@ -344,8 +351,17 @@ enum ProxyImportBridge {
                 + issues(root["recognizedUnsupported"]),
             notHonoured: issues(root["notHonoured"]),
             identities: root["identities"] as? [String] ?? [],
-            shape: shape(root["payloadShape"])
+            shape: shape(root["payloadShape"]),
+            dnsNameServerPolicy: dnsPolicy(root["dnsNameServerPolicy"]),
+            dnsProxyServerNameserverPolicy: dnsPolicy(root["dnsProxyServerNameserverPolicy"])
         )
+    }
+
+    /// Normalises one split-DNS table from the kernel report into a JSON-safe dictionary.
+    /// Returns `nil` for missing or empty tables so callers can fall back to their own policy.
+    private static func dnsPolicy(_ raw: Any?) -> [String: Any]? {
+        guard let table = raw as? [String: Any], !table.isEmpty else { return nil }
+        return table
     }
 
      
@@ -527,7 +543,18 @@ enum ProxyImportBridge {
         }
         log(skipped: result.issues, keeping: result.proxies.count)
         log(notHonoured: result.notHonoured)
-        let data = try JSONSerialization.data(withJSONObject: ["proxies": result.proxies])
+        var document: [String: Any] = ["proxies": result.proxies]
+        // Carry the airport's split-DNS routing tables into the node document so they reach the
+        // main configuration instead of being dropped by node extraction. `mergeOverride` unions
+        // maps, and the user's own patch is the winning side, so conflicting domains stay under
+        // the user's control while the airport's remaining domains are still honoured.
+        var dns: [String: Any] = [:]
+        if let policy = result.dnsNameServerPolicy { dns["nameserver-policy"] = policy }
+        if let policy = result.dnsProxyServerNameserverPolicy {
+            dns["proxy-server-nameserver-policy"] = policy
+        }
+        if !dns.isEmpty { document["dns"] = dns }
+        let data = try JSONSerialization.data(withJSONObject: document)
         let yaml = try ConfigTransforms.jsonToYAML(String(decoding: data, as: UTF8.self))
         return (yaml, result.proxies.count, result.issues)
     }
