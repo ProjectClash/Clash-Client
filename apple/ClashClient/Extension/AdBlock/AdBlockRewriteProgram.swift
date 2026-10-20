@@ -1257,7 +1257,7 @@ final class AdBlockRewriteProgram {
             for script in input.scripts {
                 let origin = AdBlockRuleOrigin(moduleName: input.module.name, section: script.origin.section, line: script.origin.line)
                 scriptRules.append((script.pattern, ScriptRule(script: script, moduleID: input.module.id,
-                                                               moduleFormat: input.manifest.format,
+                                                               moduleFormat: input.format,
                                                                bodyFile: script.bodySHA256.flatMap { scriptFile(input.module.id, $0) },
                                                                origin: origin)))
             }
