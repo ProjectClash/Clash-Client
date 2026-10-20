@@ -127,6 +127,73 @@ final class EngineLifecycleTests: XCTestCase {
                        "a refused script must not create a context")
     }
 
+    /// The cap is a promise about *concurrency*, and `testTheCapDrains` only
+    /// shows that ten short scripts all finish — ten scripts that answer
+    /// instantly would pass even if the cap did nothing at all.
+    ///
+    /// This holds each slot open with a script that waits on a timer, so a third
+    /// run would be visible as a third live context rather than hidden behind an
+    /// instant answer. The high-water mark is sampled where a run is admitted.
+    func testTheCapIsNeverExceeded() {
+        let baseline = JSCEngine.liveEngines
+        let limits = ScriptRunLimits(defaultTimeout: 10, grace: 1, concurrentRuns: 2)
+        let peak = Locked(0)
+        let runner = ScriptRunner(limits: limits, services: FakeServices(), makeEngine: { _, _ in
+            // Construct first, sample after: the registry only counts an engine
+            // once it exists, so reading before creating always sees zero and
+            // would report a peak of one no matter how many runs overlapped.
+            let engine = try JSCEngine()
+            let open = JSCEngine.liveEngines - baseline
+            peak.update { $0 = max($0, open) }
+            return engine
+        })
+        let done = expectation(description: "runs")
+        done.expectedFulfillmentCount = 6
+        // Each waits 150 ms before answering, so two runs really do overlap and a
+        // third would have to be visible while they are open.
+        let slow = "setTimeout(function () { $done({}); }, 150);"
+        for index in 0..<6 {
+            runner.run(script: ScriptSource(name: "p\(index)", key: "p\(index)", text: slow),
+                       request: makeRequest(), response: nil,
+                       identity: ScriptIdentity(platform: .loon)) { _ in done.fulfill() }
+        }
+        wait(for: [done], timeout: 60)
+        settle()
+        XCTAssertLessThanOrEqual(peak.value, limits.concurrentRuns,
+                                 "the runner opened \(peak.value) runs over a cap of \(limits.concurrentRuns)")
+        XCTAssertEqual(JSCEngine.liveEngines, baseline, "the queue left contexts behind")
+    }
+
+
+    /// A queue with spinning scripts in it must still drain: the abandoned run's
+    /// slot has to come back, or one bad script wedges the page.
+    func testASpinningScriptDoesNotWedgeTheQueue() {
+        let baseline = JSCEngine.liveEngines
+        let limits = ScriptRunLimits(defaultTimeout: 0.2, grace: 0.05,
+                                     concurrentRuns: 2, timeoutsBeforeRefusal: 5)
+        let runner = ScriptRunner(limits: limits, services: FakeServices(),
+                                  makeEngine: { _, _ in try JSCEngine() })
+        let answered = Locked(0)
+        let done = expectation(description: "runs")
+        done.expectedFulfillmentCount = 6
+        // Two spinners take both slots; four honest scripts queue behind them.
+        for index in 0..<6 {
+            let text = index < 2 ? "while (true) {}" : "$done({ body: 'ok' });"
+            let name = "q\(index)"
+            runner.run(script: ScriptSource(name: name, key: name, text: text),
+                       request: makeRequest(), response: makeResponse(),
+                       identity: ScriptIdentity(platform: .loon)) { outcome in
+                if case .response = outcome { answered.update { $0 += 1 } }
+                done.fulfill()
+            }
+        }
+        wait(for: [done], timeout: 30)
+        settle()
+        XCTAssertEqual(answered.value, 4,
+                       "honest scripts were blocked behind the spinners (\(answered.value) of 4 answered)")
+        XCTAssertEqual(JSCEngine.liveEngines, baseline, "spinners left contexts behind")
+    }
+
     /// The concurrency cap queues rather than dropping, and the queue drains
     /// without holding on to the contexts it used.
     func testTheCapDrains() {
@@ -146,4 +213,13 @@ final class EngineLifecycleTests: XCTestCase {
         XCTAssertEqual(JSCEngine.liveEngines, baseline,
                        "the queue left \(JSCEngine.liveEngines - baseline) contexts behind")
     }
+}
+
+/// A value shared across the runner's queues.
+final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value { lock.lock(); defer { lock.unlock() }; return stored }
+    func update(_ body: (inout Value) -> Void) { lock.lock(); body(&stored); lock.unlock() }
 }
