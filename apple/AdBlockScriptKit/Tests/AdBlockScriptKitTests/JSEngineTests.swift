@@ -439,6 +439,40 @@ final class JSEngineTests: XCTestCase {
         """, platform: .quantumultX) { outcome, _ in XCTAssertEqual(outcome, .unchanged) }
     }
 
+    /// `$utils.gzip`/`ungzip` are how the Bilibili gRPC scripts unwrap and
+    /// rewrap a protobuf frame, so a broken byte contract here silently turns a
+    /// rewrite into a no-op.
+    ///
+    /// The host answers the *bytes* op for real here — gzip is deterministic
+    /// enough that a round trip through the prelude can be checked without a
+    /// network. What the prelude owes the host is the wire shape: a
+    /// `Uint8Array` argument must arrive as `{"data": {"$clashBytes": ...}}` and
+    /// the answer must come back as a `Uint8Array`, not a base64 string.
+    func testUtilsGzipRoundTripsThroughTheHost() {
+        // A fixed gzip stream for the bytes `test` — produced once by zlib and
+        // checked in, so the kit needs no compression dependency of its own.
+        // What is under test is the prelude's byte contract, not zlib.
+        let packed = Data([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff,
+                           0x2b, 0x49, 0x2d, 0x2e, 0x01, 0x00, 0x0c, 0x7e, 0x7f, 0xd8,
+                           0x04, 0x00, 0x00, 0x00])
+        let services = FakeServices()
+        services.compressionHandler = { _, compress in compress ? packed : nil }
+        run("""
+        var source = new Uint8Array([10, 4, 116, 101, 115, 116]);
+        var packed = $utils.gzip(source);
+        if (!(packed instanceof Uint8Array)) { throw new Error('gzip did not return bytes'); }
+        if (packed.length === 0) { throw new Error('gzip returned nothing'); }
+        // The gzip magic: 0x1f 0x8b. A base64 string would fail both of these.
+        if (packed[0] !== 0x1f || packed[1] !== 0x8b) { throw new Error('not gzip: ' + packed[0] + ',' + packed[1]); }
+        $done({ body: String(packed.length) });
+        """, platform: .surge, phase: .response, response: makeResponse(), services: services) { outcome, services in
+            guard case .response(let response) = outcome else { return XCTFail("got \(outcome)") }
+            let body = response.body.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            XCTAssertEqual(Int(body).map { $0 > 0 }, true, "gzip produced \(body) bytes")
+            XCTAssertTrue(services.calls.contains("utils.gzip"), "the host was never asked: \(services.calls)")
+        }
+    }
+
     func testEnvironmentProbeMatchesEnvJsOrder() {
         // The exact probe from chavyleung/scripts Env.js, run verbatim.
         let probe = """

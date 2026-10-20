@@ -10,6 +10,9 @@ final class FakeServices: ScriptHostServices, ScriptSynchronousServices, @unchec
     private(set) var logged: [String] = []
     private(set) var notified: [ScriptNotification] = []
     private(set) var calls: [String] = []
+    /// Answers `utils.gzip`/`utils.ungzip`. `nil` means "this fake cannot do
+    /// it", which is the honest answer for the real host's compressed path.
+    var compressionHandler: ((Data, Bool) -> Data?)?
 
     func perform(_ call: ScriptHostCall, completion: @escaping @Sendable (ScriptHostAnswer) -> Void) {
         lock.lock(); calls.append(call.name); lock.unlock()
@@ -46,6 +49,16 @@ final class FakeServices: ScriptHostServices, ScriptSynchronousServices, @unchec
             return "true"
         case "config.getConfig":
             return jsonString("{}")
+        case "utils.gzip", "utils.ungzip":
+            // The prelude sends `{ "data": { "$clashBytes": base64 } }` and
+            // expects the same shape back. Answering `null` here is what made
+            // the earlier gzip measurement meaningless.
+            guard let handler = compressionHandler,
+                  let encoded = object["data"] as? [String: Any],
+                  let text = encoded["$clashBytes"] as? String,
+                  let data = Data(base64Encoded: text),
+                  let out = handler(data, name == "utils.gzip") else { return "null" }
+            return "{\"$clashBytes\":\"\(out.base64EncodedString())\"}"
         default:
             return "null"
         }
