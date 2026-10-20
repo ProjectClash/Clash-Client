@@ -154,9 +154,7 @@ public struct ClashMoreView<Icon: View, DestinationContent: View>: View {
     private func destinationLink(
         _ item: ClashMoreDestination
     ) -> some View {
-        if presentationClass == .regularTouch
-            || presentationClass == .desktop
-        {
+        if ClashHubNavigationPolicy.usesSelection(for: presentationClass) {
             Button {
                 destination = item
             } label: {
