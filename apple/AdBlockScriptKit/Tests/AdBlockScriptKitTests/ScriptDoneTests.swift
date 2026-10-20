@@ -91,6 +91,12 @@ final class ScriptDoneTests: XCTestCase {
         guard case .aborted = ScriptDoneParsing.requestOutcome(payload, base: makeRequest()) else {
             return XCTFail("abort is an abort")
         }
+        // The response phase has the same contract, and for a while it did not
+        // reach the transport: both phases now close the connection, so the
+        // enum case has to be produced on either side.
+        guard case .aborted = ScriptDoneParsing.responseOutcome(payload, base: makeResponse()) else {
+            return XCTFail("abort is an abort in the response phase too")
+        }
     }
 
     func testResponsePhaseKeepsUnmentionedFields() {

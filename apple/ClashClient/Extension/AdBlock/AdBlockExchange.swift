@@ -837,7 +837,17 @@ final class AdBlockExchange {
                 completion(head, body, route, plan, local)
             case .drop:
                 close()
-            case .unchanged, .aborted, .timedOut, .unavailable:
+            case .aborted:
+                // Surge: "`$done({abort: true})` terminates the connection".
+                // It is not the same as leaving the request alone, which is what
+                // `.unchanged` does two lines down — a script that aborts is
+                // asking for the connection to stop, and the corpus depends on
+                // it: `app2smile/rules` maps its own `abort()` to
+                // `$done({abort: !0})` on Surge and to a bare `$done()` on Loon,
+                // so an abort that forwarded anyway would serve the ad the
+                // script refused to rewrite.
+                close()
+            case .unchanged, .timedOut, .unavailable:
                 completion(head, body, route, plan, nil)
             }
         }
@@ -1279,7 +1289,13 @@ final class AdBlockExchange {
                 completion(out, body == nil || framing == .none ? nil : changed.body)
             case .drop:
                 close()
-            case .unchanged, .request, .aborted, .timedOut, .unavailable:
+            case .aborted:
+                // Same contract in the response phase: Surge's `$done({abort:
+                // true})` "terminates the connection" for `http-response`
+                // scripts too, and the corpus relies on it to cut a response it
+                // could not rewrite rather than let it through.
+                close()
+            case .unchanged, .request, .timedOut, .unavailable:
                 completion(head, nil)
             }
         }
