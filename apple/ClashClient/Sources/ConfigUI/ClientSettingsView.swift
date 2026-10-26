@@ -202,10 +202,10 @@ struct ClientSettingsView: View {
 
             Section {
                 ClashDoorLink(ClientSettingsDoor.globalRules, selection: $doorSelection) {
-                    GlobalRulesView(restageRuntime: restageRuntime)
+                    GlobalOverridesView(restageRuntime: restageRuntime)
                 } label: {
                     HStack {
-                        Text(clash: .copy("Global Rules"))
+                        Text(clash: .copy("Global Overrides"))
                         Spacer()
                         Text(clash: .copy(globalRulesSummary))
                             .foregroundStyle(.secondary)
@@ -213,7 +213,7 @@ struct ClientSettingsView: View {
                 }
                 .accessibilityIdentifier("client.global-rules")
             } footer: {
-                Text("Rules that are checked before every configuration's own rules. They are kept outside the profile, so source and scheme updates cannot drop them.")
+                Text("Rules and any other app-level field that apply to every configuration. They are kept outside the profile, so source and scheme updates cannot drop them.")
             }
 
             if let externalController {
@@ -282,7 +282,7 @@ struct ClientSettingsView: View {
                 switch door {
                 case .udpFallback: "UDP Fallback"
                 case .externalController: "External Controller"
-                case .globalRules: "Global Rules"
+                case .globalRules: "Global Overrides"
                 }
             }
         ) { door in
@@ -290,7 +290,7 @@ struct ClientSettingsView: View {
             case .udpFallback: udpFallbackDestination
             case .externalController:
                 if let externalController { ExternalControllerSettingsView(core: externalController) }
-            case .globalRules: GlobalRulesView(restageRuntime: restageRuntime)
+            case .globalRules: GlobalOverridesView(restageRuntime: restageRuntime)
             }
         }
         .onAppear {
@@ -342,9 +342,10 @@ struct ClientSettingsView: View {
 
      
     private var globalRulesSummary: String {
-        let config = GlobalRulesConfig.load()
-        guard config.isEnabled, !config.rules.isEmpty else { return "Off" }
-        return "\(config.rules.count) rules"
+        let config = GlobalOverridesConfig.load()
+        let count = config.rules.count + (config.patchJSON.isEmpty ? 0 : 1)
+        guard config.isEnabled, count > 0 else { return "Off" }
+        return "\(count)"
     }
 
     private var udpFallbackSummary: String {

@@ -4169,3 +4169,10 @@
 "Rules that are checked before every configuration's own rules. They are kept outside the profile, so source and scheme updates cannot drop them." = "在每份設定自己的規則之前比對的規則。它們保存在設定之外，訂閱與規則方案更新都不會把它們蓋掉。";
 "Global Rules Not in Effect" = "未生效的全域規則";
 "Each of these app-level rules names a policy this configuration does not define, so it is left out here and still applies to configurations that have that policy. Route the rule to a policy group this configuration has, or turn the rule off in Client Settings." = "這些 App 級規則指向的策略在這份設定裡不存在，因此只在該份設定裡被略過，對定義了該策略的設定仍然生效。請把規則指向本設定已有的策略組，或在用戶端設定裡關掉這條規則。";
+"Global Overrides" = "全域覆寫";
+"Enable Global Overrides" = "啟用全域覆寫";
+"Global Patch" = "全域補丁";
+"Global patch must be a JSON object." = "全域補丁必須是一個 JSON 物件。";
+"These settings are applied to every configuration, including subscriptions that keep their own. They live outside the profile, so a source update cannot drop them." = "這些設定會套用到每一份設定，包括自帶規則的訂閱。它們保存在設定之外，訂閱更新不會把它們蓋掉。";
+"Prepended to every configuration, before its own rules. A rule that names a policy a configuration does not define is left out for that configuration." = "加到每份設定自己的規則之前。某份設定沒有這條規則指向的策略時，這條規則在該份設定裡會被略過。";
+"Any other app-level field, as a JSON object: dns (including nameserver-policy and fake-ip-filter), tun (including route-exclude-address), sniffer, hosts. It is applied under every configuration, so a field a profile sets keeps its own value; rules above are separate because their order matters." = "其他任何 App 級欄位，寫成一個 JSON 物件：dns（含 nameserver-policy、fake-ip-filter）、tun（含 route-exclude-address）、sniffer、hosts。它墊在每份設定下面，所以設定自己寫了的欄位以設定為準；規則單獨一欄，因為順序有意義。";

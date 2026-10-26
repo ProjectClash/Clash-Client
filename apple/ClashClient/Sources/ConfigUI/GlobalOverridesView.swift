@@ -1,12 +1,13 @@
 import ClashClientUI
 import SwiftUI
 
-/// Editor for the app-level rules that every configuration receives first.
-struct GlobalRulesView: View {
+/// Editor for the settings every configuration receives on top of its own.
+struct GlobalOverridesView: View {
     var restageRuntime: () -> Void = {}
 
-    @State private var isEnabled = GlobalRulesConfig.load().isEnabled
-    @State private var rules = GlobalRulesConfig.load().rules
+    @State private var isEnabled = GlobalOverridesConfig.load().isEnabled
+    @State private var rules = GlobalOverridesConfig.load().rules
+    @State private var patchText = GlobalOverridesConfig.load().patchJSON
     @State private var editing: RuleDraft?
 
     private struct RuleDraft: Identifiable {
@@ -15,16 +16,20 @@ struct GlobalRulesView: View {
         let raw: String
     }
 
+    private var patchIsValid: Bool {
+        GlobalOverridesConfig.patchIsValid(patchText)
+    }
+
     var body: some View {
         ClashMacSettingsFormContainer {
             Section {
-                Toggle("Enable Global Rules", isOn: $isEnabled)
-                    .accessibilityIdentifier("global-rules.enabled")
+                Toggle("Enable Global Overrides", isOn: $isEnabled)
+                    .accessibilityIdentifier("global-overrides.enabled")
                     .onChange(of: isEnabled) { _ in persist() }
             } header: {
-                Text("Global Rules")
+                Text("Global Overrides")
             } footer: {
-                Text("These rules are checked before the rules of every configuration, including subscriptions that bring their own. They live outside the profile, so a source update cannot drop them.")
+                Text("These settings are applied to every configuration, including subscriptions that keep their own. They live outside the profile, so a source update cannot drop them.")
             }
 
             Section {
@@ -39,7 +44,7 @@ struct GlobalRulesView: View {
                         ConfigurationRuleRow(rules[index], showsChevron: false)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier("global-rules.row.\(index)")
+                    .accessibilityIdentifier("global-overrides.rule.\(index)")
                 }
                 .onDelete { offsets in
                     rules.remove(atOffsets: offsets)
@@ -48,25 +53,49 @@ struct GlobalRulesView: View {
                 ClashAddRow(Text(clash: .copy("Add Rule"))) {
                     editing = RuleDraft(index: nil, raw: "")
                 }
-                .accessibilityIdentifier("global-rules.add")
+                .accessibilityIdentifier("global-overrides.rule.add")
             } header: {
                 Text("Rules")
             } footer: {
-                Text("One rule per line, for example DOMAIN-SUFFIX,example.com,DIRECT. A rule that names a policy a configuration does not define is left out for that configuration.")
+                Text("Prepended to every configuration, before its own rules. A rule that names a policy a configuration does not define is left out for that configuration.")
+            }
+
+            Section {
+                CodeEditorPanel(
+                    text: $patchText,
+                    language: .json,
+                    minHeight: 220
+                )
+                if !patchIsValid {
+                    ClashStatusMessage(text: .copy("Global patch must be a JSON object."), kind: .error)
+                }
+            } header: {
+                Text("Global Patch")
+            } footer: {
+                Text("Any other app-level field, as a JSON object: dns (including nameserver-policy and fake-ip-filter), tun (including route-exclude-address), sniffer, hosts. It is applied under every configuration, so a field a profile sets keeps its own value; rules above are separate because their order matters.")
             }
         }
-        .clashPageTitle("Global Rules")
+        .clashPageTitle("Global Overrides")
         .sheet(item: $editing) { draft in
             RuleEditorSheet(rule: draft.raw) { text in
                 commit(text, at: draft.index)
             }
+        }
+        .task(id: patchText) {
+            guard patchIsValid else { return }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            persist()
+        }
+        .onDisappear {
+            if patchIsValid { persist() }
         }
     }
 
     private func commit(_ text: String, at index: Int?) {
         let rule = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rule.isEmpty else { return }
-        if let index {
+        if let index, rules.indices.contains(index) {
             rules[index] = rule
         } else {
             rules.insert(rule, at: 0)
@@ -75,11 +104,13 @@ struct GlobalRulesView: View {
     }
 
     private func persist() {
-        var config = GlobalRulesConfig.load()
+        var config = GlobalOverridesConfig.load()
         config.isEnabled = isEnabled
         config.rules = rules
-        GlobalRulesConfig.save(config)
-        rules = GlobalRulesConfig.normalized(rules)
+        config.patchJSON = patchText
+        GlobalOverridesConfig.save(config)
+        rules = GlobalOverridesConfig.normalized(rules)
+        patchText = GlobalOverridesConfig.normalizedPatch(patchText)
         restageRuntime()
     }
 }
@@ -104,7 +135,7 @@ private struct RuleEditorSheet: View {
             TextField("DOMAIN-SUFFIX,example.com,DIRECT", text: $text)
                 .font(.body.monospaced())
                 .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("global-rules.field")
+                .accessibilityIdentifier("global-overrides.field")
             HStack {
                 Spacer()
                 Button {

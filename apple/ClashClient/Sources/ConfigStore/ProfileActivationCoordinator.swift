@@ -318,6 +318,9 @@ enum ProfileRuntimeConfigBuilder {
          
         logLevelDirective: ClashLogSettings.LevelDirective? = nil
     ) throws -> RuntimeBuildStages {
+        // The app-level patch lands under the profile, so a profile that sets
+        // the same field keeps its own value.
+        let source = try GlobalOverridesConfig.load().applyingBase(to: raw)
         let profileWorking: String
         switch profile.overwriteMode ?? .standard {
         case .standard, .script:
@@ -334,7 +337,7 @@ enum ProfileRuntimeConfigBuilder {
             var personalRules = spec.appendRules.filter { !muted.contains($0) }
             spec.appendRules = []
             let patched = try ConfigTransforms.mergeOverride(
-                raw: raw,
+                raw: source,
                 overrideJSON: overrideJSON(from: spec)
             )
              
@@ -360,7 +363,7 @@ enum ProfileRuntimeConfigBuilder {
             )
         case .custom:
             let overwritten = try (profile.customOverwrite ?? CustomOverwriteSpec())
-                .applyForFinalRuntimeMigration(to: raw)
+                .applyForFinalRuntimeMigration(to: source)
              
              
              
@@ -400,7 +403,7 @@ enum ProfileRuntimeConfigBuilder {
         // App-level rules are applied last and stay ahead of everything a
         // profile or a rule scheme brings, so a subscription refresh or a
         // built-in scheme update cannot drop them.
-        merged = try GlobalRulesConfig.load().merging(into: merged)
+        merged = try GlobalOverridesConfig.load().merging(into: merged)
 
         let profileScripted = try postMergeScript(
             profile.postMergeScriptID, merged, profile.label
@@ -883,7 +886,7 @@ enum ProfileRuntimeConfigBuilder {
     /// App-level rules a configuration leaves out because it defines no policy
     /// with that name. They still apply to every configuration that has it.
     static func globalRulesLeftOut(of yaml: String, root: [String: Any]? = nil) -> [String] {
-        let config = GlobalRulesConfig.load()
+        let config = GlobalOverridesConfig.load()
         guard config.isEnabled, !config.rules.isEmpty else { return [] }
         guard let known = root.map(knownPolicies(root:)) ?? knownPolicies(in: yaml) else { return [] }
         return config.rules.filter { rule in
