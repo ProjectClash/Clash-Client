@@ -1870,6 +1870,11 @@ final class ProfileActivationCoordinator {
                 "global rule left out of the runtime: \(rule) names a policy this configuration does not define",
                 stream: .app, level: .warning)
         }
+        for key in OverridePatch(patchJSON: profile.override.patchJSON).strippedGlobalKeys {
+            ClashLogStore.shared.append(
+                "profile override field left out of the runtime: \(key) is an app-level setting",
+                stream: .app, level: .warning)
+        }
          
          
          

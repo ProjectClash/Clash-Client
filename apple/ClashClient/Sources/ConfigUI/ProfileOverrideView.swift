@@ -261,6 +261,14 @@ struct ProfileOverrideView: View {
                         )
                     } header: {
                         Text("Patch JSON")
+                    } footer: {
+                        if !strippedPatchKeys.isEmpty {
+                            Text(clash: .copy(ClashCopy.format(
+                                "These fields are app-level settings, so a profile ignores them: %@. Set them in Client Settings › Global Overrides, or in this configuration's DNS and Tunnel & Routes pages.",
+                                locale: locale,
+                                strippedPatchKeys.joined(separator: ", ")
+                            )))
+                        }
                     }
 
                     addedRulesSection
@@ -675,6 +683,11 @@ struct ProfileOverrideView: View {
         patchDiagnosticLine = nil
         refusal = nil
         self.error = error.localizedDescription
+    }
+
+
+    private var strippedPatchKeys: [String] {
+        OverridePatch(patchJSON: patchText).strippedGlobalKeys
     }
 
     private func report(_ error: Error) {

@@ -134,6 +134,12 @@ struct OverridePatch {
         removingTopLevelKeys(Self.globalRuntimeKeys)
     }
 
+    /// Keys written here that belong to the app rather than to a profile.
+    /// They are dropped when the profile is built, so the editor warns instead.
+    var strippedGlobalKeys: [String] {
+        topLevelKeys.filter { Self.globalRuntimeKeys.contains($0) }.sorted()
+    }
+
      
      
     func overlaying(_ other: OverridePatch) -> OverridePatch {
