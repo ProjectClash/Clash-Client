@@ -271,9 +271,36 @@ enum ClashTVFeedback {
         .information(title: "Connect to test latency.", accessibilityIdentifier: "tvos.feedback.connectToTest")
     }
 
+     
+     
     static func couldNotChangeMode(reason: String) -> ClashFeedbackPresentation {
         .error(title: ClashFeedbackCopy.modeNotChanged, message: .verbatim(reason),
                accessibilityIdentifier: "tvos.feedback.modeFailed")
+    }
+
+     
+     
+     
+    static var modeRefused: ClashFeedbackPresentation {
+        .error(title: ClashFeedbackCopy.modeNotChanged,
+               message: .copy("The mode wasn't switched, so the one before is still in use."),
+               accessibilityIdentifier: "tvos.feedback.modeFailed")
+    }
+
+     
+     
+     
+    static func globalRefused(_ key: String) -> ClashFeedbackPresentation {
+        .error(title: ClashFeedbackCopy.modeNotChanged, message: .copy(key),
+               accessibilityIdentifier: "tvos.feedback.globalRefused")
+    }
+
+     
+     
+    static var globalNotConfirmed: ClashFeedbackPresentation {
+        .error(title: ClashFeedbackCopy.modeNotChanged,
+               message: .copy("Clash couldn't confirm what GLOBAL is set to, so Global mode wasn't turned on. Try again in a moment."),
+               accessibilityIdentifier: "tvos.feedback.globalNotConfirmed")
     }
 
     static func couldNotUse(_ member: String, reason: String) -> ClashFeedbackPresentation {
@@ -385,14 +412,21 @@ enum ClashTVFeedback {
             updated(n), updatedWithWarning(n, warning: r), couldNotUpdate(n, reason: r), scriptUpdated(n),
             couldNotUpdateScript(n, reason: r), busy(.connecting), busy(.disconnecting), busy(.updating), busy(.applying), connectToTest,
             disconnected(reason: r), ipStackChangedNotRestarted(reason: r),
-            couldNotChangeMode(reason: r), couldNotUse(n, reason: r), couldNotUnfix(n, reason: r), testStopped(reason: r),
+            couldNotChangeMode(reason: r), modeRefused, globalNotConfirmed,
+            globalRefused(ClashTunnelOutboundMode.nothingToChooseKey), globalRefused(ClashTunnelOutboundMode.globalNotLoadedKey),
+            couldNotUse(n, reason: r), couldNotUnfix(n, reason: r), testStopped(reason: r),
             couldNotConnect(reason: r), couldNotReinstall(reason: r), couldNotSwitchProfile(to: n, reason: r),
             autoConnectNotSaved(reason: r), autoConnectUnconfirmed(reason: r), ipStackAppliedWithRestart,
             couldNotApplyIPStack(reason: r), sharingFailed(reason: r), stoppingSharingFailed(reason: r),
             couldNotRestore(reason: r), alreadyAdded(n), restored(count: 1), restored(count: 2),
             couldNotMakeCertificate(reason: r), portOutOfRange,
         ]
-        return results.map(\.title)
+         
+         
+        return results.flatMap { [$0.title] + [$0.message].compactMap { $0 } }.filter {
+            if case .verbatim = $0 { return false }
+            return true
+        }
     }
 
 

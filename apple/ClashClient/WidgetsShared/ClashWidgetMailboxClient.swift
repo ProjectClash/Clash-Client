@@ -33,12 +33,12 @@ enum ClashWidgetMailboxClient {
         )
         let deadline = began.addingTimeInterval(ClashWidgetMailbox.waitForSnapshot)
         var latest = store.readSnapshot()
-        var answered = latest.map { $0.at >= request.at } ?? false
+        var answered = latest.map { $0.at.timeIntervalSince(request.at) >= 0 } ?? false
         while !answered, Date() < deadline {
             try? await Task.sleep(nanoseconds: 100_000_000)
             if let snapshot = store.readSnapshot() {
                 latest = snapshot
-                answered = snapshot.at >= request.at
+                answered = snapshot.at.timeIntervalSince(request.at) >= 0
             }
         }
         let milliseconds = Int(Date().timeIntervalSince(began) * 1_000)

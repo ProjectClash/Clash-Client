@@ -1483,6 +1483,14 @@ struct Profile: Codable, Identifiable, Equatable {
      
      
      
+     
+     
+     
+    var globalPickedByReader: Bool? = nil
+     
+     
+     
+     
     var udpFallbackPolicy: UDPFallbackPolicy? = nil
     var override: OverrideSpec = OverrideSpec()
      

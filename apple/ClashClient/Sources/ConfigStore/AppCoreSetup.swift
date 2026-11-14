@@ -52,7 +52,7 @@ enum AppCoreSetup {
 
     static func currentSettings() throws -> IPStackSettings {
 #if os(tvOS)
-        try IPStackSettings.load(from: UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard)
+        try IPStackSettings.load(from: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard)
 #else
          
          

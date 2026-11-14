@@ -1,3 +1,4 @@
+import ClashClientUI
 import SwiftUI
 #if canImport(AppKit)
 import AppKit
@@ -23,6 +24,23 @@ struct ConfigurationFailureView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+             
+             
+             
+             
+             
+             
+             
+            ForEach(
+                Array(ClashKernelRefusalHint.lines(for: failure.kernelSentence, locale: locale).enumerated()),
+                id: \.offset
+            ) { _, line in
+                Text(verbatim: line)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("configuration.failure.hint")
+            }
              
              
             ForEach(

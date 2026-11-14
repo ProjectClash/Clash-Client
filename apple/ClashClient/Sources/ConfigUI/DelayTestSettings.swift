@@ -9,7 +9,7 @@ enum DelayTestSettings {
     static let key = "nodes.delayTestURL"
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
     static func url(from defaults: UserDefaults = appGroupDefaults) -> String {

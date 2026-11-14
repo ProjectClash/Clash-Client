@@ -248,20 +248,53 @@ public struct ClashRulePolicyOptions:
      
      
     public let subRuleNames: [String]?
+     
+     
+     
+     
+    public let ruleSetsAreKnown: Bool
+
+    private enum CodingKeys: String, CodingKey { case groups, proxies, ruleSets, subRuleNames, ruleSetsAreKnown }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        groups = try container.decode([ClashRulePolicySnapshot].self, forKey: .groups)
+        proxies = try container.decode([ClashRulePolicySnapshot].self, forKey: .proxies)
+        ruleSets = try container.decode([String].self, forKey: .ruleSets)
+        subRuleNames = try container.decodeIfPresent([String].self, forKey: .subRuleNames)
+        ruleSetsAreKnown = try container.decodeIfPresent(Bool.self, forKey: .ruleSetsAreKnown) ?? false
+    }
 
      
     public var pickableGroups: [ClashRulePolicySnapshot] {
         groups.filter { !$0.isHidden }
     }
 
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public var unofferedKinds: Set<ClashStructuredRule.Action> {
+        ruleSetsAreKnown && ruleSets.isEmpty ? [.ruleSet] : []
+    }
+
     public init(
         groups: [ClashRulePolicySnapshot] = [],
         proxies: [ClashRulePolicySnapshot] = [],
         ruleSets: [String] = [],
-        subRuleNames: [String]? = nil
+        subRuleNames: [String]? = nil,
+         
+         
+        ruleSetsAreKnown: Bool = false
     ) {
         self.groups = groups
         self.proxies = proxies
+        self.ruleSetsAreKnown = ruleSetsAreKnown
         self.ruleSets = ruleSets.map { String($0.prefix(256)) }
         self.subRuleNames = subRuleNames.map { names in
             names.map { String($0.prefix(256)) }
@@ -303,6 +336,26 @@ public struct ClashRulePolicyOptions:
             return !subRuleNames.contains(rule.target)
         }
         return verdict(forTarget: rule.target) == .unknown
+    }
+
+     
+     
+     
+     
+     
+    public static func value(_ content: String, from old: ClashStructuredRule.Action, to new: ClashStructuredRule.Action,
+                             ruleSets: [String]?) -> String {
+        guard let ruleSets, old != new else { return content }
+        if new == .ruleSet { return ruleSets.contains(content) ? content : "" }
+        return old == .ruleSet ? "" : content
+    }
+
+     
+     
+     
+    public func ruleSetNotInEffect(_ raw: String) -> ClashDisplayText? {
+        guard ruleSetsAreKnown else { return nil }
+        return ClashRuleNames(policies: nil, ruleSets: Set(ruleSets), subRules: nil).notInEffect(raw)
     }
 }
 
@@ -1253,6 +1306,30 @@ public struct ClashStructuredRule:
     }
 
      
+     
+     
+     
+    public static let headsWhosePayloadConsumesRemainingFields: Set<String> = Set(
+        Action.allCases.filter(\.payloadConsumesRemainingFields).map(\.rawValue)
+    )
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func coreTargetIndex(head: String, fieldCount: Int) -> Int? {
+        let kind = head.trimmingCharacters(in: .whitespaces).uppercased()
+        if kind == Action.match.rawValue { return fieldCount > 1 ? 1 : nil }
+        if headsWhosePayloadConsumesRemainingFields.contains(kind) { return fieldCount > 1 ? fieldCount - 1 : nil }
+        return fieldCount > 2 ? 2 : nil
+    }
+
+     
     public static let srcOption = "src"
     public static let noResolveOption = "no-resolve"
 
@@ -1285,13 +1362,20 @@ public struct ClashStructuredRule:
         }
 
         if action == .match {
-            guard fields.count == 2, !fields[1].isEmpty else {
+             
+             
+             
+             
+             
+             
+            guard fields.count >= 2, !fields[1].isEmpty else {
                 return nil
             }
             return ClashStructuredRule(
                 action: action,
                 content: "",
-                target: fields[1]
+                target: fields[1],
+                additionalParams: Array(fields.dropFirst(2))
             )
         }
 
@@ -1333,6 +1417,27 @@ public struct ClashStructuredRule:
             additionalParams: options.rest
         )
     }
+
+     
+     
+     
+     
+     
+    public static func ruleSetNames(in raw: String) -> [String] {
+        guard let parsed = parse(raw) else { return [] }
+        if parsed.action == .ruleSet { return [parsed.content] }
+        guard [.and, .or, .not, .subRule].contains(parsed.action) else { return [] }
+        let content = parsed.content as NSString
+        return nestedRuleSet.matches(in: parsed.content, range: NSRange(location: 0, length: content.length)).map {
+            content.substring(with: $0.range(at: 1)).trimmingCharacters(in: .whitespaces)
+        }
+    }
+
+     
+     
+     
+    private static let nestedRuleSet = try! NSRegularExpression(
+        pattern: #"\(\s*RULE-SET\s*,\s*([^,()]+)"#, options: [.caseInsensitive])
 
     public static func disallowReason(
         _ rule: String,
@@ -1503,5 +1608,350 @@ public struct ClashStructuredRule:
         maximum: UInt64
     ) -> String {
         "\(actionName) must use values from 0 through \(maximum), with ranges such as 8000-9000."
+    }
+}
+
+ 
+ 
+ 
+ 
+public enum ClashModuleRuleSetNames {
+    public static let lan = "module-builtin-lan"
+    public static let system = "module-builtin-system"
+
+    public static func isReserved(_ name: String) -> Bool {
+        if name == lan || name == system { return true }
+        let parts = name.split(separator: "-", omittingEmptySubsequences: false)
+        return parts.count == 3 && parts[0] == "module" && parts[2].count == 8 && parts[2].allSatisfy(\.isHexDigit)
+            && (parts[1] == "ruleset" || parts[1] == "engine"
+                || (parts[1].count == 8 && parts[1].allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }))
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashRuleNames: Equatable, Sendable {
+     
+    public enum Missing: Equatable, Sendable {
+        case policy(String), ruleSet(String), subRule(String)
+    }
+
+     
+     
+    public var policies: Set<String>?
+    public var ruleSets: Set<String>?
+    public var subRules: Set<String>?
+
+    public init(policies: Set<String>?, ruleSets: Set<String>?, subRules: Set<String>?) {
+        self.policies = policies
+        self.ruleSets = ruleSets
+        self.subRules = subRules
+    }
+
+     
+     
+     
+     
+     
+    public func missing(in rule: String) -> Missing? {
+        guard let parsed = ClashStructuredRule.parse(rule) else { return nil }
+        if let name = missingRuleSets(in: rule).first { return .ruleSet(name) }
+        let target = parsed.target
+        if !target.isEmpty, policies?.contains(target) != true {
+            if parsed.action != .subRule {
+                if policies != nil { return .policy(target) }
+            } else if let subRules, !subRules.contains(target) {
+                 
+                 
+                if policies != nil { return .subRule(target) }
+            }
+        }
+        return nil
+    }
+
+    public func leavesOut(_ rule: String) -> Bool { missing(in: rule) != nil }
+
+     
+     
+     
+    public func missingRuleSets(in rule: String) -> [String] {
+        guard let ruleSets else { return [] }
+        return ClashStructuredRule.ruleSetNames(in: rule).filter {
+            !ruleSets.contains($0) && !ClashModuleRuleSetNames.isReserved($0)
+        }
+    }
+
+     
+     
+     
+    public func notInEffect(_ rule: String) -> ClashDisplayText? {
+        guard case .ruleSet(let name)? = missing(in: rule) else { return nil }
+        return .format("Not in effect: this configuration has no rule set named %@.", [name])
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public enum ClashRuleSetSniff {
+    public struct Found: Equatable, Sendable {
+         
+        public let format: String
+         
+         
+         
+        public let behavior: String?
+
+        public init(format: String, behavior: String?) {
+            self.format = format
+            self.behavior = behavior
+        }
+
+         
+        public var fileSuffix: String { format == "text" ? "txt" : format }
+    }
+
+     
+     
+    static let readsAtMost = 4 * 1_048_576
+
+     
+     
+    public static func name(typed label: String, fileName: String) -> String {
+        let typed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return typed.isEmpty ? (fileName as NSString).deletingPathExtension : typed
+    }
+
+     
+     
+     
+    public static func fileName(_ fileName: String, found: Found) -> String {
+        fileName.isEmpty ? "rule-set-" + UUID().uuidString.prefix(8).lowercased() + "." + found.fileSuffix : fileName
+    }
+
+     
+    public static func linkStem(_ link: String) -> String {
+        guard let url = URL(string: link.trimmingCharacters(in: .whitespacesAndNewlines)) else { return "" }
+        let stem = url.deletingPathExtension().lastPathComponent
+        return stem == "/" ? "" : stem
+    }
+
+    public static func ruleSet(in data: Data) -> Found? {
+         
+        if data.starts(with: [0x28, 0xB5, 0x2F, 0xFD]) { return Found(format: "mrs", behavior: nil) }
+        var text = String(decoding: data.prefix(readsAtMost), as: UTF8.self)
+        if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
+         
+        let lines = Lines(text: text[...], dropsLast: data.count > readsAtMost)
+        switch yamlPayload(lines) {
+        case .notYAML:
+            return textBehavior(lines).map { Found(format: "text", behavior: $0) }
+        case .otherKeys:
+            return nil
+        case .entries(let entries):
+             
+             
+             
+             
+            guard !entries.isEmpty else { return nil }
+             
+            if entries.contains(where: carriesAPolicy) { return nil }
+            if entries.contains(where: isClassical) { return Found(format: "yaml", behavior: "classical") }
+            return Found(format: "yaml", behavior: entries.allSatisfy(isAddressRange) ? "ipcidr" : "domain")
+        }
+    }
+
+    private enum YAMLReading { case notYAML, otherKeys, entries([String]) }
+
+     
+     
+    private struct Lines: Sequence, IteratorProtocol {
+        let text: Substring
+        var index: Substring.Index
+        let dropsLast: Bool
+
+        init(text: Substring, dropsLast: Bool) {
+            self.text = text
+            self.index = text.startIndex
+            self.dropsLast = dropsLast
+        }
+
+        mutating func next() -> Substring? {
+            while index < text.endIndex {
+                let end = text[index...].firstIndex(where: \.isNewline) ?? text.endIndex
+                if end == text.endIndex, dropsLast { index = end; return nil }
+                let line = text[index..<end]
+                index = end == text.endIndex ? end : text.index(after: end)
+                if !line.isEmpty { return line }
+            }
+            return nil
+        }
+    }
+
+     
+     
+     
+    private static func yamlPayload(_ lines: Lines) -> YAMLReading {
+        var sawPayload = false
+        var entries: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") || trimmed == "---" { continue }
+            if let first = line.first, first != " ", first != "\t", first != "-" {
+                 
+                 
+                 
+                guard let key = yamlKey(line) else { return sawPayload ? .otherKeys : .notYAML }
+                guard key == "payload", !sawPayload else { return .otherKeys }
+                sawPayload = true
+                 
+                if let open = line.firstIndex(of: "["), let close = line.lastIndex(of: "]"), open < close {
+                    entries += flowItems(line[line.index(after: open)..<close])
+                }
+                continue
+            }
+            guard sawPayload, trimmed.hasPrefix("-") else { continue }
+            let entry = trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
+            entries.append(entry.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")))
+        }
+        return sawPayload ? .entries(entries) : .notYAML
+    }
+
+     
+     
+     
+     
+     
+    static func flowItems(_ list: Substring) -> [String] {
+        var items: [String] = []
+        var current = ""
+        var quote: Character?
+        var characters = list.makeIterator()
+        var pending: Character? = nil
+        while let character = pending ?? characters.next() {
+            pending = nil
+            if let open = quote {
+                if open == "\"", character == "\\", let escaped = characters.next() {
+                    current.append(escaped)
+                    continue
+                }
+                guard character == open else { current.append(character); continue }
+                if open == "'", let next = characters.next() {
+                    if next == "'" { current.append("'"); continue }
+                    pending = next
+                }
+                quote = nil
+            } else if (character == "'" || character == "\""),
+                      current.allSatisfy(\.isWhitespace) {
+                current = ""
+                quote = character
+            } else if character == "," {
+                items.append(current)
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        items.append(current)
+        return items.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    private static let keyLine = try! NSRegularExpression(pattern: #"^["']?([A-Za-z_][A-Za-z0-9_-]*)["']?\s*:(\s|$)"#)
+
+    private static func yamlKey(_ line: Substring) -> String? {
+        let text = String(line)
+        guard let match = keyLine.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[range])
+    }
+
+     
+     
+     
+    private static func textBehavior(_ lines: Lines) -> String? {
+        var kind: String?
+         
+         
+        var dotted = false
+        for line in lines {
+            let entry = line.trimmingCharacters(in: .whitespaces)
+            if entry.isEmpty || entry.hasPrefix("#") || entry.hasPrefix("//") { continue }
+            let this: String
+            if isClassical(entry) { this = "classical" }
+            else if isAddressRange(entry) { this = "ipcidr" }
+            else if isTextDomain(entry) { this = "domain"; dotted = dotted || entry.contains(".") }
+            else { return nil }
+            if kind == nil { kind = this } else if kind != this { return nil }
+        }
+        return kind == "domain" && !dotted ? nil : kind
+    }
+
+     
+     
+     
+     
+     
+    private static func isClassical(_ entry: String) -> Bool {
+        guard let parsed = ClashStructuredRule.parsePayload(entry) else { return isUnknownRuleLine(entry) }
+        if [.and, .or, .not, .subRule].contains(parsed.action) { return parsed.content.hasSuffix(")") }
+        return parsed.additionalParams.isEmpty
+    }
+
+     
+     
+    private static func isUnknownRuleLine(_ entry: String) -> Bool {
+        unknownRuleLine.firstMatch(in: entry, range: NSRange(entry.startIndex..., in: entry)) != nil
+    }
+
+    private static let unknownRuleLine = try! NSRegularExpression(pattern: #"^[A-Z][A-Z0-9]*(-[A-Z0-9]+)*,[^,]+$"#)
+
+     
+     
+    private static func carriesAPolicy(_ entry: String) -> Bool {
+        ClashStructuredRule.parsePayload(entry) != nil && !isClassical(entry)
+    }
+
+    private static let addressRange = try! NSRegularExpression(
+        pattern: #"^(\d{1,3}(\.\d{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]+)(/\d{1,3})?$"#)
+     
+     
+     
+    private static let textDomain = try! NSRegularExpression(
+        pattern: #"^(\+\.|\*\.|\.)?[^\s.,:/]+(\.[^\s.,:/]+)*\.?$"#)
+
+    private static func isAddressRange(_ entry: String) -> Bool {
+        addressRange.firstMatch(in: entry, range: NSRange(entry.startIndex..., in: entry)) != nil
+    }
+
+    private static func isTextDomain(_ entry: String) -> Bool {
+        textDomain.firstMatch(in: entry, range: NSRange(entry.startIndex..., in: entry)) != nil
+    }
+}
+
+extension ClashRulesOverviewSnapshot {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    var hasRulesGroup: Bool {
+        !buckets.isEmpty || inlineCount > fallback.count
     }
 }

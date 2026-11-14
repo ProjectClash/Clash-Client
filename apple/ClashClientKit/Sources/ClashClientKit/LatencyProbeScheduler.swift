@@ -85,7 +85,15 @@ public struct LatencyProbePolicy: Equatable, Sendable {
         restEveryProbes: 0,
         restNanoseconds: 0
     )
-    public static let tvOS = LatencyProbePolicy(maxConcurrentProbes: 6)
+     
+     
+     
+    public static let tvOS = LatencyProbePolicy(
+        maxConcurrentProbes: 12,
+        packetTunnelScaleTiers: true,
+        restEveryProbes: 0,
+        restNanoseconds: 0
+    )
     public static let macOS = LatencyProbePolicy(maxConcurrentProbes: 12)
 
      

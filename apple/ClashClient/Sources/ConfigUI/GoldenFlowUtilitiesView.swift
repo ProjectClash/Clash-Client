@@ -32,7 +32,23 @@ struct GoldenFlowUtilitiesAdapter: View {
     var ownsNavigationContainer = true
 
 
+     
+     
+     
+     
+     
+    @State private var heardLogCount = -1
+    @State private var rowsTick = 0
+
     var body: some View {
+        rootBody
+            .onReceive(command.logCountPublisher) { count in
+                if count != heardLogCount { heardLogCount = count }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: ClashLogSettings.recordingDidChange)) { _ in rowsTick &+= 1 }
+    }
+
+    private var rootBody: some View {
         Group {
             if ownsNavigationContainer {
                 ClashFeatureNavigationContainer {
@@ -51,6 +67,14 @@ struct GoldenFlowUtilitiesAdapter: View {
     }
 
     private var sharedRoot: some View {
+        utilitiesView
+             
+             
+             
+            .onAppear { rowsTick &+= 1 }
+    }
+
+    private var utilitiesView: some View {
         ClashClientUI.ClashUtilitiesView(
             snapshot: sharedSnapshot,
             destination: $destination,
@@ -69,6 +93,10 @@ struct GoldenFlowUtilitiesAdapter: View {
                 ClashSymbolImage(symbol: symbol)
             },
             destinationContent: { item in
+                 
+                 
+                 
+                 
                 GoldenFlowUtilitiesDestinationAdapter(
                     vpn: vpn,
                     command: command,
@@ -81,6 +109,7 @@ struct GoldenFlowUtilitiesAdapter: View {
                     usesRegularDetailLayout:
                         !ownsNavigationContainer
                 )
+                .equatable()
             }
         )
     }
@@ -90,7 +119,8 @@ struct GoldenFlowUtilitiesAdapter: View {
     }
 
     private var sharedSnapshot: AppleClientSnapshot {
-        AppleClientSnapshot(
+        _ = (rowsTick, heardLogCount)
+        return AppleClientSnapshot(
             revision: 0,
             connection: AppleClientConnectionSnapshot(
                 phase: command.isConnected
@@ -128,10 +158,15 @@ struct GoldenFlowUtilitiesAdapter: View {
  
  
  
-struct GoldenFlowUtilitiesDestinationAdapter: View {
+struct GoldenFlowUtilitiesDestinationAdapter: View, Equatable {
     @ObservedObject var vpn: VPNController
-    @ObservedObject var command: ClashCommandClient
-    @ObservedObject var connections: ConnectionsModel
+     
+     
+     
+     
+     
+    let command: ClashCommandClient
+    let connections: ConnectionsModel
     @ObservedObject var networkQuality: NetworkQualityModel
     @ObservedObject var stun: STUNTestModel
     @ObservedObject var proxyShare: ProxyShareModel
@@ -143,7 +178,39 @@ struct GoldenFlowUtilitiesDestinationAdapter: View {
      
      
      
-    var loadsPersistedLogs = !false
+    let loadsPersistedLogs: Bool
+     
+     
+     
+     
+    private let lensWhenMade: ClashActivityLens
+
+    init(vpn: VPNController, command: ClashCommandClient, connections: ConnectionsModel,
+         networkQuality: NetworkQualityModel, stun: STUNTestModel, proxyShare: ProxyShareModel,
+         destination: AppNavigationDestination.UtilitiesDestination, activityLens: Binding<ClashActivityLens>,
+         usesRegularDetailLayout: Bool, loadsPersistedLogs: Bool = !false) {
+        self.vpn = vpn
+        self.command = command
+        self.connections = connections
+        self.networkQuality = networkQuality
+        self.stun = stun
+        self.proxyShare = proxyShare
+        self.destination = destination
+        _activityLens = activityLens
+        self.usesRegularDetailLayout = usesRegularDetailLayout
+        self.loadsPersistedLogs = loadsPersistedLogs
+        lensWhenMade = activityLens.wrappedValue
+    }
+
+     
+     
+     
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.vpn === rhs.vpn && lhs.command === rhs.command && lhs.connections === rhs.connections
+            && lhs.networkQuality === rhs.networkQuality && lhs.stun === rhs.stun && lhs.proxyShare === rhs.proxyShare
+            && lhs.destination == rhs.destination && lhs.lensWhenMade == rhs.lensWhenMade
+            && lhs.usesRegularDetailLayout == rhs.usesRegularDetailLayout && lhs.loadsPersistedLogs == rhs.loadsPersistedLogs
+    }
 
     var body: some View {
          
@@ -257,13 +324,23 @@ struct LogsDestinationView: View {
     var isShown = true
     @State private var survived: [String] = []
     @State private var liveLogs: [String] = []
-    @State private var isConnected = false
+     
+     
+    @State private var isConnected: Bool
      
      
      
     @State private var recording = ClashLogSettings.isRecording(
         from: GlobalConfig.appGroupDefaults
     )
+
+    init(command: ClashCommandClient, loadsPersistedLogs: Bool, query: String = "", isShown: Bool = true) {
+        self.command = command
+        self.loadsPersistedLogs = loadsPersistedLogs
+        self.query = query
+        self.isShown = isShown
+        _isConnected = State(initialValue: command.isConnected)
+    }
 
     var body: some View {
         LogsContent(
@@ -285,8 +362,15 @@ struct LogsDestinationView: View {
         )
          
          
-        .onReceive(command.$logs) { liveLogs = $0 }
-        .onReceive(command.$isConnected) { isConnected = $0 }
+         
+         
+         
+        .onReceive(command.$logs) { logs in
+            if logs != liveLogs { liveLogs = logs }
+        }
+        .onReceive(command.$isConnected) { connected in
+            if connected != isConnected { isConnected = connected }
+        }
         .onReceive(NotificationCenter.default.publisher(for: ClashLogSettings.recordingDidChange)) { _ in
             recording = ClashLogSettings.isRecording(from: GlobalConfig.appGroupDefaults)
         }

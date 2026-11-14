@@ -8,7 +8,7 @@ enum GlobalConfig {
     private static let key = "config.global"
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
     static func load(from defaults: UserDefaults = appGroupDefaults) -> OverrideSpec {

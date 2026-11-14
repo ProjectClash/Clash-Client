@@ -55,7 +55,11 @@ final class SubscriptionManager {
         etag: String? = nil,
         lastModified: String? = nil,
         useConditionalValidators: Bool = true,
-        nodesOnly: Bool = false
+        nodesOnly: Bool = false,
+         
+         
+         
+        unreadBody: ((Data) -> Void)? = nil
     ) async throws -> FetchedConfig? {
         guard case .url(let urlString) = profile.source else {
             throw SubscriptionError.notARemoteSource
@@ -67,8 +71,11 @@ final class SubscriptionManager {
         }
          
          
-        let basicUser = components.user
-        let basicPassword = components.password ?? ""
+         
+         
+         
+         
+        let link = components.url
         components.user = nil
         components.password = nil
         guard let url = components.url else { throw SubscriptionError.badURL }
@@ -103,16 +110,20 @@ final class SubscriptionManager {
         ) {
             request.setValue(value, forHTTPHeaderField: field)
         }
+        var saved: String?
         if let token = credentials.get("sub.token.\(profile.id)"),
            let tokenString = String(data: token, encoding: .utf8) {
-            request.setValue("Bearer \(tokenString)", forHTTPHeaderField: "Authorization")
-        } else if let basicUser {
-            let encoded = Data("\(basicUser):\(basicPassword)".utf8).base64EncodedString()
-            request.setValue("Basic \(encoded)", forHTTPHeaderField: "Authorization")
+            saved = "Bearer \(tokenString)"
+            request.setValue(saved, forHTTPHeaderField: "Authorization")
+        } else if let basic = link.flatMap(ProviderMaterializer.basicAuthorization(from:)) {
+            request.setValue(basic, forHTTPHeaderField: "Authorization")
         }
+         
+         
+        let sent = RefusedCredential.of(request, link: link, saved: saved)
         let result: DownloadResult
         do {
-            result = try await fetch(request)
+            result = try await fetch(request, sent: sent)
         } catch DownloadError.badStatus(let status)
             where (300...399).contains(status)
                 && request.value(forHTTPHeaderField: "User-Agent")
@@ -125,10 +136,16 @@ final class SubscriptionManager {
                 ClientUserAgent.Preset.flclash.value,
                 forHTTPHeaderField: "User-Agent"
             )
-            result = try await fetch(compatibilityRequest)
+            result = try await fetch(compatibilityRequest, sent: sent)
         }
         if result.notModified { return nil }
-        let yaml = try ProxyImportBridge.derivedSubscriptionYAML(from: result.data, nodesOnly: nodesOnly)
+        let yaml: String
+        do {
+            yaml = try ProxyImportBridge.derivedSubscriptionYAML(from: result.data, nodesOnly: nodesOnly)
+        } catch {
+            unreadBody?(result.data)
+            throw error
+        }
         return FetchedConfig(yaml: yaml, rawSource: result.data, etag: result.etag,
                              lastModified: result.lastModified,
                              subscriptionInfo: result.subscriptionUserInfo.flatMap(SubscriptionInfo.parse(header:)),
@@ -148,12 +165,18 @@ final class SubscriptionManager {
         PanelName.suggested(fromContentDisposition: header)
     }
 
-    private func fetch(_ request: URLRequest) async throws -> DownloadResult {
-        try await downloader.fetch(
-            request,
-            maxBytes: Self.maxConfigBytes,
-            redirectPolicy: .followAcrossOrigins(maxHops: 5)
-        )
+     
+     
+    private func fetch(_ request: URLRequest, sent: RefusedCredential) async throws -> DownloadResult {
+        do {
+            return try await downloader.fetch(
+                request,
+                maxBytes: Self.maxConfigBytes,
+                redirectPolicy: .followAcrossOrigins(maxHops: 5)
+            )
+        } catch {
+            throw DownloadError.refusingALink(error, sent: sent)
+        }
     }
 }
 
@@ -175,6 +198,12 @@ enum SubscriptionSourceRefresher {
      
      
      
+     
+     
+     
+     
+     
+     
     static func refresh(
         profile given: Profile,
         manager: SubscriptionManager,
@@ -182,7 +211,9 @@ enum SubscriptionSourceRefresher {
         credentials: CredentialStore,
         workingDirectory: URL,
         now: Date = Date(),
-        expecting expected: ProfileSourceIdentity? = nil
+        expecting expected: ProfileSourceIdentity? = nil,
+        conditional: Bool = true,
+        scripts caller: ScriptEngine.Caller = .surfaced
     ) async throws -> SubscriptionSourceRefreshResult {
          
          
@@ -211,9 +242,18 @@ enum SubscriptionSourceRefresher {
          
          
         let hasLocalSource = Self.hasUsableSource(at: sourceURL)
+         
+         
+         
+         
+         
+         
+         
+         
+         
         guard let fetched = try await manager.fetch(
             profile: profile,
-            useConditionalValidators: hasLocalSource
+            useConditionalValidators: conditional && hasLocalSource
         ) else {
              
              
@@ -237,9 +277,11 @@ enum SubscriptionSourceRefresher {
          
          
          
+         
+         
         _ = try ProfileRuntimeConfigBuilder.runtimePreview(
             raw: fetched.yaml,
-            profile: profile
+            profile: profile, scripts: caller
         )
 
          
@@ -252,6 +294,26 @@ enum SubscriptionSourceRefresher {
             workingDirectory: workingDirectory, profileID: profile.id
         )
         let previousSource = try? String(contentsOf: sidecar, encoding: .utf8)
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        if profile.usesLocalSourceOverride != true, let previousSource, previousSource == fetched.yaml {
+            try profileStore.updateIfPresent(id: profile.id, when: sourceIsAsItWas) { current in
+                current.lastUpdatedAt = now
+                current.labelIsUserAssigned = ProfileLabelPolicy.isUserAssigned(current)
+                current.subscriptionInfo = fetched.subscriptionInfo ?? current.subscriptionInfo
+                current.subscriptionETag = fetched.etag ?? current.subscriptionETag
+                current.subscriptionLastModified = fetched.lastModified ?? current.subscriptionLastModified
+            }
+            return .unchanged
+        }
         let heldBack = SubscriptionUpdateSuppression.suppressed(
             previousYAML: previousSource,
             newYAML: fetched.yaml,

@@ -207,7 +207,7 @@ public extension View {
                  
                  
                 item.destination
-                    .clashProductModalRoot(title: item.title)
+                    .clashProductModalRoot(title: .copy(item.title))  
                     .clashDoorSaveBar(saving) { payload.wrappedValue = nil }
                      
                      
@@ -251,7 +251,7 @@ public extension View {
         clashProductModal(item: selection, role: .form) { route in
             ClashSingleColumnNavigationContainer {
                 content(route)
-                    .clashProductModalRoot(title: title(route))
+                    .clashProductModalRoot(title: .copy(title(route)))  
                     .clashDoorSaveBar(saving) { selection.wrappedValue = nil }
                      
                      

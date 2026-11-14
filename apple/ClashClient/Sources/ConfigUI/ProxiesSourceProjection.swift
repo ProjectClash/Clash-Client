@@ -112,6 +112,9 @@ struct ProxiesOverviewModel: Equatable, Sendable {
          
          
         var memberTotal: Int? = nil
+         
+         
+        var carriedSelection: String? = nil
 
         private var normalizedType: String {
             type.lowercased()

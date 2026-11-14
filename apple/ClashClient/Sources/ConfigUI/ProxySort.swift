@@ -49,6 +49,6 @@ enum ProxySort: String, CaseIterable, Identifiable {
     }
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 }

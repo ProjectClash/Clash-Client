@@ -1402,10 +1402,11 @@ enum ModuleIgnoredReason: Error, Codable, Equatable, Sendable {
     case ruleRefused(String)
     case unsupportedScriptType(String)
     case scriptWithoutAddress
-    case boxJSNotSupported
     case missingArgument(String)
      
     case scriptTurnedOff
+     
+     
      
      
      
@@ -1480,8 +1481,6 @@ enum ModulePlatformLimit: String, Codable, Sendable {
     case carrierCode
      
     case remoteRelativeFile
-     
-    case vpnIcon
      
      
     case systemProxy
@@ -1569,12 +1568,19 @@ extension ModuleIgnoredEntry {
 
      
      
+     
     private struct RetiredReason: Decodable {
         struct Limit: Decodable { let _0: String }
+        struct Nothing: Decodable {}
         let platformCannot: Limit?
+         
+         
+         
+        let boxJSNotSupported: Nothing?
 
         var now: ModuleIgnoredReason? {
-            platformCannot?._0 == "scriptTooLargeHere" ? .scriptDownloadFailed(ModuleIgnoredEntry.scriptNotDownloadedYet) : nil
+            if boxJSNotSupported != nil { return .scriptAddressNotSecure }
+            return platformCannot?._0 == "scriptTooLargeHere" ? .scriptDownloadFailed(ModuleIgnoredEntry.scriptNotDownloadedYet) : nil
         }
     }
 

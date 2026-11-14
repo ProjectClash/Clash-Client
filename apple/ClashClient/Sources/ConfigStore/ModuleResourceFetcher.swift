@@ -30,7 +30,10 @@ enum ModuleUserAgent {
         case "plugin", "lpx": return .loon
         case "module", "srmodule": return .shadowrocket
         case "stoverride": return .stash
-        case "conf", "snippet": return .quantumultX
+         
+         
+         
+        case "conf", "snippet", "js": return .quantumultX
         default: return nil
         }
     }

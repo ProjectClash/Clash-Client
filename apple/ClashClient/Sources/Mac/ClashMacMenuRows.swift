@@ -46,7 +46,14 @@ final class ClashMacMenuRowModel: ObservableObject {
      
     var badgeText: String {
         if let emptyNote { return emptyNote }
-        return switch latency {
+        return Self.latencyText(latency)
+    }
+
+     
+     
+     
+    static func latencyText(_ latency: ClashProxyLatencyState) -> String {
+        switch latency {
         case .measured(let milliseconds): "\(milliseconds) ms"
         case .failed, .timedOut: "—"
         case .untested, .testing: ""
@@ -296,6 +303,58 @@ enum ClashMacMenuRowMetrics {
     static let memberCap: CGFloat = 300
 
      
+     
+     
+     
+     
+     
+     
+     
+    static let groupNameCap: CGFloat = 148
+
+     
+    static let routeNameCap: CGFloat = 240
+
+     
+     
+    static var trailingFont: NSFont { NSFont.menuFont(ofSize: NSFont.smallSystemFontSize) }
+
+     
+     
+     
+     
+     
+    static let menuWidthCap: CGFloat = 335
+
+     
+    static let leastTrailingRoom: CGFloat = 96
+
+     
+    static let trailingGap: CGFloat = 12
+
+     
+     
+     
+     
+     
+    static func middleTruncated(_ text: String, width: CGFloat, font given: NSFont? = nil, keepsTail: Bool = false) -> String {
+        let attributes: [NSAttributedString.Key: Any] = [.font: given ?? font]
+        func fits(_ candidate: String) -> Bool { (candidate as NSString).size(withAttributes: attributes).width <= width }
+        guard !fits(text) else { return text }
+        let characters = Array(text)
+        func cut(keeping kept: Int) -> String {
+            let head = keepsTail ? kept / 3 : (kept + 1) / 2
+            return String(characters[..<head]) + "…" + String(characters[(characters.count - (kept - head))...])
+        }
+        var low = 0, high = characters.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if fits(cut(keeping: middle)) { low = middle } else { high = middle - 1 }
+        }
+        return cut(keeping: low)
+    }
+
+     
     static let highlightInset: CGFloat = 5
      
      
@@ -343,9 +402,26 @@ final class ClashMacProxySubmenuController: NSObject, NSMenuDelegate {
     private let locale: Locale
     private(set) var rows: [String: ClashMacMenuRowModel] = [:]
     private(set) var testRow: ClashMacMenuRowModel?
+     
+     
+     
+    private var delayOrderBase: [String]?
+     
+     
+    private var orderReadings: [String: ClashProxyLatencyState] = [:]
+     
+     
+    private var readingsChanged = false
 
      
     var groupName: String? { group()?.name }
+     
+     
+    var checkedName: String? { group()?.checked }
+     
+     
+     
+    var latestReadings: (() -> [String: ClashProxyLatencyState]?)?
 
     init(
         group: @escaping () -> ClashMacMenuProxyCatalog.Group?,
@@ -360,11 +436,28 @@ final class ClashMacProxySubmenuController: NSObject, NSMenuDelegate {
      
      
      
+     
+     
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu.items.isEmpty else { return }
         rows = [:]
         testRow = nil
-        guard let group = group() else { return }
+        guard var group = group() else { return }
+        for (name, fresh) in latestReadings?() ?? [:] {
+            guard let shown = group.latency[name], shown != fresh else { continue }
+            if fresh == .testing, shown != .testing {
+                group.lastReadings[name] = shown
+            } else if fresh != .testing {
+                group.lastReadings[name] = nil
+            }
+            group.latency[name] = fresh
+        }
+         
+        let members = group.listed
+        delayOrderBase = group.sortsItsRows && group.sort == .delay ? group.members : nil
+        orderReadings = delayOrderBase == nil ? [:]
+            : Dictionary(members.map { ($0, group.orderReading(of: $0)) }, uniquingKeysWith: { first, _ in first })
+        readingsChanged = false
         let pointSize = ClashMacMenuRowMetrics.pointSize
         let noNodes = ClashCopy.string("No nodes", locale: locale)
          
@@ -373,23 +466,29 @@ final class ClashMacProxySubmenuController: NSObject, NSMenuDelegate {
             ClashCopy.format("Show All %@ Nodes…", locale: locale, $0.formatted(.number.locale(locale)))
         }
         let width = ClashMacMenuRowMetrics.memberRowWidth(
-            names: group.members + [ClashCopy.string("Test latency", locale: locale)] + (showAll.map { [$0] } ?? []),
+            names: members + [ClashCopy.string("Test latency", locale: locale)] + (showAll.map { [$0] } ?? []),
             note: group.emptyMembers.isEmpty ? nil : noNodes
         )
 
         let test = ClashMacMenuRowModel(kind: .test, name: ClashCopy.string("Test latency", locale: locale))
-        let testItem = NSMenuItem(title: test.name, action: nil, keyEquivalent: "")
-        testItem.setAccessibilityIdentifier("menu-bar.test-group")
-        testItem.view = ClashMacMenuRowHost.make(
-            model: test, width: width, pointSize: pointSize, closesMenuOnClick: false
-        ) { [weak self, weak test] in
+        let runTest = { [weak self, weak test] in
             if self?.actions.testGroup(group.name) == true { test?.isTesting = true }
         }
+         
+         
+        let testTarget = ClashMacMenuRowAction(runTest)
+        let testItem = NSMenuItem(title: test.name, action: #selector(ClashMacMenuRowAction.fire(_:)), keyEquivalent: "")
+        testItem.target = testTarget
+        testItem.representedObject = testTarget
+        testItem.setAccessibilityIdentifier("menu-bar.test-group")
+        testItem.view = ClashMacMenuRowHost.make(
+            model: test, width: width, pointSize: pointSize, closesMenuOnClick: false, onClick: runTest
+        )
         testRow = test
         menu.addItem(testItem)
         menu.addItem(.separator())
 
-        for member in group.members {
+        for member in members {
              
             let isCurrent = member == group.checked
             let model = ClashMacMenuRowModel(
@@ -447,6 +546,38 @@ final class ClashMacProxySubmenuController: NSObject, NSMenuDelegate {
         }
     }
 
+     
+     
+     
+     
+     
+     
+    func menuWillOpen(_ menu: NSMenu) {
+        takeTheSweepsOrder(in: menu)
+    }
+
+     
+     
+     
+     
+    private func takeTheSweepsOrder(in menu: NSMenu) {
+        guard let base = delayOrderBase, readingsChanged else { return }
+        let items = menu.items
+         
+        let run = items.indices.filter { (items[$0].view as? ClashMacMenuRowHost)?.model.kind == .member }
+        guard let first = run.first, run.last.map({ $0 - first + 1 }) == run.count else { return }
+        let byName = Dictionary(run.map { (items[$0].title, items[$0]) }, uniquingKeysWith: { first, _ in first })
+        let ordered = ClashProxiesDisplayPreferences.Sort.delay
+            .ordered(base.filter { byName[$0] != nil }, name: { $0 }, latency: { orderReadings[$0] ?? .untested })
+            .compactMap { byName[$0] }
+        guard ordered.count == run.count else { return }
+        readingsChanged = false
+        guard !zip(ordered, run.map { items[$0] }).allSatisfy({ $0 === $1 }) else { return }
+        var reordered = items
+        reordered.replaceSubrange(first..<(first + run.count), with: ordered)
+        menu.items = reordered
+    }
+
     func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
         for candidate in menu.items {
             (candidate.view as? ClashMacMenuRowHost)?.model.isHighlighted = candidate === item
@@ -458,6 +589,11 @@ final class ClashMacProxySubmenuController: NSObject, NSMenuDelegate {
         for (name, model) in rows where model.emptyNote == nil {
             if let fresh = latency[name], fresh != model.latency {
                 model.latency = fresh
+                 
+                if delayOrderBase != nil, fresh != .testing, orderReadings[name] != fresh {
+                    orderReadings[name] = fresh
+                    readingsChanged = true
+                }
             }
         }
     }

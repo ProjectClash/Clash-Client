@@ -368,12 +368,17 @@ public struct ClashWidgetMainView: View {
     private let stats: ClashWidgetStatsModel
     private let size: ClashWidgetSize
     private let slots: ClashWidgetSlots
+     
+     
+    private let notice: String?
 
     public init(
         snapshot: ClashWidgetSnapshot?, facts: ClashWidgetAppFacts?, now: Date, locale: Locale,
         size: ClashWidgetSize, slots: ClashWidgetSlots, configuredMode: ClashWidgetMode? = nil,
-        countsWiredByDefault: Bool = false, throughputUnit: ClashThroughputUnit = .bits
+        countsWiredByDefault: Bool = false, throughputUnit: ClashThroughputUnit = .bits,
+        notice: String? = nil
     ) {
+        self.notice = notice
         model = ClashWidgetMainModel(
             snapshot: snapshot, facts: facts, now: now, locale: locale,
             configuredMode: configuredMode, countsWiredByDefault: countsWiredByDefault,
@@ -408,11 +413,22 @@ public struct ClashWidgetMainView: View {
                  
                 if size != .small { refresh }
             }
-            secondLine
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if let notice {
+                 
+                 
+                Text(clash: .copy(notice))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(size == .small ? 4 : 2)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                secondLine
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         }
     }
 

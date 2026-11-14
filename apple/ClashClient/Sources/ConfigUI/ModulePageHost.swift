@@ -1,6 +1,9 @@
 #if os(iOS) || os(macOS)
 import ClashClientUI
 import SwiftUI
+#if os(macOS)
+import ClashMacClient
+#endif
 
  
  
@@ -14,6 +17,9 @@ struct ModulePageHost: View {
     @ObservedObject var model: ModulePageModel
     @ObservedObject private var addRequest: ModuleAddRequest
      
+     
+    private let noticePlaces: ClashModulesNoticePlaces?
+     
     @State private var isVisible = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.locale) private var locale
@@ -23,18 +29,55 @@ struct ModulePageHost: View {
      
     static let pollInterval: UInt64 = 5_000_000_000
 
-    init(model: ModulePageModel) {
+    init(model: ModulePageModel, noticePlaces: ClashModulesNoticePlaces? = nil) {
         self.model = model
         addRequest = model.addRequest
+        self.noticePlaces = noticePlaces
+    }
+
+     
+     
+     
+     
+    static func offers(_ place: ClashModulesSnapshot.NoticePlace, activeProfileID: String?, exists: (String) -> Bool) -> Bool {
+        switch place {
+        case .snifferSettings(let id): return id == activeProfileID && exists(id)
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+    static func detailResultPlace(_ center: ClashFeedbackCenter?) -> ((String) -> AnyView)? {
+#if os(macOS)
+        guard let center else { return nil }
+        return { id in AnyView(ModuleDetailResultPlace(center: center, operations: detailResultOperations(of: id))) }
+#else
+        return nil
+#endif
+    }
+
+     
+    static func detailResultOperations(of id: String) -> [String] {
+        [ModulePageModel.updateOperation(of: id)]
     }
 
     var body: some View {
         ClashClientUI.ClashModulesView(
             snapshot: model.snapshot,
+            writes: model.writes,
             perform: { model.perform($0, feedback: feedback) },
             detail: { model.details[$0] },
             opensAddModule: addRequest.link != nil && isVisible && scenePhase == .active,
-            pullToUpdate: { await model.refreshAll() },
+             
+            pullToUpdate: { await model.refreshAll(feedback: feedback) },
+             
+             
+            noticePlaces: noticePlaces,
+            detailResultPlace: Self.detailResultPlace(feedback),
             quickAdd: { open in
                 ModuleQuickAddCard(
                     isAdding: model.isAdding,
@@ -102,4 +145,20 @@ struct ModulePageHost: View {
         }
     }
 }
+#if os(macOS)
+ 
+ 
+private struct ModuleDetailResultPlace: View {
+    @ObservedObject var center: ClashFeedbackCenter
+    let operations: [String]
+
+    var body: some View {
+        let saying = operations.contains { center.result(for: $0) != nil }
+        ClashMacFeedbackSlot(center: center, operations: operations)
+            .padding(.horizontal, saying ? 20 : 0)
+            .padding(.top, saying ? 8 : 0)
+            .environment(\.clashFeedback, center)
+    }
+}
+#endif
 #endif

@@ -58,7 +58,9 @@ public enum ConfigurationFieldValidation {
      
     public static func problem(_ text: String, field: ConfigurationField) -> ConfigurationFieldProblem? {
          
-        if field.kind == .number { return problem(number: text, min: field.min, max: field.max, whole: true) }
+        if field.kind == .number {
+            return problem(number: text, min: field.min, max: field.max, whole: true, zeroMeansUnset: field.zeroMeansUnset)
+        }
         return problem(text, format: field.format, path: field.path, allowed: field.values ?? [])
     }
 
@@ -163,11 +165,15 @@ public enum ConfigurationFieldValidation {
      
      
      
-    public static func problem(number text: String, min: Double?, max: Double?, whole: Bool) -> ConfigurationFieldProblem? {
+     
+     
+    public static func problem(number text: String, min: Double?, max: Double?, whole: Bool,
+                               zeroMeansUnset: Bool = false) -> ConfigurationFieldProblem? {
         let value = text.trimmingCharacters(in: .whitespaces)
         guard !value.isEmpty else { return nil }
         guard ConfigurationFieldDraft.isNumber(value), let number = Double(value) else { return .notANumber }
         if whole, value.contains(where: { ".eE".contains($0) }) { return .wholeNumber }
+        if zeroMeansUnset, number == 0 { return nil }
         if let min, number < min { return .belowMinimum(plain(min)) }
         if let max, number > max { return .aboveMaximum(plain(max)) }
         return nil

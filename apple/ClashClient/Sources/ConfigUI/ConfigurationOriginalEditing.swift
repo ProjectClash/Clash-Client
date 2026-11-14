@@ -539,12 +539,18 @@ extension ProfilesViewModel {
                  
                  
                  
-                let followsLink: Bool = { if case .subscription = current.origin { return true }; return false }()
+                 
+                 
+                 
+                 
+                 
+                let kept = current.isRetainedSnapshot == true
+                let followsLink: Bool = { if !kept, case .subscription = current.origin { return true }; return false }()
                 if followsLink, !detachingLinkOriginals.contains(id) { throw OriginalEditingError.followsSubscription }
                  
                  
                  
-                let ownCopy = followsLink || (own?.rename != nil && Self.sourceIsShared(current.id, besides: id, in: snapshot))
+                let ownCopy = followsLink || kept || (own?.rename != nil && Self.sourceIsShared(current.id, besides: id, in: snapshot))
                 guard !changingConfigurationLibrary else { throw ConfigurationLibraryError.busy }
                 changingConfigurationLibrary = true
                 defer { changingConfigurationLibrary = false }

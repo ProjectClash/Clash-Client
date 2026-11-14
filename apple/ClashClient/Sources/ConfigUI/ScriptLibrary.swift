@@ -208,7 +208,7 @@ enum ScriptLibrary {
     static var appGroupDefaults: UserDefaults {
 
 
-        return UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        return UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
 
@@ -538,11 +538,14 @@ enum ScriptLibrary {
         }
     }
 
+     
+     
     static func apply(id: String?, to yaml: String,
                       profileName: String = "",
-                      from defaults: UserDefaults = appGroupDefaults) throws -> String {
+                      from defaults: UserDefaults = appGroupDefaults,
+                      caller: ScriptEngine.Caller) throws -> String {
         try apply(
-            id: id, to: yaml, scripts: load(from: defaults), profileName: profileName
+            id: id, to: yaml, scripts: load(from: defaults), profileName: profileName, caller: caller
         )
     }
 
@@ -550,7 +553,8 @@ enum ScriptLibrary {
         id: String?,
         to yaml: String,
         scripts: [ConfigScript],
-        profileName: String = ""
+        profileName: String = "",
+        caller: ScriptEngine.Caller
     ) throws -> String {
         guard let id else { return yaml }
         guard let script = scripts.first(where: { $0.id == id }) else {
@@ -559,7 +563,7 @@ enum ScriptLibrary {
         try ScriptLibraryError.refusingLarge(yaml)
         let configJSON = try ConfigTransforms.yamlToJSON(yaml)
         let rewritten = try ScriptEngine.run(
-            script: script.body, configJSON: configJSON, profileName: profileName
+            script: script.body, configJSON: configJSON, profileName: profileName, caller: caller, name: script.label
         )
         return try ConfigTransforms.jsonToYAML(rewritten)
     }
@@ -974,7 +978,7 @@ struct ScriptEditorView: View {
      
      
     @State private var activeProfileNameLoad: Task<String, Never>?
-    @State private var diagnosticLine: Int?
+    @State private var diagnostic: CodeEditorDiagnostic?
     @State private var asksAboutUnsaved = false
 
     @State private var importAddress = ""
@@ -1100,12 +1104,11 @@ struct ScriptEditorView: View {
                         )
                     }
                 }
-                .alert("Rename…", isPresented: $renaming) {
-                    TextField("Script name", text: $renameDraft)
-                        .accessibilityIdentifier("scripts.editor.name")
-                    Button("OK") { commitRename() }
-                    Button("Cancel", role: .cancel) {}
-                }
+                 
+                 
+                .clashTextFieldAlert("Rename…", isPresented: $renaming, text: $renameDraft,
+                                     field: ClashTextFieldAlertField(placeholder: "Script name",
+                                                                     identifier: "scripts.editor.name")) { _ in commitRename() }
                 .alert("Test Run", isPresented: $showsTestResult) {
                     Button("OK") {}
                 } message: {
@@ -1136,29 +1139,24 @@ struct ScriptEditorView: View {
                  
                  
                  
-                .alert("Import from URL…", isPresented: $importingFromLink) {
-                    TextField("Script URL", text: $importAddress)
-#if !os(macOS)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-#endif
-                        .autocorrectionDisabled()
-                        .accessibilityIdentifier("scripts.editor.import.address")
-                    Button("Import") {
-                        Task { @MainActor in
-                            await importFromAddress()
-                            if !importResult.isEmpty { showsImportError = true }
-                        }
+                .clashTextFieldAlert("Import from URL…", isPresented: $importingFromLink, text: $importAddress,
+                                     field: ClashTextFieldAlertField(placeholder: "Script URL",
+                                                                     identifier: "scripts.editor.import.address", kind: .url),
+                                     confirm: "Import", confirmIdentifier: "scripts.editor.import.url") { _ in
+                    Task { @MainActor in
+                        await importFromAddress()
+                        if !importResult.isEmpty { showsImportError = true }
                     }
-                    .accessibilityIdentifier("scripts.editor.import.url")
-                    Button("Cancel", role: .cancel) {}
                 }
         }
         .clashStackNavigationViewStyle()
         .clashRegistersDeparture(
             isDirty: holdsUnsavedEdit,
-            save: { completion in
-                persist(then: completion)
+             
+             
+             
+            saveAnswering: { answer in
+                persist(fromTheClosingQuestion: true, then: { answer($0 ? .saved : .refused(nil)) })
             },
             discard: { discardDraft() }
         )
@@ -1209,7 +1207,7 @@ struct ScriptEditorView: View {
             text: $bodyText,
             language: .javascript,
             minHeight: 200,
-            diagnosticLine: diagnosticLine,
+            diagnostic: diagnostic,
             expandsVertically: true,
             chrome: .minimal,
             showsLineNumbers: showsLineNumbers,
@@ -1327,17 +1325,20 @@ struct ScriptEditorView: View {
              
              
              
+             
+             
             let output = try ScriptEngine.run(
                 script: bodyText,
                 configJSON: json,
-                profileName: name
+                profileName: name,
+                caller: .surfaced, name: "Test Run"
             )
             _ = try ConfigTransforms.jsonToYAML(output)
             result = "OK — script returned a valid config object."
-            diagnosticLine = nil
+            diagnostic = nil
             return true
         } catch {
-            diagnosticLine = CodeEditorDiagnosticParser.line(in: error.localizedDescription)
+            diagnostic = CodeEditorDiagnostic.parsed(from: error.localizedDescription, in: bodyText)
             result = "Error: \(error.localizedDescription)"
             return false
         }
@@ -1384,7 +1385,7 @@ struct ScriptEditorView: View {
             bodyText = text
             sourceURL = importAddress.trimmingCharacters(in: .whitespacesAndNewlines)
             result = ""
-            diagnosticLine = nil
+            diagnostic = nil
             if label == ScriptLibrary.defaultLabel || label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let url = try? ScriptImport.address(importAddress),
                let suggested = ScriptImport.suggestedName(for: url) {
@@ -1413,7 +1414,7 @@ struct ScriptEditorView: View {
                 }
                 bodyText = text
                 result = ""
-                diagnosticLine = nil
+                diagnostic = nil
             } catch {
                 importResult = ScriptImportError.notText.localizedDescription
             }
@@ -1461,7 +1462,7 @@ struct ScriptEditorView: View {
         draftSlot.record(currentDraft)
     }
 
-    private func persist(then: ((Bool) -> Void)? = nil) {
+    private func persist(fromTheClosingQuestion: Bool = false, then: ((Bool) -> Void)? = nil) {
          
         let source: ScriptEditorSource = importAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .write : .url
         switch ScriptEditorSaveIntent.decide(source: source, address: importAddress) {
@@ -1477,7 +1478,14 @@ struct ScriptEditorView: View {
                 await importFromAddress()
                  
                  
-                guard importResult.isEmpty else { then?(false); return }
+                 
+                 
+                 
+                guard importResult.isEmpty else {
+                    if fromTheClosingQuestion { showsImportError = true }
+                    then?(false)
+                    return
+                }
                 checkThenCommit(then)
             }
         case .save:
@@ -1686,7 +1694,7 @@ struct ScriptManualPage: View {
                         .accessibilityIdentifier("scripts.add.name")
                 }
                 Section {
-                    CodeEditorPanel(text: $bodyText, language: .javascript, minHeight: 240, diagnosticLine: nil)
+                    CodeEditorPanel(text: $bodyText, language: .javascript, minHeight: 240, diagnostic: nil)
                 }
             }
             .clashPageTitle("Add Script")

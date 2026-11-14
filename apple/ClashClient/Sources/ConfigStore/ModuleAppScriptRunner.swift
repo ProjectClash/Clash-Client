@@ -18,6 +18,12 @@ import Foundation
 struct ModuleAppScriptEntry: Hashable, Identifiable, Sendable {
      
      
+    static func id(module: String, origin: ModuleLineOrigin) -> String {
+        #"\#(module):\#(origin.section):\#(origin.line)"#
+    }
+
+     
+     
     var id: String
      
     var name: String
@@ -42,6 +48,11 @@ enum ModuleAppScriptTrigger: Equatable, Sendable {
      
      
     case panel(byReader: Bool)
+     
+     
+     
+     
+    case byReader
 }
 
  
@@ -527,6 +538,9 @@ final class ModuleAppScriptRunner: ObservableObject {
     private var schedules: [String: ModuleCronExpression?] = [:]
     private var running: Set<String> = []
      
+     
+    private var readerRuns: [String: [CheckedContinuation<Void, Never>]] = [:]
+     
     private var reads = 0
     private let subscription = Subscription()
 
@@ -567,7 +581,8 @@ final class ModuleAppScriptRunner: ObservableObject {
         store = ModuleScriptStore(directory: container.appendingPathComponent(ModuleScriptStore.directoryName, isDirectory: true),
                                   log: log)
         quarantine = ModuleScriptQuarantine(file: container.appendingPathComponent(ModuleScriptQuarantine.fileName))
-        let post = postNotification ?? { record in ModuleScriptNotificationPoster.post(record, log: log) }
+        let words = ModuleScriptNotificationWordsStore(container: container)
+        let post = postNotification ?? { record in ModuleScriptNotificationPoster.post(record, words: words, log: log) }
         var services = ModuleScriptServices(
             log: log,
             notify: { request in
@@ -659,7 +674,7 @@ final class ModuleAppScriptRunner: ObservableObject {
                  
                 guard let sha = script.bodySHA256 else { continue }
                 let entry = ModuleAppScriptEntry(
-                    id: #"\#(module.id):\#(script.origin.section):\#(script.origin.line)"#, name: script.name,
+                    id: ModuleAppScriptEntry.id(module: module.id, origin: script.origin), name: script.name,
                     moduleID: module.id, kind: script.kind, eventName: script.eventName, imageURL: script.imageURL)
                 guard found[entry.id] == nil else { continue }
                 found[entry.id] = Loaded(entry: entry, script: script, family: family,
@@ -716,7 +731,7 @@ final class ModuleAppScriptRunner: ObservableObject {
     func dueCron(since: Date) -> [(entry: ModuleAppScriptEntry, scheduled: Date)] {
         let upTo = now()
         return entries(.cron).compactMap { entry in
-            guard let first = nextFire(of: entry, after: since), first <= upTo else { return nil }
+            guard let first = nextFire(of: entry, after: since), first.timeIntervalSince(upTo) <= 0 else { return nil }
             return (entry, lastFire(of: entry, from: first, upTo: upTo))
         }
     }
@@ -726,13 +741,13 @@ final class ModuleAppScriptRunner: ObservableObject {
     private func lastFire(of entry: ModuleAppScriptEntry, from first: Date, upTo: Date) -> Date {
         var last = first
         for window in [60.0, 3_600, 86_400] {
-            if let near = nextFire(of: entry, after: upTo.addingTimeInterval(-window)), near <= upTo {
+            if let near = nextFire(of: entry, after: upTo.addingTimeInterval(-window)), near.timeIntervalSince(upTo) <= 0 {
                 if near > last { last = near }
                 break
             }
         }
         for _ in 0..<1_000 {
-            guard let next = nextFire(of: entry, after: last), next <= upTo else { break }
+            guard let next = nextFire(of: entry, after: last), next.timeIntervalSince(upTo) <= 0 else { break }
             last = next
         }
         return last
@@ -776,6 +791,19 @@ final class ModuleAppScriptRunner: ObservableObject {
      
      
     func run(_ entry: ModuleAppScriptEntry, trigger: ModuleAppScriptTrigger) async -> ModuleAppScriptResult {
+         
+         
+         
+         
+         
+         
+         
+        if case .cron = trigger {
+            while readerRuns[entry.id] != nil {
+                await withCheckedContinuation { readerRuns[entry.id, default: []].append($0) }
+            }
+            if Task.isCancelled { return ModuleAppScriptResult(entry: entry, outcome: .skipped(.other)) }
+        }
         guard let script = loaded[entry.id] else {
             log(#"module script \#(entry.name): no module turned on has it now; not run"#)
             return ModuleAppScriptResult(entry: entry, outcome: .notRun(.notFound))
@@ -788,6 +816,15 @@ final class ModuleAppScriptRunner: ObservableObject {
             return ModuleAppScriptResult(entry: entry, outcome: .notRun(.busy))
         }
         defer { running.remove(entry.id) }
+        if trigger == .byReader {
+            readerRuns[entry.id] = []
+            log(#"module script \#(entry.name): run by the reader"#)
+        }
+        defer {
+            if trigger == .byReader, let waiting = readerRuns.removeValue(forKey: entry.id) {
+                waiting.forEach { $0.resume() }
+            }
+        }
         var declaration = ModuleScriptDeclaration(
             name: script.script.name, kind: Self.hostKind(script.script), family: script.family,
             scriptPath: script.script.scriptURL, sourceFile: script.sourceFile, sourceSHA256: script.sha256,
@@ -796,7 +833,7 @@ final class ModuleAppScriptRunner: ObservableObject {
         switch trigger {
         case .generic(let node, let info): declaration.environmentParameters = Self.parameters(node: node, info: info)
         case .panel(let byReader): declaration.trigger = byReader ? "button" : "auto-interval"
-        case .cron, .networkChanged, .event: break
+        case .cron, .networkChanged, .event, .byReader: break
         }
         let outcome = await currentHost().run(declaration, phase: nil, request: nil, response: nil, body: nil)
         return Self.result(entry, outcome)

@@ -100,6 +100,60 @@ final class ProxyNodeEditorDraft: ObservableObject {
      
      
      
+    weak var openPage: ProxyNodeEditorDraft?
+
+     
+     
+     
+     
+     
+     
+    var isDirtyIncludingOpenPages: Bool {
+        deepestEditedJSON != originalJSON || openPagesHoldText
+    }
+
+     
+     
+     
+     
+     
+    var holdsMoreThanABlankNode: Bool {
+        ProxyNodeDetailsView.strippingEmptyStrings(editedJSON)
+            != ProxyNodeDetailsView.strippingEmptyStrings(Self.json(ProxyNodeCatalog.newNodeMapping(type: typeID)))
+    }
+
+    private var deepestEditedJSON: String { openPage?.deepestEditedJSON ?? editedJSON }
+
+     
+    var deepestPage: ProxyNodeEditorDraft { openPage?.deepestPage ?? self }
+
+    private var openPagesHoldText: Bool {
+        guard let page = openPage else { return false }
+        return page.pendingText?.isPending() == true || page.openPagesHoldText
+    }
+
+     
+     
+    var pendingText: ProxyNodePendingText?
+
+     
+     
+     
+     
+     
+     
+    func absorbOpenPages() -> ClashDisplayText? {
+        guard let page = openPage else { return nil }
+        if let refusal = page.absorbOpenPages() { return refusal }
+        if let refusal = page.pendingText?.apply() { return refusal }
+        synchronize(from: page)
+        return nil
+    }
+
+     
+     
+     
+     
      
     func synchronize(from source: ProxyNodeEditorDraft) {
         guard editedJSON != source.editedJSON,
@@ -360,6 +414,222 @@ final class ProxyNodeEditorDraft: ObservableObject {
     }
 }
 
+extension ProxyNodeEditorDraft {
+     
+     
+     
+     
+     
+    func crossFieldViolations(catalog: ConfigurationFieldCatalog?) -> [ProxyEditorCrossFieldRules.Violation] {
+        ProxyEditorCrossFieldRules.violations(
+            typeID: typeID,
+            value: { self.string($0) },
+            nested: { self.string(path: [$0, $1]) },
+            hasObject: { self.mapping[$0] is [String: Any] },
+            list: { self.list($0) },
+            elementLists: { self.elementLists($0, $1) },
+            written: { key in
+                ProxyEditorFieldChoices.catalogField(forType: self.typeID, key: key, catalog: catalog)
+                    .map { $0.isWritten(self.mapping[key].flatMap(ProxyNodeCatalog.json)) }
+            }
+        )
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct ProxyNodeEditorLeaving {
+     
+    let hasUnsavedEdits: () -> Bool
+     
+     
+     
+    let save: (@escaping (ClashDepartureSaveAnswer) -> Void) -> Void
+     
+    let leave: () -> Void
+     
+    let ask: () -> Void
+     
+     
+    let sayRefusal: (ClashDisplayText) -> Void
+
+     
+    func requestLeave() {
+        if hasUnsavedEdits() { ask() } else { leave() }
+    }
+
+     
+     
+     
+     
+    func saveAndLeave() {
+        save { answer in
+            if case .refused(let reason?) = answer { sayRefusal(reason) }
+        }
+    }
+
+    func discardAndLeave() { leave() }
+}
+
+ 
+ 
+ 
+private struct ProxyNodeEditorTouchLeaving: ViewModifier {
+     
+    let asksForItself: Bool
+    let saving: Bool
+    let saveDisabled: Bool
+    @Binding var asksBeforeLeaving: Bool
+    let leaving: ProxyNodeEditorLeaving
+
+    func body(content: Content) -> some View {
+#if os(iOS)
+        content
+            .clashBackButtonHidden(asksForItself)
+            .clashUnsavedChangesAlert(isPresented: $asksBeforeLeaving, message: .copy("This page has changes that have not been saved."),
+                isBusy: saving, saveDisabled: saveDisabled,
+                save: { leaving.saveAndLeave() }, discard: { leaving.discardAndLeave() })
+            .interactiveDismissDisabled(saving || asksForItself)
+             
+             
+             
+            .background(ProxyNodeEditorPullDownAttempts { leaving.pullDownAttempted(saving: saving) })
+#else
+        content
+            .interactiveDismissDisabled(saving)
+#endif
+    }
+}
+
+#if os(iOS)
+extension ProxyNodeEditorLeaving {
+     
+     
+     
+     
+     
+    func pullDownAttempted(saving: Bool) {
+        if !saving && hasUnsavedEdits() { ask() }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct ProxyNodeEditorPullDownAttempts: UIViewRepresentable {
+    let attempted: () -> Void
+
+    func makeCoordinator() -> Relay { Relay() }
+
+    func makeUIView(context: Context) -> Anchor {
+        let anchor = Anchor()
+        anchor.relay = context.coordinator
+        return anchor
+    }
+
+    func updateUIView(_ anchor: Anchor, context: Context) {
+        context.coordinator.attempted = attempted
+        anchor.follow()
+    }
+
+    static func dismantleUIView(_ anchor: Anchor, coordinator: Relay) {
+        coordinator.stand(on: nil)
+    }
+
+     
+     
+    final class Anchor: UIView {
+        weak var relay: Relay?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isHidden = true
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            follow()
+        }
+
+        func follow() {
+            relay?.stand(on: window == nil ? nil : presentation)
+        }
+
+         
+         
+        private var presentation: UIPresentationController? {
+            var responder: UIResponder? = self
+            while let next = responder, !(next is UIViewController) { responder = next.next }
+            guard var controller = responder as? UIViewController else { return nil }
+            while let parent = controller.parent { controller = parent }
+            guard controller.presentingViewController != nil else { return nil }
+            return controller.presentationController
+        }
+    }
+
+    final class Relay: NSObject, UISheetPresentationControllerDelegate, UIPopoverPresentationControllerDelegate {
+        var attempted: () -> Void = {}
+        private weak var presentation: UIPresentationController?
+         
+         
+         
+        private var original: UIAdaptivePresentationControllerDelegate?
+
+         
+         
+         
+        func stand(on next: UIPresentationController?) {
+            if let next, next === presentation, next.delegate === self { return }
+            if let presentation, presentation.delegate === self { presentation.delegate = original }
+            presentation = nil
+            original = nil
+            guard let next else { return }
+            original = next.delegate
+            presentation = next
+            next.delegate = self
+        }
+
+        func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) {
+            original?.presentationControllerDidAttemptToDismiss?(presentationController)
+            attempted()
+        }
+
+        override func responds(to aSelector: Selector!) -> Bool {
+            super.responds(to: aSelector) || (original?.responds(to: aSelector) ?? false)
+        }
+
+        override func conforms(to aProtocol: Protocol) -> Bool {
+            super.conforms(to: aProtocol) || (original?.conforms(to: aProtocol) ?? false)
+        }
+
+        override func forwardingTarget(for aSelector: Selector!) -> Any? {
+            if super.responds(to: aSelector) { return nil }
+            return original
+        }
+    }
+}
+#endif
  
  
  
@@ -456,6 +726,10 @@ struct ProxyNodeDetailsView: View {
      
      
     let onDone: (() -> Void)?
+     
+     
+     
+    let drawsClose: Bool
 
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
@@ -464,8 +738,27 @@ struct ProxyNodeDetailsView: View {
     @Environment(\.configurationFieldCopy) private var fieldCopy
     @Environment(\.locale) private var locale
     @StateObject private var draft: ProxyNodeEditorDraft
+     
+     
+     
+     
+     
+     
+    @State private var refusalLine = ""
+     
+     
+    @State private var refusals = 0
+     
+     
+     
+    @State private var refusalGoneTo = 0
+    @State private var formIsOnScreen = false
+     
+    @State private var refusedForMissingField: String?
     @State private var errorMessage = ""
     @State private var saving = false
+     
+    @State private var asksBeforeLeaving = false
      
      
     @State private var fieldCatalog: ConfigurationFieldCatalog?
@@ -487,9 +780,11 @@ struct ProxyNodeDetailsView: View {
         dialerCandidates: @escaping () -> DialerProxyCandidates = { .empty },
         subscriptionReset: (() throws -> Void)? = nil,
         onDone: (() -> Void)? = nil,
+        drawsClose: Bool = false,
         commitTitle: String = "Save"
     ) {
         self.commitTitle = commitTitle
+        self.drawsClose = drawsClose
         self.record = record
         self.retest = retest
         self.isNew = isNew
@@ -521,24 +816,27 @@ struct ProxyNodeDetailsView: View {
                 fieldCatalog = try? await ProfilesViewModel.loadSyntaxCatalog().fieldCatalog
             }
         }
+         
+         
         .alert(
             ClashCopy.key("Change Proxy Type?"),
-            isPresented: Binding(get: { pendingType != nil }, set: { if !$0 { pendingType = nil } })
-        ) {
+            isPresented: Binding(get: { pendingType != nil }, set: { if !$0 { pendingType = nil } }),
+            presenting: pendingType
+        ) { type in
             Button(role: .destructive) {
-                if let pendingType, let fieldCatalog { draft.changeType(to: pendingType, catalog: fieldCatalog) }
+                if let fieldCatalog { draft.changeType(to: type, catalog: fieldCatalog) }
                 pendingType = nil
             } label: {
                 Text(clash: .copy("Change Proxy Type"))
             }
             Button(role: .cancel) { pendingType = nil } label: { Text(clash: .copy("Cancel")) }
-        } message: {
-            if let pendingType, let fieldCatalog {
+        } message: { type in
+            if let fieldCatalog {
                  
                 Text(clash: .copy("These fields are removed:"))
-                    + Text(verbatim: "\n" + ProxyNodeCatalog.droppedFieldTitles(
-                        from: draft.mapping, currentType: draft.typeID, changingTo: pendingType, in: fieldCatalog,
-                        copy: fieldCopy, locale: locale).joined(separator: ConfigurationFieldCopy.Language(locale: locale) == .en ? ", " : "、"))
+                    + Text(verbatim: "\n" + ConfigurationValueWords.listJoined(ProxyNodeCatalog.droppedFieldTitles(
+                        from: draft.mapping, currentType: draft.typeID, changingTo: type, in: fieldCatalog,
+                        copy: fieldCopy, locale: locale), locale: locale))
             }
         }
         .clashDetailPageInsets()
@@ -581,6 +879,28 @@ struct ProxyNodeDetailsView: View {
         .clashPageProbe("node-editor")
         .accessibilityIdentifier("proxies.nodeEditor.\(draft.typeID)")
         .toolbar {
+#if os(iOS)
+             
+             
+             
+             
+             
+            ToolbarItem(placement: .cancellationAction) {
+                 
+                 
+                 
+                 
+                 
+                 
+                if asksForItself {
+                    Button { leaving.requestLeave() } label: { Text(clash: .copy("Cancel")) }
+                        .disabled(saving)
+                        .accessibilityIdentifier("proxies.nodeEditor.cancel")
+                } else if let onDone, drawsClose || ClashSheetSurface.coversOnThisSystem {
+                    ClashSheetCloseButton { onDone() }
+                }
+            }
+#endif
             ToolbarItem(placement: .clashNavigationTrailing) {
                  
                  
@@ -613,15 +933,41 @@ struct ProxyNodeDetailsView: View {
          
          
         .clashRegistersDeparture(
-            isDirty: draft.isDirty || chainDialerChanged,
+            isDirty: hasUnsavedEdits,
+             
+             
+            currentlyDirty: { [draft, chainDialerChanged, isNew] in
+                Self.hasUnsavedEdits(draft: draft, chainDialerChanged: chainDialerChanged, isNew: isNew,
+                                     includingOpenPages: true)
+            },
             isBusy: saving,
-            save: saveAndReport,
+             
+             
+             
+            whySaveIsBlocked: { [draft, fieldCopy, locale] in
+                let page = draft.deepestPage
+                return page.firstMissingRequiredFieldKey().map {
+                    .format("%@ is required.", [
+                        ProxyNodeFieldLabel.title(path: [$0], typeID: page.typeID, copy: fieldCopy, locale: locale),
+                    ])
+                }
+            },
+            saveAnswering: saveForDeparture,
              
              
             discard: {}
         )
+         
+         
+        .onReceive(draft.objectWillChange) { _ in if !refusalLine.isEmpty { refusalLine = "" } }
+        .onChange(of: chainDialer) { _ in if !refusalLine.isEmpty { refusalLine = "" } }
         .disabled(saving)
-        .interactiveDismissDisabled(saving)
+         
+         
+         
+         
+        .modifier(ProxyNodeEditorTouchLeaving(asksForItself: asksForItself, saving: saving, saveDisabled: saveDisabled,
+                                              asksBeforeLeaving: $asksBeforeLeaving, leaving: leaving))
         .clashProductModalRoot(title: isNew ? "Add Node" : "Edit Node")
          
          
@@ -646,8 +992,7 @@ struct ProxyNodeDetailsView: View {
                      
                      
                      
-                    primaryHint: draft.firstMissingRequiredFieldKey()
-                        .map { humanLabel($0) },
+                    primaryHint: missingFieldSentence,
                     onPrimary: save
                 )
             }
@@ -680,7 +1025,8 @@ struct ProxyNodeDetailsView: View {
                 ),
                 identifier: "proxies.nodeEditor.option.obfs"
             ) {
-                $0.isEmpty ? .copy("None") : .verbatim($0)
+                $0.isEmpty ? .copy("None") : .verbatim(Self.menuLabel($0, key: "obfs", typeID: "hysteria2",
+                                                                      catalog: fieldCatalog, copy: fieldCopy, locale: locale))
             }
             if !draft.string("obfs").isEmpty {
                 secretRow(
@@ -728,7 +1074,8 @@ struct ProxyNodeDetailsView: View {
                 identifier: "proxies.nodeEditor.option.bbr-profile"
             ) {
                  
-                $0.isEmpty ? .copy("Not set") : .verbatim($0)
+                $0.isEmpty ? .copy("Not set") : .verbatim(Self.menuLabel($0, key: "bbr-profile", typeID: draft.typeID,
+                                                                         catalog: fieldCatalog, copy: fieldCopy, locale: locale))
             }
             editableRow("CWND", key: "cwnd", number: true)
             editableRow("UDP MTU", key: "udp-mtu", number: true)
@@ -825,36 +1172,50 @@ struct ProxyNodeDetailsView: View {
      
      
     private var editableKeys: [String] {
+        Self.editableKeys(typeID: draft.typeID, mapping: draft.mapping, catalog: fieldCatalog)
+    }
+
+     
+     
+     
+     
+     
+     
+    static func editableKeys(typeID: String, mapping: [String: Any], catalog: ConfigurationFieldCatalog?) -> [String] {
 #if os(macOS)
          
          
          
-        let plan = Self.keyPlan(for: draft.typeID)
+        let plan = Self.keyPlan(for: typeID)
         let hidden = plan.hidden
         let schemaKeys = plan.schemaFields
         let defaultKeys = plan.defaultKeys
 #else
-        let hidden = dedicatedKeys
+        let hidden = dedicatedKeys(typeID: typeID)
             .union(ProxyEditorFieldOwnership.dedicatedSections)
             .union(ProxyEditorHiddenFields.platformUnsupported)
-        let schemaKeys = ProxyProtocolEditorSchema.fields(for: draft.typeID)
-        let defaultKeys = ProxyEditorDefaultFields.keys(for: draft.typeID)
+        let schemaKeys = ProxyProtocolEditorSchema.fields(for: typeID)
+        let defaultKeys = ProxyEditorDefaultFields.keys(for: typeID)
 #endif
+         
+         
+         
+        let decided = ProxyNodeCatalog.platformDecidedKeys(of: mapping, typeID: typeID, in: catalog)
         var keys: [String] = []
         var seen = Set<String>()
         for key in defaultKeys
-        where !hidden.contains(key) && key != "name" {
+        where !hidden.contains(key) && !decided.contains(key) && key != "name" {
             if seen.insert(key).inserted { keys.append(key) }
         }
-        for field in schemaKeys where !hidden.contains(field.key) {
-            let present = draft.mapping[field.key] != nil
+        for field in schemaKeys where !hidden.contains(field.key) && !decided.contains(field.key) {
+            let present = mapping[field.key] != nil
             if (field.required || present), field.key != "name",
                seen.insert(field.key).inserted {
                 keys.append(field.key)
             }
         }
-        let extras = draft.mapping.keys
-            .filter { !hidden.contains($0) && !seen.contains($0) && $0 != "name" }
+        let extras = mapping.keys
+            .filter { !hidden.contains($0) && !decided.contains($0) && !seen.contains($0) && $0 != "name" }
 #if os(macOS)
              
              
@@ -940,8 +1301,23 @@ struct ProxyNodeDetailsView: View {
          
          
          
-        if !insideProductModal, let sentence = missingFieldSentence {
-            Text(clash: .copy(sentence))
+         
+         
+         
+         
+         
+        if !refusalLine.isEmpty {
+            ClashStatusMessage(text: .verbatim(refusalLine), kind: .error)
+                .listRowBackground(Color.clear)
+                .accessibilityIdentifier("proxies.nodeEditor.refusal")
+                .id(Self.refusalRowID)
+        }
+         
+         
+         
+         
+        if !insideProductModal, !refusalIsTheMissingField, let sentence = missingFieldSentence {
+            Text(clash: .verbatim(sentence))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -999,6 +1375,32 @@ struct ProxyNodeDetailsView: View {
      
     @ViewBuilder
     private var editorContainer: some View {
+         
+         
+         
+         
+         
+         
+         
+        ScrollViewReader { proxy in
+            let reveal = {
+                guard formIsOnScreen, refusals != refusalGoneTo, !refusalLine.isEmpty else { return }
+                refusalGoneTo = refusals
+                withAnimation { proxy.scrollTo(Self.refusalRowID, anchor: .center) }
+            }
+            editorForm
+                .onChange(of: refusals) { _ in reveal() }
+                .clashOnScreen { onScreen in
+                    formIsOnScreen = onScreen
+                    reveal()
+                }
+        }
+    }
+
+    static let refusalRowID = "proxies.nodeEditor.refusal.row"
+
+    @ViewBuilder
+    private var editorForm: some View {
         if let macEditorContainer = ProxyNodeEditorMacOverrides.editorContainer {
              
              
@@ -1105,6 +1507,17 @@ struct ProxyNodeDetailsView: View {
     }
 #endif
 
+     
+     
+     
+     
+     
+    static func menuLabel(_ value: String, key: String, typeID: String, catalog: ConfigurationFieldCatalog?,
+                          copy: ConfigurationFieldCopy, locale: Locale) -> String {
+        copy.valueLabel(value, for: ProxyEditorFieldChoices.catalogField(forType: typeID, key: key, catalog: catalog),
+                        locale: locale) ?? value
+    }
+
     private func isRequiredKey(_ key: String) -> Bool {
         ProxyProtocolEditorSchema.fields(for: draft.typeID)
             .first { $0.key == key }?.required ?? false
@@ -1137,7 +1550,7 @@ struct ProxyNodeDetailsView: View {
         return "On"
     }
 
-    private var dedicatedKeys: Set<String> {
+    private static func dedicatedKeys(typeID: String) -> Set<String> {
          
          
          
@@ -1146,7 +1559,7 @@ struct ProxyNodeDetailsView: View {
          
          
         return Set(["name", "type"])
-            .union(ProxyEditorFieldOwnership.tlsKeys(typeID: draft.typeID))
+            .union(ProxyEditorFieldOwnership.tlsKeys(typeID: typeID))
     }
 
     @ViewBuilder
@@ -1195,7 +1608,8 @@ struct ProxyNodeDetailsView: View {
             ) {
                 $0.isEmpty
                     ? .copy(isRequiredKey(key) ? "Required" : "Not set")
-                    : .verbatim($0)
+                    : .verbatim(Self.menuLabel($0, key: key, typeID: draft.typeID, catalog: fieldCatalog,
+                                               copy: fieldCopy, locale: locale))
             }
         } else if let field = ProxyProtocolEditorSchema.fields(for: draft.typeID)
             .first(where: { $0.key == key }),
@@ -1205,7 +1619,18 @@ struct ProxyNodeDetailsView: View {
                 draft: draft,
                 field: field,
                 pathPrefix: [],
-                identifierOverride: "proxies.nodeEditor.option.\(key)"
+                identifierOverride: "proxies.nodeEditor.option.\(key)",
+                 
+                 
+                 
+                 
+                 
+                 
+                valueName: { [typeID = draft.typeID, fieldCopy, locale] in
+                    .verbatim(Self.menuLabel($0, key: key, typeID: typeID,
+                                             catalog: ProfilesViewModel.rememberedSyntaxCatalog?.fieldCatalog,
+                                             copy: fieldCopy, locale: locale))
+                }
             )
         } else if draft.mapping[key] is Bool || draft.mapping[key] is NSNumber
             && CFGetTypeID(draft.mapping[key] as CFTypeRef) == CFBooleanGetTypeID() {
@@ -1549,14 +1974,84 @@ struct ProxyNodeDetailsView: View {
 
      
      
+    private var refusalIsTheMissingField: Bool {
+        guard !refusalLine.isEmpty, let refused = refusedForMissingField else { return false }
+        return refused == draft.firstMissingRequiredFieldKey()
+    }
+
+     
+     
+     
+     
      
      
     private var missingFieldSentence: String? {
         draft.firstMissingRequiredFieldKey().map {
-            String.localizedStringWithFormat(
-                String(localized: "Needs %@"),
-                humanLabel($0)
-            )
+            ClashCopy.string(for: .format("Needs %@", [humanLabel($0)]), locale: locale)
+        }
+    }
+
+     
+     
+     
+     
+    static func hasUnsavedEdits(draft: ProxyNodeEditorDraft, chainDialerChanged: Bool, isNew: Bool,
+                                includingOpenPages: Bool = false) -> Bool {
+        (includingOpenPages ? draft.isDirtyIncludingOpenPages : draft.isDirty)
+            || chainDialerChanged
+            || (isNew && draft.holdsMoreThanABlankNode)
+    }
+
+    private var hasUnsavedEdits: Bool {
+        Self.hasUnsavedEdits(draft: draft, chainDialerChanged: chainDialerChanged, isNew: isNew)
+    }
+
+     
+     
+     
+     
+     
+     
+    private var asksForItself: Bool { hasUnsavedEdits }
+
+     
+     
+     
+    static let afterTheQuestionHasGone: TimeInterval = 0.4
+
+     
+     
+    private var leaving: ProxyNodeEditorLeaving {
+        ProxyNodeEditorLeaving(
+            hasUnsavedEdits: { [draft, chainDialerChanged, isNew] in
+                Self.hasUnsavedEdits(draft: draft, chainDialerChanged: chainDialerChanged, isNew: isNew)
+            },
+            save: saveForDeparture,
+            leave: leaveEditor,
+            ask: { asksBeforeLeaving = true },
+            sayRefusal: { [locale] reason in
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.afterTheQuestionHasGone) {
+                    errorMessage = ClashCopy.string(for: reason, locale: locale)
+                }
+            }
+        )
+    }
+
+     
+     
+     
+    private func leaveEditor() {
+        if let onDone {
+             
+             
+            onDone()
+        } else {
+#if os(macOS)
+            if let popRoute { popRoute(ClashPopToken()) }
+            else { presentationMode.wrappedValue.dismiss() }
+#else
+            presentationMode.wrappedValue.dismiss()
+#endif
         }
     }
 
@@ -1597,18 +2092,76 @@ struct ProxyNodeDetailsView: View {
         return !isDirty && !chainDialerChanged
     }
 
-    private func save() { saveAndReport { _ in } }
+    private func save() { saveAnswering(fromTheQuestion: false) { _ in } }
 
-    private func saveAndReport(_ completion: @escaping (Bool) -> Void) {
-        guard !saving else { completion(false); return }
+     
+     
+     
+     
+     
+     
+     
+     
+    private func saveForDeparture(_ answer: @escaping (ClashDepartureSaveAnswer) -> Void) {
+        refusalLine = ""
+        refusedForMissingField = nil
+        if let refusal = draft.absorbOpenPages() {
+#if os(iOS)
+             
+#else
+            refusalLine = ClashCopy.string(for: refusal, locale: locale)
+            refusals += 1
+#endif
+            answer(.refused(refusal))
+            return
+        }
+        saveAnswering(fromTheQuestion: true, answer)
+    }
+
+     
+     
+     
+     
+    private func saveAnswering(
+        fromTheQuestion: Bool,
+        _ answer: @escaping (ClashDepartureSaveAnswer) -> Void
+    ) {
+        guard !saving else { answer(.refused(nil)); return }
          
          
         errorMessage = ""
+        refusalLine = ""
+        refusedForMissingField = nil
+        let refuse: (ClashDisplayText) -> Void = { reason in
+            let said = ClashCopy.string(for: reason, locale: locale)
+            if fromTheQuestion {
+#if os(iOS)
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+#else
+                refusalLine = said
+                refusals += 1
+#endif
+                answer(.refused(reason))
+            } else {
+                errorMessage = said
+                answer(.refused(nil))
+            }
+        }
         do {
             try validate()
         } catch {
-            errorMessage = error.localizedDescription
-            completion(false)
+            if case ProxyNodeEditorError.missingField(_, let key) = error { refusedForMissingField = key }
+            refuse(Self.reason(for: error))
             return
         }
         saving = true
@@ -1625,13 +2178,25 @@ struct ProxyNodeDetailsView: View {
         )
 #endif
         Task { @MainActor in
-            let succeeded = await finishSave()
+            let failure = await finishSave()
             saving = false
-            completion(succeeded)
+             
+            if let failure { refuse(.copy(failure)) } else { answer(.saved) }
         }
     }
 
-    private func finishSave() async -> Bool {
+     
+     
+     
+    private static func reason(for error: Error) -> ClashDisplayText {
+        guard let refusal = error as? ProxyNodeEditorError else {
+            return .copy(error.localizedDescription)
+        }
+        return refusal.displayText
+    }
+
+     
+    private func finishSave() async -> String? {
         do {
             if draft.isDirty || isNew {
                  
@@ -1645,22 +2210,10 @@ struct ProxyNodeDetailsView: View {
                chainDialerChanged {
                 try saveAssignment(chainDialer)
             }
-            if let onDone {
-                 
-                 
-                onDone()
-            } else {
-#if os(macOS)
-                if let popRoute { popRoute(ClashPopToken()) }
-                else { presentationMode.wrappedValue.dismiss() }
-#else
-                presentationMode.wrappedValue.dismiss()
-#endif
-            }
-            return true
+            leaveEditor()
+            return nil
         } catch {
-            errorMessage = error.localizedDescription
-            return false
+            return error.localizedDescription
         }
     }
 
@@ -1686,19 +2239,12 @@ struct ProxyNodeDetailsView: View {
          
          
         if let key = draft.firstMissingRequiredFieldKey() {
-            throw ProxyNodeEditorError.missingField(humanLabel(key))
+            throw ProxyNodeEditorError.missingField(humanLabel(key), key: key)
         }
          
          
          
-        if let violation = ProxyEditorCrossFieldRules.violations(
-            typeID: draft.typeID,
-            value: { draft.string($0) },
-            nested: { draft.string(path: [$0, $1]) },
-            hasObject: { draft.mapping[$0] is [String: Any] },
-            list: { draft.list($0) },
-            elementLists: { draft.elementLists($0, $1) }
-        ).first {
+        if let violation = draft.crossFieldViolations(catalog: fieldCatalog).first {
             throw ProxyNodeEditorError.refusedCombination(violation.message)
         }
          
@@ -1760,21 +2306,26 @@ private enum ProxyNodeEditorError: LocalizedError {
     case missingServer
     case missingPort
     case missingPassword
-    case missingField(String)
+     
+    case missingField(String, key: String)
      
      
     case refusedCombination(String)
      
     case notANumber(String)
 
-    var errorDescription: String? {
+    var errorDescription: String? { displayText.rawValue }
+
+     
+     
+    var displayText: ClashDisplayText {
         switch self {
-        case .refusedCombination(let message): return message
-        case .missingField(let label): return "\(label) is required."
-        case .notANumber(let label): return "\(label) must be a number."
-        case .missingServer: return "Enter the proxy server address."
-        case .missingPort: return "Enter a port or port range."
-        case .missingPassword: return "Enter the Hysteria 2 password."
+        case .refusedCombination(let message): return .copy(message)
+        case .missingField(let label, _): return .format("%@ is required.", [label])
+        case .notANumber(let label): return .format("%@ must be a number.", [label])
+        case .missingServer: return .copy("Enter the proxy server address.")
+        case .missingPort: return .copy("Enter a port or port range.")
+        case .missingPassword: return .copy("Enter the Hysteria 2 password.")
         }
     }
 }
@@ -2029,6 +2580,16 @@ private struct DialerProxyPickerView: View {
  
  
  
+struct ProxyNodePendingText {
+    let isPending: () -> Bool
+    let apply: () -> ClashDisplayText?
+}
+
+ 
+ 
+ 
+ 
+ 
 enum ProxyEditorRoute: Hashable {
     case dialerProxy
 }
@@ -2092,10 +2653,12 @@ struct ProxyNodeDraftNavigationLink<
 #if os(macOS)
     private func prepare() {
         local.prepare(from: source)
+        source.openPage = local
     }
 
     private func commit() {
         source.synchronize(from: local)
+        if source.openPage === local { source.openPage = nil }
     }
 #endif
 }
@@ -2285,9 +2848,11 @@ struct ProxyJSONPathEditorView: View {
     @State private var text: String
     @State private var errorMessage = ""
      
+    @State private var asksBeforeLeaving = false
      
      
-    private let openedWith: String
+     
+    @State private var openedWith: String
 
     init(
         draft: ProxyNodeEditorDraft,
@@ -2300,7 +2865,7 @@ struct ProxyJSONPathEditorView: View {
         self.title = title
         self.goType = goType
         _text = State(initialValue: draft.jsonValue(path: path))
-        openedWith = _text.wrappedValue
+        _openedWith = State(initialValue: _text.wrappedValue)
     }
 
     var body: some View {
@@ -2328,7 +2893,7 @@ struct ProxyJSONPathEditorView: View {
                 }
             }
         }
-            .clashPageTitle(.copy(title))
+            .clashPageTitle(.verbatim(title), watchAs: title)  
             .clashDetailPageInsets()
             .toolbar {
                 ToolbarItem(placement: .clashNavigationTrailing) {
@@ -2341,7 +2906,26 @@ struct ProxyJSONPathEditorView: View {
                     }
                 }
             }
-            .clashProductModalChild(title: title)
+             
+             
+             
+             
+            .clashProductModalChild(title: .verbatim(title), backAction: leaveAsking)  
+            .modifier(ProxyFieldPageLeaving(
+                draft: draft,
+                asks: $asksBeforeLeaving,
+                isPending: { text != openedWith },
+                 
+                 
+                 
+                apply: {
+                    if let refusal = apply() { return .copy(refusal) }
+                    openedWith = text
+                    return nil
+                },
+                save: save,
+                finish: finish
+            ))
              
              
              
@@ -2366,12 +2950,20 @@ struct ProxyJSONPathEditorView: View {
             }
     }
 
+    private func leaveAsking() {
+        if text == openedWith { finish() } else { asksBeforeLeaving = true }
+    }
+
     private func save() {
+        if let refusal = apply() { errorMessage = refusal } else { finish() }
+    }
+
+     
+    private func apply() -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             draft.removeValue(path: path)
-            finish()
-            return
+            return nil
         }
         do {
             let value = try JSONSerialization.jsonObject(
@@ -2379,15 +2971,12 @@ struct ProxyJSONPathEditorView: View {
                 options: [.fragmentsAllowed]
             )
             guard ProxyJSONShapeValidator.accepts(value, goType: goType) else {
-                errorMessage = ProxyJSONShapeValidator.errorMessage(
-                    goType: goType
-                )
-                return
+                return ProxyJSONShapeValidator.errorMessage(goType: goType)
             }
             draft.replaceJSONValue(value, path: path)
-            finish()
+            return nil
         } catch {
-            errorMessage = "Enter a valid JSON value, array, or object."
+            return "Enter a valid JSON value, array, or object."
         }
     }
 
@@ -2404,6 +2993,54 @@ struct ProxyJSONPathEditorView: View {
          
         presentationMode.wrappedValue.dismiss()
 #endif
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+struct ProxyFieldPageLeaving: ViewModifier {
+    let draft: ProxyNodeEditorDraft
+    @Binding var asks: Bool
+    let isPending: () -> Bool
+    let apply: () -> ClashDisplayText?
+    let save: () -> Void
+    let finish: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+             
+             
+             
+             
+            .clashOnScreen { onScreen in
+#if os(macOS)
+                draft.pendingText = onScreen ? ProxyNodePendingText(isPending: isPending, apply: apply) : nil
+#endif
+            }
+            .asksBeforeDroppingUntaken($asks, save: save, discard: finish)
+    }
+}
+
+extension View {
+     
+     
+     
+     
+    func asksBeforeDroppingUntaken(
+        _ asks: Binding<Bool>,
+        save: @escaping () -> Void,
+        discard: @escaping () -> Void
+    ) -> some View {
+        clashUnsavedChangesAlert(isPresented: asks,
+            message: .copy("This page has changes that have not been saved."),
+            isBusy: false,
+            save: save,
+            discard: discard
+        )
     }
 }
 
@@ -2969,31 +3606,98 @@ private struct ProxyRevealingFieldRow: View {
 }
 
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ProxyNodeNestedFields {
+    static func split(
+        _ fields: [ProxyEditorSchemaField], pathPrefix: [String], typeID: String,
+        catalog: ConfigurationFieldCatalog?, node: OrderedJSON? = nil
+    ) -> (kept: [ProxyEditorSchemaField], decided: [ConfigurationNotApplyingItem]) {
+        var kept: [ProxyEditorSchemaField] = []
+        var decided: [ConfigurationNotApplyingItem] = []
+        for field in fields {
+            let path = pathPrefix + [field.key]
+            let key = path.joined(separator: ".")
+            if let entry = ProxyEditorFieldChoices.catalogField(forType: typeID, key: key, catalog: catalog),
+               let decision = entry.platformDecision, decision.overridesTheFile,
+               node.map({ decision.applies(to: $0.node(at: Array(path.dropLast())) ?? .object([])) }) ?? true {
+                decided.append(.init(id: key, title: key, decision: decision, field: entry))
+            } else {
+                kept.append(field)
+            }
+        }
+        return (kept, decided)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func valueName(_ value: String, path: [String], typeID: String, catalog: ConfigurationFieldCatalog?,
+                          copy: ConfigurationFieldCopy, locale: Locale) -> ClashDisplayText {
+        .verbatim(ProxyNodeDetailsView.menuLabel(value, key: path.joined(separator: "."), typeID: typeID,
+                                                 catalog: catalog, copy: copy, locale: locale))
+    }
+}
+
 private struct ProxySchemaNestedOptionsView: View {
     @ObservedObject var draft: ProxyNodeEditorDraft
     let title: String
     let fields: [ProxyEditorSchemaField]
     let pathPrefix: [String]
+    @Environment(\.configurationFieldCopy) private var fieldCopy
+    @Environment(\.locale) private var locale
 
     var body: some View {
+        let split = ProxyNodeNestedFields.split(
+            fields, pathPrefix: pathPrefix, typeID: draft.typeID,
+            catalog: ProfilesViewModel.rememberedSyntaxCatalog?.fieldCatalog,
+            node: ProxyNodeCatalog.json(draft.mapping))
         ProxyEditorSeat {
-            ForEach(ProxyNestedFieldGrouping.groups(for: fields), id: \.title) {
+            ForEach(ProxyNestedFieldGrouping.groups(for: split.kept), id: \.title) {
                 group in
                 ClashSection(group.title) {
                     ForEach(group.fields) { field in
                         ProxySchemaFieldRow(
                             draft: draft,
                             field: field,
-                            pathPrefix: pathPrefix
+                            pathPrefix: pathPrefix,
+                             
+                            valueName: { [typeID = draft.typeID, path = pathPrefix + [field.key], fieldCopy, locale] in
+                                ProxyNodeNestedFields.valueName(
+                                    $0, path: path, typeID: typeID,
+                                    catalog: ProfilesViewModel.rememberedSyntaxCatalog?.fieldCatalog,
+                                    copy: fieldCopy, locale: locale)
+                            }
                         )
                     }
                 }
             }
+            if !split.decided.isEmpty {
+                Section {
+                    ClashRoutedViewLink {
+                        ConfigurationSettingsNotApplyingView(items: split.decided)
+                    } label: {
+                        ConfigurationNotApplyingLabel(count: split.decided.count)
+                    }
+                    .accessibilityIdentifier("configuration-editor.not-applying")
+                }
+            }
         }
-        .clashPageTitle(.copy(title))
+        .clashPageTitle(.verbatim(title), watchAs: title)  
         .clashPageProbe("nested-options")
         .clashDetailPageInsets()
-        .clashProductModalChild(title: title)
+        .clashProductModalChild(title: .verbatim(title))  
     }
 }
 
@@ -3063,6 +3767,10 @@ private struct ProxySchemaFieldRow: View {
      
      
     var identifierOverride: String? = nil
+     
+     
+     
+    var valueName: ((String) -> ClashDisplayText)? = nil
     @State private var revealsSecret = false
 
     var body: some View {
@@ -3119,7 +3827,7 @@ private struct ProxySchemaFieldRow: View {
                 ) {
                     $0.isEmpty
                         ? .copy(field.required ? "Required" : "Not set")
-                        : .verbatim($0)
+                        : valueName?($0) ?? .verbatim($0)
                 }
             } else if field.editorControlKind == .stringList {
                 textRow(binding: listBinding)
@@ -3269,7 +3977,9 @@ private struct ProxySchemaFieldRow: View {
 
     private func valueRow(_ label: String, _ value: ClashDisplayText) -> some View {
         HStack {
-            Text(clash: .copy(label))
+             
+             
+            Text(clash: .verbatim(label))
             Spacer(minLength: ClashTheme.Spacing.standard)
             Text(clash: value).foregroundStyle(.secondary)
         }
@@ -3606,14 +4316,16 @@ private struct ProxyJSONValueEditorView: View {
     @State private var text: String
     @State private var errorMessage = ""
      
+    @State private var asksBeforeLeaving = false
      
-    private let openedWith: String
+     
+    @State private var openedWith: String
 
     init(draft: ProxyNodeEditorDraft, key: String) {
         self.draft = draft
         self.key = key
         _text = State(initialValue: draft.jsonValue(key))
-        openedWith = _text.wrappedValue
+        _openedWith = State(initialValue: _text.wrappedValue)
     }
 
     var body: some View {
@@ -3648,7 +4360,24 @@ private struct ProxyJSONValueEditorView: View {
                     }
                 }
             }
-            .clashProductModalChild(title: key)
+             
+             
+            .clashProductModalChild(title: .verbatim(key), backAction: leaveAsking)  
+            .modifier(ProxyFieldPageLeaving(
+                draft: draft,
+                asks: $asksBeforeLeaving,
+                isPending: { text != openedWith },
+                 
+                 
+                 
+                apply: {
+                    if let refusal = apply() { return .copy(refusal) }
+                    openedWith = text
+                    return nil
+                },
+                save: save,
+                finish: finish
+            ))
              
              
              
@@ -3679,18 +4408,26 @@ private struct ProxyJSONValueEditorView: View {
             }
     }
 
+    private func leaveAsking() {
+        if text == openedWith { finish() } else { asksBeforeLeaving = true }
+    }
+
     private func save() {
+        if let refusal = apply() { errorMessage = refusal } else { finish() }
+    }
+
+     
+    private func apply() -> String? {
         do {
             let data = Data(text.utf8)
             let value = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
             guard ProxyJSONShapeValidator.acceptsContainer(value) else {
-                errorMessage = "Enter a valid JSON array or object."
-                return
+                return "Enter a valid JSON array or object."
             }
             draft.replaceJSONValue(value, key: key)
-            finish()
+            return nil
         } catch {
-            errorMessage = "Enter a valid JSON array or object."
+            return "Enter a valid JSON array or object."
         }
     }
 
@@ -3983,27 +4720,10 @@ enum ProxyEditorFieldChoices {
          
          
          
-         
-         
-         
-         
-         
-         
-         
-         
-         
-         
         "masque.ip-stack.mode": ["auto", "gvisor", "mips"],
         "openvpn.ip-stack.mode": ["auto", "gvisor", "mips"],
         "wireguard.ip-stack.mode": ["auto", "gvisor", "mips"],
         "zerotier.ip-stack.mode": ["auto", "gvisor", "mips"],
-         
-         
-         
-         
-         
-         
-         
         "masque.ip-stack.congestion-controller": Self.ipStackCongestionControllers,
         "openvpn.ip-stack.congestion-controller": Self.ipStackCongestionControllers,
         "wireguard.ip-stack.congestion-controller": Self.ipStackCongestionControllers,
@@ -4027,13 +4747,20 @@ enum ProxyEditorFieldChoices {
      
      
      
+    static func catalogField(forType typeID: String, key: String,
+                             catalog: ConfigurationFieldCatalog?) -> ConfigurationField? {
+        catalog?.field(atCatalogPath: ProxyNodeCatalog.typePath(typeID) + "." + key)
+    }
+
+     
+     
+     
      
      
      
      
     static func choices(forType typeID: String, key: String, catalog: ConfigurationFieldCatalog?) -> [String] {
-        if let catalog,
-           let field = catalog.field(atCatalogPath: ProxyNodeCatalog.typePath(typeID) + "." + key) {
+        if let field = catalogField(forType: typeID, key: key, catalog: catalog) {
              
              
              

@@ -17,6 +17,25 @@ enum ClashTunnelStart {
 
      
     static let stateFileName = "clash-start-state.json"
+
+     
+     
+     
+     
+    static let startErrorDomain = "Clash.TunnelStart"
+
+     
+     
+     
+    enum StartErrorCode: Int {
+        case serviceUnavailable = 0
+         
+        case coreRefused = 1
+        case backedOff = 2
+        case appGroupUnavailable = 3
+        case configurationUnavailable = 4
+        case physicalPathUnavailable = 5
+    }
 }
 
  

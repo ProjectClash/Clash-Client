@@ -19,6 +19,42 @@ public enum NodePaging {
 }
 
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public enum GroupMembership: Equatable, Sendable {
+    case member
+    case notMember
+     
+     
+    case unknown
+
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func judged(held: Bool, holdsEveryMember: Bool, listsEveryGroup: Bool,
+                              isOtherGroup: @autoclosure () -> Bool) -> GroupMembership {
+        if held { return .member }
+        if holdsEveryMember { return .notMember }
+        if listsEveryGroup, isOtherGroup() { return .member }
+        return .unknown
+    }
+}
+
+ 
 public struct NodeDelayReading: Decodable, Equatable, Sendable {
     public let delay: Int?
     public let time: String?
@@ -126,8 +162,14 @@ public struct NodeSummary: Decodable, Equatable, Sendable {
         public let dead: Int?
          
         public let testURL: String?
+         
+         
+         
+        public let subscriptionUsage: ConfigurationSubscriptionUsage?
 
-        private enum Field: String, CodingKey { case name, type, vehicleType, total, updatedAt, alive, dead, testUrl }
+        private enum Field: String, CodingKey {
+            case name, type, vehicleType, total, updatedAt, alive, dead, testUrl, subscriptionInfo
+        }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Field.self)
@@ -139,6 +181,7 @@ public struct NodeSummary: Decodable, Equatable, Sendable {
             alive = try c.decodeIfPresent(Int.self, forKey: .alive)
             dead = try c.decodeIfPresent(Int.self, forKey: .dead)
             testURL = try c.decodeIfPresent(String.self, forKey: .testUrl)
+            subscriptionUsage = (try? c.decodeIfPresent(CoreSubscriptionInfo.self, forKey: .subscriptionInfo))?.usage
         }
     }
 
@@ -163,6 +206,97 @@ public struct NodeSummary: Decodable, Equatable, Sendable {
 
     public static func decode(_ data: Data) throws -> NodeSummary {
         try JSONDecoder().decode(NodeSummary.self, from: data)
+    }
+
+     
+     
+     
+    public static let kernelGlobalName = "GLOBAL"
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public var globalCountIsTheKernelsOwn: Bool {
+        guard let global = groups[Self.kernelGlobalName] else { return false }
+        return global.total == 2 + nodes + groups.count - 1
+    }
+
+     
+     
+     
+     
+    public func globalTailToRead(after firstMembers: Int) -> (offset: Int, limit: Int)? {
+        guard globalCountIsTheKernelsOwn, let global = groups[Self.kernelGlobalName] else { return nil }
+        let others = groups.count - 1
+        guard others > 0, global.total > firstMembers else { return nil }
+        return (global.total - others, others)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public func globalListsEveryGroup(tail: GroupMembersPage?) -> Bool {
+        guard globalCountIsTheKernelsOwn, let global = groups[Self.kernelGlobalName],
+              let tail, tail.group == Self.kernelGlobalName, tail.total == global.total else { return false }
+        let others = Set(groups.keys).subtracting([Self.kernelGlobalName])
+        let listed = tail.members.map(\.name)
+        return !others.isEmpty && listed.count == others.count && Set(listed) == others
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public struct CoreSubscriptionInfo: Decodable, Equatable, Sendable {
+    public let usage: ConfigurationSubscriptionUsage?
+
+    private enum Field: String, CodingKey {
+        case upload = "Upload", download = "Download", total = "Total", expire = "Expire"
+    }
+
+    public init(from decoder: Decoder) {
+        guard let c = try? decoder.container(keyedBy: Field.self) else {
+            usage = nil
+            return
+        }
+        func value(_ field: Field) -> Int64? {
+            if let whole = try? c.decodeIfPresent(Int64.self, forKey: field) { return whole }
+            guard let float = try? c.decodeIfPresent(Double.self, forKey: field), float.isFinite else { return nil }
+            if float >= Double(Int64.max) { return .max }
+            if float <= Double(Int64.min) { return .min }
+            return Int64(float)
+        }
+        let upload = value(.upload), download = value(.download), total = value(.total), expire = value(.expire)
+        guard upload != nil || download != nil || total != nil || expire != nil else {
+            usage = nil
+            return
+        }
+        usage = ConfigurationSubscriptionUsage(upload: upload ?? 0, download: download ?? 0,
+                                               total: total ?? 0, expire: expire ?? 0)
     }
 }
 

@@ -156,6 +156,7 @@ func cmdStatus(s *session, _ parsedArguments) error {
 	for _, group := range groups {
 		groupList = append(groupList, groupNow{group.Name, group.Type, group.Now})
 	}
+	listen, listenKnown := listenOf(configs)
 	data := map[string]any{
 		"version": version, "configs": configs, "memory": memory, "traffic": traffic,
 		"connections":   map[string]any{"count": len(connections.Connections), "downloadTotal": connections.DownloadTotal, "uploadTotal": connections.UploadTotal},
@@ -163,10 +164,16 @@ func cmdStatus(s *session, _ parsedArguments) error {
 		"remoteControl": remote,
 		"groups":        groupList,
 	}
+	if listenKnown {
+		data["listen"] = listen
+	}
 	s.out.succeed(data, func() {
 		tun, _ := configs["tun"].(map[string]any)
 		s.out.printf("Clash %v  meta=%v  （%s，控制器 API %d）\n", version["version"], version["meta"], s.caps.Platform, s.caps.API)
 		s.out.printf("mode=%v  mixed-port=%v  tun=%v stack=%v\n", configs["mode"], configs["mixed-port"], tun["enable"], tun["stack"])
+		if listenKnown {
+			s.out.printf("%s\n", listen.line())
+		}
 		footprint, _ := memory["footprint"].(float64)
 		inuse, _ := memory["inuse"].(float64)
 		s.out.printf("内存 %dMB（RSS %dMB）\n", int64(footprint)/1024/1024, int64(inuse)/1024/1024)
@@ -201,6 +208,88 @@ func cmdConfigs(s *session, _ parsedArguments) error {
 	}
 	s.out.succeed(configs, func() { printJSON(s.out, configs) })
 	return nil
+}
+
+type listenAddress struct {
+	Host  string         `json:"host"`
+	Reach string         `json:"reach"`
+	Ports map[string]int `json:"ports"`
+	why   string
+}
+
+var allowLanPorts = []string{"mixed-port", "port", "socks-port", "redir-port", "tproxy-port"}
+
+func listenOf(configs map[string]any) (listenAddress, bool) {
+	allowLan, known := configs["allow-lan"].(bool)
+	if !known {
+		return listenAddress{}, false
+	}
+	ports := map[string]int{}
+	for _, name := range allowLanPorts {
+		if port, _ := configs[name].(float64); port > 0 {
+			ports[name] = int(port)
+		}
+	}
+	if len(ports) == 0 {
+		return listenAddress{}, false
+	}
+	bind, _ := configs["bind-address"].(string)
+	listen := listenAddress{Ports: ports}
+	switch {
+	case !allowLan:
+		listen.Host, listen.Reach = "127.0.0.1", "loopback"
+		listen.why = "allow-lan=false：只有运行 Clash 的这台设备连得上，bind-address 不起作用。false 可能是文件里写的，也可能是 App 里「允许局域网连接」关着改的"
+	case bind == "" || bind == "*" || bind == "0.0.0.0" || bind == "::" || bind == "[::]":
+		listen.Host, listen.Reach = "*", "any"
+		listen.why = "allow-lan=true，bind-address " + bind + lanFilter(configs)
+		if bind == "" {
+			listen.why = "allow-lan=true" + lanFilter(configs)
+		}
+	default:
+		listen.Host, listen.Reach = bind, "address"
+		listen.why = "allow-lan=true，bind-address 指定了这个地址" + lanFilter(configs)
+		if ip := net.ParseIP(strings.Trim(bind, "[]")); (ip != nil && ip.IsLoopback()) || bind == "localhost" {
+			listen.Reach = "loopback"
+			listen.why = "allow-lan=true，但 bind-address 是回环地址：只有运行 Clash 的这台设备连得上"
+		}
+	}
+	return listen, true
+}
+
+func lanFilter(configs map[string]any) string {
+	var parts []string
+	allowed := stringList(configs["lan-allowed-ips"])
+	if len(allowed) > 0 && !slices.Equal(allowed, []string{"0.0.0.0/0", "::/0"}) {
+		parts = append(parts, "只放行 lan-allowed-ips 里的 "+strings.Join(allowed, " "))
+	}
+	if refused := stringList(configs["lan-disallowed-ips"]); len(refused) > 0 {
+		parts = append(parts, "不放行 lan-disallowed-ips 里的 "+strings.Join(refused, " "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "；" + strings.Join(parts, "，")
+}
+
+func stringList(value any) []string {
+	items, _ := value.([]any)
+	list := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			list = append(list, text)
+		}
+	}
+	return list
+}
+
+func (l listenAddress) line() string {
+	ports := make([]string, 0, len(l.Ports))
+	for _, name := range allowLanPorts {
+		if port, ok := l.Ports[name]; ok {
+			ports = append(ports, fmt.Sprintf("%s %d", name, port))
+		}
+	}
+	return fmt.Sprintf("监听 %s：%s（%s）", l.Host, strings.Join(ports, "、"), l.why)
 }
 
 func printJSON(out *output, value any) {

@@ -103,7 +103,8 @@ struct ClashSymbolImage: View {
     var body: some View {
         Group {
             if symbol.isCustom {
-                rendered(Image(symbol.name))
+                 
+                rendered(symbol.customImage())
             } else {
                 rendered(Image(systemName: symbol.name))
             }

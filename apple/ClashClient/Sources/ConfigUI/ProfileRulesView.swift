@@ -53,15 +53,15 @@ struct ProfileRulesAdapter: View {
                         actions: sharedActions,
                         deviations: deviations,
                         loadPolicyOptions: {
-                            await Self.loadPolicyOptions(
-                                sourceYAML: sourceYAML
-                            )
+                            await Self.loadPolicyOptions(sourceYAML: sourceYAML, profile: profile)
+                        },
+                        loadRuleSets: {
+                            await Self.loadPublishedRuleSets(of: profile)
                         },
                         draftKey: "Routing Rules|\(profile.id)"
                     )
                 } else {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ClashOpeningProgress()
                 }
             }
             .task(
@@ -97,6 +97,8 @@ struct ProfileRulesAdapter: View {
         let deviations: ConfigDeviationReport?
         let loadPolicyOptions: @MainActor () async
             -> ClashClientUI.ClashRulePolicyOptions
+        let loadRuleSets: @MainActor () async
+            -> ClashClientUI.ClashRulePolicyOptions
          
          
         let draftKey: String
@@ -117,6 +119,7 @@ struct ProfileRulesAdapter: View {
                 palette: ClashClientUI.ClashProductPalette.clashProduct,
                 showsDismissControl: showsDismissControl,
                 loadPolicyOptions: loadPolicyOptions,
+                loadRuleSets: loadRuleSets,
                 draftStore: SourceEditDrafts.shared,
                 draftKey: draftKey,
                 loadGeoValues: { resource in
@@ -164,11 +167,12 @@ struct ProfileRulesAdapter: View {
 
     @MainActor
     private static func loadPolicyOptions(
-        sourceYAML: String?
+        sourceYAML: String?,
+        profile: Profile
     ) async -> ClashClientUI.ClashRulePolicyOptions {
         let began = DispatchTime.now().uptimeNanoseconds
         let options = await Task.detached(priority: .userInitiated) {
-            buildPolicyOptions(sourceYAML: sourceYAML)
+            buildPolicyOptions(sourceYAML: sourceYAML, profile: profile)
         }.value
         ClashClientUI.ClashPerf.span(
             "rules.policy.prepare",
@@ -240,10 +244,35 @@ struct ProfileRulesAdapter: View {
      
      
      
+     
+     
+     
+     
+    nonisolated static func publishedRuleSets(of profile: Profile) -> ClashClientUI.ClashRulePolicyOptions {
+        guard let sets = ProfilesViewModel.publishedRuleSetsAndSubRules(for: profile)?.ruleSets else {
+            return ClashClientUI.ClashRulePolicyOptions(ruleSetsAreKnown: false)
+        }
+        return ClashClientUI.ClashRulePolicyOptions(ruleSets: sets.sorted(), ruleSetsAreKnown: true)
+    }
+
+     
+    static func loadPublishedRuleSets(of profile: Profile) async -> ClashClientUI.ClashRulePolicyOptions {
+        await Task.detached(priority: .userInitiated) { publishedRuleSets(of: profile) }.value
+    }
+
+     
+     
+     
+     
+     
     nonisolated static func buildPolicyOptions(
-        sourceYAML: String?
+        sourceYAML: String?,
+        profile: Profile? = nil
     ) -> ClashClientUI.ClashRulePolicyOptions {
-        RulePolicyOptions.make(sourceYAML: sourceYAML).shared
+         
+        RulePolicyOptions.make(sourceYAML: sourceYAML)
+            .adopting(published: profile.map(publishedRuleSets(of:)))
+            .shared
     }
 
     private var sharedActions: AppleClientActions {

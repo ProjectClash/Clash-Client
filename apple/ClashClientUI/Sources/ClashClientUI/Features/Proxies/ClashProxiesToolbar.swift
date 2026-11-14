@@ -150,15 +150,13 @@ public struct ClashProxiesToolbar<Icon: View>: ToolbarContent {
                 ClashToolbarDivider()
 
                 if canRefreshCatalog {
-                    Button {
-                        onRefresh()
-                    } label: {
-                        icon(.arrowClockwise)
-                            .clashToolbarGlyph()
-                    }
-                    .disabled(refreshDisabled)
-                    .accessibilityLabel("Refresh Proxies")
-                    .accessibilityIdentifier("proxies.refresh")
+                    ClashRefreshToolbarButton(
+                        heldByHost: refreshDisabled,
+                        initialIsTesting: isTestingLatency,
+                        pulse: sweepPulse,
+                        onRefresh: onRefresh,
+                        icon: icon
+                    )
 
                     ClashToolbarDivider()
                 }
@@ -243,6 +241,37 @@ extension ClashProxiesDisplayPreferences {
      
     var menuIdentity: String {
         "\(style.rawValue)|\(sort.rawValue)|\(layout.rawValue)|\(size.rawValue)|\(groupIconImages)"
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+private struct ClashRefreshToolbarButton<Icon: View>: View {
+    let heldByHost: Bool
+    let initialIsTesting: Bool
+    let pulse: AnyPublisher<ClashLatencyPulse, Never>?
+    let onRefresh: () -> Void
+    let icon: (ClashSymbol) -> Icon
+
+    @State private var isTesting: Bool?
+
+    var body: some View {
+        Button {
+            onRefresh()
+        } label: {
+            icon(.arrowClockwise)
+                .clashToolbarGlyph()
+        }
+        .disabled(heldByHost || (isTesting ?? initialIsTesting))
+        .accessibilityLabel("Refresh Proxies")
+        .accessibilityIdentifier("proxies.refresh")
+        .onReceive(pulse ?? Empty<ClashLatencyPulse, Never>().eraseToAnyPublisher()) { batch in
+            if isTesting != batch.isTesting { isTesting = batch.isTesting }
+        }
     }
 }
 

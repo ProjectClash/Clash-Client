@@ -427,7 +427,10 @@ extension RulePolicyOptions {
                                  ruleSets: ruleSets,
                                  hiddenGroups: Set(groups.filter(\.hidden).map(\.name)),
                                  domainRuleSets: domainRuleSets,
-                                 subRuleNames: subRuleNames ?? [])
+                                 subRuleNames: subRuleNames ?? [],
+                                  
+                                  
+                                 ruleSetsAreKnown: false)
     }
 }
 

@@ -88,30 +88,42 @@ enum ProviderUpdater {
         var busyRetryNanoseconds: UInt64 = 2_000_000_000
     }
 
-    static func update(_ names: [String], in environment: Environment) async -> Report {
+     
+     
+     
+     
+     
+     
+     
+    static func update(_ names: [String], in environment: Environment,
+                       progress: (@MainActor (_ name: String, _ outcome: Outcome) -> Void)? = nil) async -> Report {
         var report = Report()
+        func settle(_ name: String, _ outcome: Outcome) {
+            report.outcomes[name] = outcome
+            progress?(name, outcome)
+        }
         let targets = await environment.targets(names)
         let tunnelRunning = environment.tunnelRunning()
         var appNames: [String] = []
         var appCompileNow = false
         var switched = false
         for name in names {
-            guard !switched, !Task.isCancelled else { report.outcomes[name] = .skipped; continue }
+            guard !switched, !Task.isCancelled else { settle(name, .skipped); continue }
             guard let target = targets[name] else {
-                report.outcomes[name] = .notUpdatable(.local)
+                settle(name, .notUpdatable(.local))
                 continue
             }
             switch ProviderUpdateRoute.decide(target, tunnelRunning: tunnelRunning) {
             case .notUpdatable(let reason):
-                report.outcomes[name] = .notUpdatable(reason)
+                settle(name, .notUpdatable(reason))
             case .awaitingConnection:
-                report.outcomes[name] = .awaitingConnection
+                settle(name, .awaitingConnection)
             case .appSeed:
                 appNames.append(name)
             case .tunnel:
                 guard environment.stillInUse() else {
                     switched = true
-                    report.outcomes[name] = .skipped
+                    settle(name, .skipped)
                     continue
                 }
                 var check = await environment.tunnel(target)
@@ -126,24 +138,24 @@ enum ProviderUpdater {
                  
                 if !environment.stillInUse() { check = .switched }
                 switch tunnelOutcome(check, target: target, environment: environment) {
-                case .outcome(let outcome): report.outcomes[name] = outcome
+                case .outcome(let outcome): settle(name, outcome)
                 case .app(let compileNow):
                     appNames.append(name)
                     appCompileNow = appCompileNow || compileNow
                 case .switched:
                     switched = true
-                    report.outcomes[name] = .skipped
+                    settle(name, .skipped)
                 }
             }
         }
         if !appNames.isEmpty {
             if switched || Task.isCancelled || !environment.stillInUse() {
-                for name in appNames { report.outcomes[name] = .skipped }
+                for name in appNames { settle(name, .skipped) }
             } else {
                 let publication = await environment.publish(appNames, appCompileNow)
                 report.publication = publication.pointer
                 report.errors.merge(publication.errors) { _, new in new }
-                for name in appNames { report.outcomes[name] = publication.outcomes[name] ?? .skipped }
+                for name in appNames { settle(name, publication.outcomes[name] ?? .skipped) }
             }
         }
         return report
@@ -172,8 +184,8 @@ enum ProviderUpdater {
                  
                 case .appWhenOpen, .appWhenAsked: return .app(compileNow: true)
                 case .tunnelRetries, .tunnelKeepsOld:
-                    return .outcome(.heldByTunnel(.app(ProviderRefreshState.pendingLine(
-                        taker, reason: answer.pendingReason, countBefore: answer.countBefore))))
+                    return .outcome(.heldByTunnel(.app(ProviderRefreshState.keptLine(
+                        taker, countBefore: answer.countBefore))))
                 }
             case .scheduled?, nil:
                  
@@ -221,8 +233,13 @@ enum ProviderTunnelUpdate {
 extension ProviderUpdater.Environment {
      
      
+     
+     
+     
+     
     @MainActor
     static func live(profile: Profile, store: ConfigResourceStore, container: URL, vpn: VPNController,
+                     scripts: ScriptEngine.Caller,
                      stillInUse: @escaping @MainActor () -> Bool) -> Self {
         let catalog = (try? store.activeProvidersDirectory()).flatMap { ProviderCatalog.load(providersDir: $0) }
         let working = container.appendingPathComponent("working", isDirectory: true)
@@ -244,7 +261,7 @@ extension ProviderUpdater.Environment {
             },
             publish: { names, compileNow in
                 await ProviderUpdater.publish(names, compileNow: compileNow, profile: profile, store: store,
-                                              container: container, vpn: vpn)
+                                              container: container, vpn: vpn, scripts: scripts)
             },
             pendingTaker: { target, reason in
                 let state = ProviderRefreshState.read(workingDirectory: working)
@@ -283,7 +300,7 @@ extension ProviderUpdater {
      
      
     static func publish(_ names: [String], compileNow: Bool, profile: Profile, store: ConfigResourceStore,
-                        container: URL, vpn: VPNController) async -> Publication {
+                        container: URL, vpn: VPNController, scripts: ScriptEngine.Caller) async -> Publication {
         var publication = Publication()
         let before = store.activeIdentityOrNil()
         let many: ProviderRefreshService.ManyResult
@@ -291,7 +308,8 @@ extension ProviderUpdater {
             let coordinator = try vpn.activationCoordinator(store: store, container: container,
                                                             compileRuleSetsNow: compileNow)
             many = try await ProviderRefreshService.publishMany(
-                names: names, profile: profile, store: store, coordinator: coordinator, expectedActive: before)
+                names: names, profile: profile, store: store, coordinator: coordinator, expectedActive: before,
+                scripts: scripts)
         } catch where Task.isCancelled {
             for name in names { publication.outcomes[name] = .skipped }
             return publication

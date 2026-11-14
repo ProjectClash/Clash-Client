@@ -15,7 +15,7 @@ struct ClashLibraryTabTitle: ViewModifier {
         if !isCenterSection {
             content
                 .clashPageTitle(standalone)
-                .clashProductModalRoot(title: standalone.rawValue)
+                .clashProductModalRoot(title: standalone)
         } else {
             content
         }
@@ -154,6 +154,8 @@ public struct ClashConfigurationCreationView: View {
     private let cancel: () -> Void
     private let editingStep: ConfigurationCreationDraft.Step?
     private let isEditing: Bool
+     
+    private let editingProfileID: String?
     private let baseline: ConfigurationCreationDraft
     private let sourceDetails: (String) -> Void
     private let manageSources: () -> Void
@@ -175,7 +177,7 @@ public struct ClashConfigurationCreationView: View {
                 selectLegacy: @escaping (String) -> Void,
                 finish: @escaping (@escaping (Bool) -> Void) -> Void,
                 cancel: @escaping () -> Void,
-                isEditing: Bool = false, baseline: ConfigurationCreationDraft = .init(),
+                isEditing: Bool = false, editingProfileID: String? = nil, baseline: ConfigurationCreationDraft = .init(),
                 editingStep: ConfigurationCreationDraft.Step? = nil,
                 sourceDetails: @escaping (String) -> Void = { _ in },
                 manageSources: @escaping () -> Void = {},
@@ -184,7 +186,7 @@ public struct ClashConfigurationCreationView: View {
         self.palette = palette; self.presentationClass = presentationClass; self.icon = icon
         self.completionNodes = completionNodes; self.completionRules = completionRules
         self.editingStep = editingStep
-        self.isEditing = isEditing; self.baseline = baseline; self.sourceDetails = sourceDetails; self.manageSources = manageSources; self.manageRules = manageRules
+        self.isEditing = isEditing; self.editingProfileID = editingProfileID; self.baseline = baseline; self.sourceDetails = sourceDetails; self.manageSources = manageSources; self.manageRules = manageRules
         _draft = draft; self.library = library; self.legacy = legacy
         self.isBusy = isBusy; self.isReady = isReady; self.reload = reload; self.error = error; self.addSource = addSource
         self.selectLegacy = selectLegacy
@@ -202,7 +204,7 @@ public struct ClashConfigurationCreationView: View {
     }
 
     private var sources: [ConfigurationSourceRecord] { draft.sources(in:library).filter { $0.suppliesNodes && ($0.isListedInLibrary || draft.selectedSourceIDs.contains($0.id)) } }
-    private var rules: [ConfigurationRuleScheme] { ClashConfigurationRuleChoices.schemes(draft: draft, library: library) }
+    private var rules: [ConfigurationRuleScheme] { ClashConfigurationRuleChoices.schemes(draft: draft, library: library, profileID: editingProfileID) }
     private var canAdvance: Bool {
         guard isReady else { return false }
         return switch draft.step {
@@ -266,7 +268,7 @@ public struct ClashConfigurationCreationView: View {
         .onChange(of: draft.selectedSourceIDs) { _ in selectDefaultRule() }
         .onChange(of: isReady) { ready in if ready { selectDefaultRule() } }
         .clashPageTitle(usesWizard && draft.step != .finish ? .verbatim(ClashCopy.string(pageTitle, locale: locale) + (draft.step == .sources ? "  1/2" : "  2/2")) : .copy(pageTitle))
-        .clashProductModalRoot(title:pageTitle)
+        .clashProductModalRoot(title: .copy(pageTitle))
         .accessibilityIdentifier("configuration.create.screen")
         .clashToolbarUnlessInPanel {
             ToolbarItem(placement:.cancellationAction) {
@@ -291,7 +293,11 @@ public struct ClashConfigurationCreationView: View {
                     primaryDisabled: isBusy || !canAdvance, isBusy: isBusy) { advance() }
             }
         }
-        .clashRegistersDeparture(isDirty:dirty,isBusy:isBusy,save: { completion in
+         
+        .clashRegistersDeparture(isDirty:dirty,isBusy:isBusy,whySaveIsBlocked: {
+            isFinalStep && (draft.originalSourceID != nil || (draft.selectedRuleID != nil && !draft.selectedSourceIDs.isEmpty))
+                ? nil : ClashDepartureSaveAnswer.incomplete
+        },save: { completion in
             guard isFinalStep, draft.originalSourceID != nil || (draft.selectedRuleID != nil && !draft.selectedSourceIDs.isEmpty) else {
                 completion(false); return
             }
@@ -405,7 +411,7 @@ public struct ClashConfigurationCreationView: View {
                         Button { toggleSource(source.id) } label: {
                             HStack(spacing: ClashTheme.Spacing.row) {
                                 ClashSelectionCircle(isSelected: chosen)
-                                selectionLabel(source.label, detail: sourceSummary(source), chosen: chosen)
+                                selectionLabel(source.displayLabel(locale: locale), detail: sourceSummary(source), chosen: chosen)
                             }
                         }
                         .buttonStyle(.plain)
@@ -446,7 +452,9 @@ public struct ClashConfigurationCreationView: View {
                 if !items.isEmpty {
                     Section {
                         ForEach(items) { rule in
-                            let baseID = rule.id
+                             
+                             
+                            let baseID = rule.plainViewBaseID ?? rule.id
                             let chosen = draft.selectedRuleID == rule.id
                             Button {
                                 draft.selectedRuleID = chosen ? nil : rule.id
@@ -495,7 +503,7 @@ public struct ClashConfigurationCreationView: View {
             if draft.originalSourceID != nil {
                 ClashProfileGroup(title: "Original Configuration", palette: palette, presentationClass: presentationClass) {
                     VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
-                        Text(verbatim: draft.newSources.first?.record.label ?? draft.label)
+                        Text(verbatim: draft.newSources.first.map { $0.record.displayLabel(locale: locale) } ?? draft.label)
                         Text("Keep the document's nodes, rules and settings.").font(.footnote).foregroundStyle(.secondary)
                     }.padding(.vertical, ClashMacSettingsMetrics.rowVerticalInset(touch: ClashTheme.Spacing.row))
                 }
@@ -526,7 +534,8 @@ public struct ClashConfigurationCreationView: View {
 
     private var completionName: some View {
         TextField("Name", text: $draft.label,
-            prompt: Text(verbatim: draft.selectedSourceIDs.first.flatMap { id in sources.first(where: { $0.id == id })?.label } ?? ""))
+            prompt: Text(verbatim: draft.selectedSourceIDs.first.flatMap { id in sources.first(where: { $0.id == id }) }
+                .map { $0.displayLabel(locale: locale) } ?? ""))
             .clashLabelsHiddenInSettingsIdiom()
             .submitLabel(.done)
             .accessibilityIdentifier("configuration.create.name")
@@ -543,10 +552,12 @@ public struct ClashConfigurationCreationView: View {
      
      
      
+     
     private func nameIfUnnamed() {
         guard draft.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let fromSource = (draft.newSources.first?.record.label
-            ?? draft.selectedSourceIDs.first.flatMap { id in sources.first { $0.id == id }?.label }
+        let fromSource = ((draft.newSources.first?.record
+            ?? draft.selectedSourceIDs.first.flatMap { id in sources.first { $0.id == id } })
+            .map { $0.displayLabel(locale: locale) }
             ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         draft.label = fromSource.isEmpty ? ClashCopy.string("Profile", locale: locale) : fromSource
     }
@@ -662,20 +673,27 @@ public struct ClashConfigurationSourceDetailView: View {
     private let deleteSource: (() -> Void)?
     private let editSource: (() -> Void)?
     @State private var confirmsDeletion = false
-    @State private var draft: String
-    @State private var baseline: String
+     
+     
+     
+     
+    @State private var draft: String?
+    @State private var baseline: String?
     @State private var subscriptionDraft: ConfigurationSourceSettingsDraft
     @State private var subscriptionBaseline: ConfigurationSourceSettingsDraft
     @State private var confirmsDiscard = false
     @Environment(\.clashInsideProductModalPresentation) private var insideProductModal
+    @Environment(\.locale) private var locale
+    private var shownName: String { source.displayLabel(locale: locale) }
+    private var nameField: Binding<String> { Binding(get: { draft ?? shownName }, set: { draft = $0 }) }
     private var isSubscription: Bool { if source.isRetainedSnapshot == true { return false }; if case .subscription = source.origin { return true }; return false }
-    private var dirty: Bool { draft != baseline || (isSubscription && subscriptionDraft != subscriptionBaseline) }
+    private var dirty: Bool { (draft ?? shownName) != (baseline ?? shownName) || (isSubscription && subscriptionDraft != subscriptionBaseline) }
     private var subscriptionValid: Bool {
         guard isSubscription else { return true }
         let url = URLComponents(string: subscriptionDraft.url.trimmingCharacters(in: .whitespacesAndNewlines))
         return url?.scheme != nil && !(url?.host?.isEmpty ?? true) && url?.url != nil
     }
-    private var canSave: Bool { !isBusy && subscriptionValid && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSave: Bool { !isBusy && subscriptionValid && !(draft ?? shownName).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     public init(source: ConfigurationSourceRecord, configurations: [String], isBusy: Bool,
                 error: String?, isUpdating: Bool = false, updateStatus: String? = nil, update: @escaping () -> Void,
@@ -685,7 +703,6 @@ public struct ClashConfigurationSourceDetailView: View {
         self.editSource = editSource
         self.source = source; self.configurations = configurations; self.isBusy = isBusy
         self.error = error; self.update = update; self.close = close; self.save = save; self.deleteSource = deleteSource
-        _draft = State(initialValue: source.label); _baseline = State(initialValue: source.label)
         let settings = ConfigurationSourceSettingsDraft(source: source)
         _subscriptionDraft = State(initialValue: settings); _subscriptionBaseline = State(initialValue: settings)
     }
@@ -694,7 +711,7 @@ public struct ClashConfigurationSourceDetailView: View {
             Section {
                 HStack {
                     Text("Name")
-                    TextField("Name", text: $draft).disabled(isBusy || source.isRetainedSnapshot == true)
+                    TextField("Name", text: nameField).disabled(isBusy || source.isRetainedSnapshot == true)
                         .multilineTextAlignment(.trailing)
                         .accessibilityLabel("Name")
                         .accessibilityIdentifier("configuration.source.name")
@@ -736,7 +753,7 @@ public struct ClashConfigurationSourceDetailView: View {
                         disabled: dirty || (isBusy && !isUpdating), action: update)
                         .accessibilityIdentifier("configuration.source.update")
                 } footer: {
-                    ClashConfigurationUpdateStatus(progress: isUpdating ? "1 / 1 · " + source.label : nil,
+                    ClashConfigurationUpdateStatus(progress: isUpdating ? "1 / 1 · " + source.displayLabel(locale: locale) : nil,
                         status: updateStatus, error: error)
                         .accessibilityIdentifier("configuration.source.update-status")
                 }
@@ -774,11 +791,17 @@ public struct ClashConfigurationSourceDetailView: View {
                 }
             }
         }
-        .clashRegistersDeparture(isDirty: dirty, isBusy: isBusy, save: submit, discard: { restoreDraft() })
+        .clashRegistersDeparture(isDirty: dirty, isBusy: isBusy, whySaveIsBlocked: {
+            subscriptionValid && !(draft ?? shownName).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : ClashDepartureSaveAnswer.incomplete
+        }, save: submit, discard: { restoreDraft() })
         .interactiveDismissDisabled(dirty || isBusy)
-        .clashDeleteConfirmation(source.label, isPresented: $confirmsDeletion,
+        .clashDeleteConfirmation(shownName, isPresented: $confirmsDeletion,
             actionTitle: .copy("Delete Source"),
-            message: .copy("Saved profiles keep their current content and stop following this source."),
+             
+             
+            message: source.suppliesNodes
+                ? .copy("Configurations that use this source lose its nodes.")
+                : .copy("Saved profiles keep their current content and stop following this source."),
             identifier: "configuration.source.delete.confirm") { deleteSource?() }
         .confirmationDialog("Discard Changes?", isPresented: $confirmsDiscard, titleVisibility: .visible) {
             Button("Discard Changes", role: .destructive) { restoreDraft(); close() }
@@ -797,11 +820,25 @@ public struct ClashConfigurationSourceDetailView: View {
 
     private func submit(_ completion: @escaping (Bool) -> Void) {
         guard canSave else { completion(false); return }
-        let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = (draft ?? shownName).trimmingCharacters(in: .whitespacesAndNewlines)
         let settings = isSubscription ? subscriptionDraft : nil
-        save(name, settings) { succeeded in
+         
+         
+         
+         
+        let saved = ClashConfigurationSourceCopy.nameToStore(name, origin: source.origin, locale: locale)
+        save(saved, settings) { succeeded in
             if succeeded {
-                baseline = name; draft = name
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                let kept: String? = ConfigurationSourceRecord.isBuiltinName(saved, origin: source.origin) ? nil : name
+                baseline = kept; draft = kept
                 if let settings { subscriptionBaseline = settings }
             }
             completion(succeeded)
@@ -924,10 +961,30 @@ public struct ClashConfigurationSourceLibraryView: View {
                         }
                     }
                 }
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
                 if let quickAdd { quickAdd() } else {
                     ClashConfigurationLibraryAddCard(kind: .nodes, palette: palette, nativeList: true,
                         disabled: isBusy || !isReady, action: { add(.subscription) })
                         .accessibilityIdentifier("configuration.library.sources.add-card")
+                }
+                Section {} footer: {
+                    Text(clash: .copy("These nodes are a source of their own. A configuration uses them once it turns this source on, under Node Sources."))
+                        .accessibilityIdentifier("configuration.library.sources.what-this-is")
                 }
             }
         }
@@ -1002,7 +1059,7 @@ public struct ClashConfigurationSourceLibraryView: View {
              
              
              
-            ClashConfigurationLibraryRow(title: source.label,
+            ClashConfigurationLibraryRow(title: source.displayLabel(locale: locale),
                 count: .verbatim(ClashConfigurationSourceCopy.summary(source, locale: locale)),
                 showsInfo: showsInfo, usage: usage, failure: refusals[source.id])
         }
@@ -1350,7 +1407,9 @@ public struct ClashConfigurationRuleEditingView: View {
                 ClashModalActionBar(primaryTitle: "Save", primaryDisabled: !canSave, isBusy: isBusy) { submit { _ in } }
             }
         }
-        .clashRegistersDeparture(isDirty: dirty, isBusy: isBusy, save: submit, discard: { draft = baseline })
+        .clashRegistersDeparture(isDirty: dirty, isBusy: isBusy, whySaveIsBlocked: {
+            (try? draft.document()) == nil ? ClashDepartureSaveAnswer.incomplete : nil
+        }, save: submit, discard: { draft = baseline })
         .interactiveDismissDisabled(dirty || isBusy)
         .clashUnsavedChangesAlert(isPresented: $confirmsDiscard,
             message: .copy("This profile has changes that have not been saved."),
@@ -1449,7 +1508,7 @@ public struct ClashConfigurationNewRuleView: View {
         .disabled(isBusy)
         .safeAreaInset(edge: .top, spacing: 0) { if let tabHeader { tabHeader(dirty).disabled(isBusy) } }
         .clashPageTitle(.copy(ClashConfigurationAddition.rules.title))
-        .clashProductModalRoot(title: ClashConfigurationAddition.rules.title)
+        .clashProductModalRoot(title: .copy(ClashConfigurationAddition.rules.title))
         .accessibilityIdentifier("configuration.rule.new")
         .clashToolbarUnlessInPanel {
             ToolbarItem(placement: .cancellationAction) {
@@ -1466,7 +1525,9 @@ public struct ClashConfigurationNewRuleView: View {
                 ClashModalActionBar(primaryTitle: "Create", primaryDisabled: !canCreate, isBusy: isBusy) { submit { _ in } }
             }
         }
-        .clashRegistersDeparture(isDirty: dirty, isBusy: isBusy, save: submit, discard: { draft = baseline })
+        .clashRegistersDeparture(isDirty: dirty, isBusy: isBusy, whySaveIsBlocked: {
+            draft.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .copy("Enter a name.") : nil
+        }, save: submit, discard: { draft = baseline })
         .interactiveDismissDisabled(dirty || isBusy)
         .clashUnsavedChangesAlert(isPresented: $confirmsDiscard,
             message: .copy("This profile has changes that have not been saved."),
@@ -1650,9 +1711,11 @@ public struct ClashConfigurationReadRow: Identifiable, Sendable {
 }
 public struct ClashConfigurationReadSection: Identifiable, Sendable {
     public let id = UUID()
-    public let title: String
+     
+     
+    public let title: ClashDisplayText
     public let rows: [ClashConfigurationReadRow]
-    public init(title: String, rows: [ClashConfigurationReadRow]) { self.title = title; self.rows = rows }
+    public init(title: ClashDisplayText, rows: [ClashConfigurationReadRow]) { self.title = title; self.rows = rows }
 }
 public struct ClashConfigurationContentsView: View {
     @State private var search = ""
@@ -1671,7 +1734,9 @@ public struct ClashConfigurationContentsView: View {
             || (row.subtitle?.localizedCaseInsensitiveContains(query) ?? false)
             || (subtitle(row, words: words)?.localizedCaseInsensitiveContains(query) ?? false)
     }
-    public let title: String
+     
+     
+    public let title: ClashDisplayText
     public let sections: [ClashConfigurationReadSection]
     public let loading: Bool
     public let error: String?
@@ -1687,7 +1752,7 @@ public struct ClashConfigurationContentsView: View {
     public let palette: ClashProductPalette?
     public let searchPrompt: String
     public let nodeDensity: ClashProxiesRowDensity
-    public init(title: String, sections: [ClashConfigurationReadSection], loading: Bool, error: String?,
+    public init(title: ClashDisplayText, sections: [ClashConfigurationReadSection], loading: Bool, error: String?,
                 reload: @escaping () -> Void, edit: (() -> Void)? = nil, close: @escaping () -> Void,
                 showsClose: Bool = true, openNode: ((Int) -> Void)? = nil, deleteNode: ((Int) -> Void)? = nil,
                 addNode: (() -> Void)? = nil, isBusy: Bool = false, manage: (() -> Void)? = nil,
@@ -1747,7 +1812,7 @@ public struct ClashConfigurationContentsView: View {
                             }
                         } else { Text(verbatim: row.title).textSelection(.enabled) }
                     }
-                } header: { Text(clash: .copy(section.title)) }
+                } header: { Text(clash: section.title) }
                 }
             }
             if let addNode { Section { Button("Add Custom Node", action: addNode).buttonStyle(.plain).foregroundStyle(.primary) } }
@@ -1759,7 +1824,7 @@ public struct ClashConfigurationContentsView: View {
         .clashProductModalSearchable(text: $search, prompt: Text(ClashCopy.key(searchPrompt)))
         .disabled(isBusy || loading)
         .interactiveDismissDisabled(isBusy)
-        .clashPageTitle(.verbatim(title), watchAs: "Node Sources")
+        .clashPageTitle(title, watchAs: "Node Sources")
         .clashProductModalRoot(title: title)
         .clashToolbarUnlessInPanel {
             ToolbarItem(placement: .cancellationAction) { if showsClose { ClashSheetCloseButton(dismiss: close) } }
@@ -1839,7 +1904,9 @@ public struct ClashConfigurationSourceSettingsView: View {
                 ClashModalActionBar(primaryTitle: "Save", primaryDisabled: !valid || !dirty, isBusy: isBusy) { submit { _ in } }
             }
         }
-        .clashRegistersDeparture(isDirty: dirty, isBusy: isBusy, save: submit, discard: { draft = baseline })
+        .clashRegistersDeparture(isDirty: dirty, isBusy: isBusy, whySaveIsBlocked: {
+            valid ? nil : .copy("Enter a valid link.")
+        }, save: submit, discard: { draft = baseline })
         .interactiveDismissDisabled(dirty || isBusy)
         .clashUnsavedChangesAlert(isPresented: $confirmsDiscard,
             message: .copy("This profile has changes that have not been saved."),
@@ -1916,7 +1983,9 @@ public struct ClashConfigurationSubscriptionImportView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if insideModal { ClashModalActionBar(primaryTitle: "Add", primaryDisabled: !canSave, isBusy: saving) { submit { _ in } } }
         }
-        .clashRegistersDeparture(isDirty: dirty, isBusy: saving, save: submit, discard: {
+        .clashRegistersDeparture(isDirty: dirty, isBusy: saving, whySaveIsBlocked: {
+            preview != nil && previewRequest == request && !loading ? nil : ClashDepartureSaveAnswer.incomplete
+        }, save: submit, discard: {
             request = .init(); name = ""; registerRules = true; preview = nil
         })
         .interactiveDismissDisabled(dirty || saving)
@@ -2144,7 +2213,54 @@ public struct ClashConfigurationLibraryAddCard: View {
     }
 }
 
+public extension ConfigurationSourceRecord {
+     
+     
+     
+     
+    func displayLabel(locale: Locale) -> String {
+        Self.displayLabel(label, origin: origin, locale: locale)
+    }
+
+     
+     
+    static func displayLabel(_ label: String, origin: Origin, locale: Locale) -> String {
+        ClashCopy.string(for: ClashConfigurationSourceCopy.name(label, origin: origin), locale: locale)
+    }
+}
+
 public enum ClashConfigurationSourceCopy {
+     
+     
+     
+    public static func nameToStore(_ typed: String, origin: ConfigurationSourceRecord.Origin, locale: Locale) -> String {
+        let builtin = ConfigurationBuiltins.customNodesName
+        if ConfigurationSourceRecord.isBuiltinName(builtin, origin: origin),
+           typed == ConfigurationSourceRecord.displayLabel(builtin, origin: origin, locale: locale) {
+            return builtin
+        }
+        return typed
+    }
+
+     
+     
+     
+     
+     
+     
+    public static func name(_ source: ConfigurationSourceRecord) -> ClashDisplayText {
+        name(source.label, origin: source.origin)
+    }
+    public static func name(_ label: String, origin: ConfigurationSourceRecord.Origin) -> ClashDisplayText {
+        ConfigurationSourceRecord.isBuiltinName(label, origin: origin) ? .copy(label) : .verbatim(label)
+    }
+     
+     
+     
+     
+    public static func sentence(_ key: String, naming source: ConfigurationSourceRecord, then more: [String] = []) -> ClashDisplayText {
+        source.hasBuiltinName ? .formatCopy(key, [source.label] + more) : .format(key, [source.label] + more)
+    }
      
      
     static func counted(_ count: Int, one: String, other: String) -> ClashDisplayText {
@@ -2271,7 +2387,7 @@ public struct ClashConfigurationNodeScopeView: View {
         }
         .clashConfigurationFormSpacing()
         .clashProductModalSearchable(text: $search, prompt: Text("Search Nodes"))
-        .clashPageTitle(.verbatim(source.label), watchAs: "Source Nodes")
+        .clashPageTitle(ClashConfigurationSourceCopy.name(source), watchAs: "Source Nodes")
         .clashToolbarUnlessInPanel {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { if dirty { confirmsDiscard = true } else { close() } }
@@ -2347,7 +2463,7 @@ public struct ClashConfigurationCollectionCards: View {
     public var body: some View {
         ForEach(Array(Set(entries.map { $0.source.id })).sorted(), id: \.self) { sourceID in
             let children = entries.filter { $0.source.id == sourceID }
-            ClashConfigurationLibraryCard(title: .verbatim(children.first?.source.label ?? ""), count: children.count, palette: palette, nativeList: true) {
+            ClashConfigurationLibraryCard(title: children.first.map { ClashConfigurationSourceCopy.name($0.source) } ?? .verbatim(""), count: children.count, palette: palette, nativeList: true) {
                 ForEach(children) { entry in
                     Button { open(entry) } label: {
                         ClashConfigurationLibraryRow(title: entry.collection.name,
@@ -2432,14 +2548,23 @@ public struct ClashConfigurationCollectionContentsView: View {
 }
 
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 enum ClashConfigurationRuleChoices {
-    static func schemes(draft: ConfigurationCreationDraft, library: ConfigurationLibrarySnapshot) -> [ConfigurationRuleScheme] {
+    static func schemes(draft: ConfigurationCreationDraft, library: ConfigurationLibrarySnapshot,
+                        profileID: String? = nil) -> [ConfigurationRuleScheme] {
         var catalog = library
         catalog.rules = draft.rules(in: library)
-        var choices = catalog.visibleRuleSchemes
+        var choices = catalog.placingOwnViews(in: catalog.visibleRuleSchemes, for: profileID, running: draft.selectedRuleID)
          
          
-        if let selected = catalog.rules.first(where: { $0.id == draft.selectedRuleID }) {
+        if let selected = catalog.rules.first(where: { $0.id == draft.selectedRuleID }),
+           !choices.contains(where: { $0.id == selected.id && selected.ownViewBaseID != nil }) {
             let family = selected.baseSchemeID ?? selected.id
             if let index = choices.firstIndex(where: { ConfigurationBuiltins.isNative(family) ? $0.id == selected.id : ($0.baseSchemeID ?? $0.id) == family }) {
                 choices[index] = selected

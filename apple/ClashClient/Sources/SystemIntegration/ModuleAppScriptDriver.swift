@@ -314,7 +314,7 @@ final class ModuleAppScriptDriver {
         let checked = storedChecked ?? now
         var started: [Task<Void, Never>] = []
         for entry in runner.entries(.cron) {
-            guard let first = firstFire(of: entry, after: checked), first <= now else { continue }
+            guard let first = firstFire(of: entry, after: checked), first.timeIntervalSince(now) <= 0 else { continue }
             if let task = start(entry, trigger: .cron(scheduled: lastFire(of: entry, from: first, upTo: now))) {
                 started.append(task)
             }
@@ -363,13 +363,13 @@ final class ModuleAppScriptDriver {
     private func lastFire(of entry: ModuleAppScriptEntry, from first: Date, upTo now: Date) -> Date {
         var last = first
         for window in [60.0, 3_600, 86_400] {
-            if let near = runner.nextFire(entry, now.addingTimeInterval(-window)), near <= now {
+            if let near = runner.nextFire(entry, now.addingTimeInterval(-window)), near.timeIntervalSince(now) <= 0 {
                 if near > last { last = near }
                 break
             }
         }
         for _ in 0..<1_000 {
-            guard let next = runner.nextFire(entry, last), next <= now else { break }
+            guard let next = runner.nextFire(entry, last), next.timeIntervalSince(now) <= 0 else { break }
             last = next
         }
         return last

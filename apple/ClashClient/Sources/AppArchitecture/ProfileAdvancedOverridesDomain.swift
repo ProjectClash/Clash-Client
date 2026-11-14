@@ -9,6 +9,9 @@ enum ProfileAdvancedOverridesError: LocalizedError, Equatable {
     case invalidCustomConfiguration
      
      
+    case customOverridesLeavePatchOut
+     
+     
     case validationFailed(reason: String?)
 
     var errorDescription: String? {
@@ -23,6 +26,8 @@ enum ProfileAdvancedOverridesError: LocalizedError, Equatable {
             return "The selected script is no longer available. Choose another script and try again."
         case .invalidCustomConfiguration:
             return "The custom groups or rules are not valid. The previous configuration remains unchanged."
+        case .customOverridesLeavePatchOut:
+            return "This configuration still uses custom overrides, which leave these settings out. Remove the custom overrides first, then save again."
         case let .validationFailed(reason):
              
              
@@ -108,7 +113,20 @@ struct ProfileAdvancedOverridesDraft: Equatable {
         settings.customOverwrite = customOverwrite
 
         switch mode {
-        case .standard:
+        case .standard, .script:
+            if mode == .script {
+                guard let selectedScriptID else {
+                    throw ProfileAdvancedOverridesError.scriptRequired
+                }
+                guard availableScriptIDs.contains(selectedScriptID) else {
+                    throw ProfileAdvancedOverridesError.scriptUnavailable
+                }
+            }
+             
+             
+             
+             
+             
              
              
              
@@ -119,18 +137,17 @@ struct ProfileAdvancedOverridesDraft: Equatable {
                 from: OverridePatch(patchJSON: profile.override.patchJSON)
             )
             settings.override.patchJSON = merged.patchJSON
-        case .script:
-            guard let selectedScriptID else {
-                throw ProfileAdvancedOverridesError.scriptRequired
-            }
-            guard availableScriptIDs.contains(selectedScriptID) else {
-                throw ProfileAdvancedOverridesError.scriptUnavailable
-            }
         case .custom:
             do {
                 try Self.validateCustom(customOverwrite)
             } catch {
                 throw ProfileAdvancedOverridesError.invalidCustomConfiguration
+            }
+             
+             
+            let stored = OverridePatch(patchJSON: profile.override.patchJSON).profileOwnedPatch.patchJSON
+            if OverridePatch(patchJSON: try Self.canonicalPatch(rawPatchJSON)).profileOwnedPatch.patchJSON != stored {
+                throw ProfileAdvancedOverridesError.customOverridesLeavePatchOut
             }
         }
 
@@ -254,6 +271,10 @@ struct ProfileRuntimeTrustDraft: Equatable {
         "experimental.quic-go-disable-gso",
         "experimental.quic-go-disable-ecn",
         "experimental.dialer-ip4p-convert",
+         
+         
+         
+         
          
          
          

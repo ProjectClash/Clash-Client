@@ -53,6 +53,10 @@ struct ProxyProviderRuntime: Equatable {
     var total: Int? = nil
      
     var deadCount: Int? = nil
+     
+     
+     
+    var subscriptionInfo: SubscriptionInfo? = nil
 
      
     var nodeCount: Int { max(total ?? 0, proxies.count) }
@@ -66,6 +70,70 @@ struct ProxyProviderRuntime: Equatable {
     var unhealthyCount: Int {
         if let deadCount, proxies.isEmpty { return deadCount }
         return proxies.filter { $0.alive == false }.count
+    }
+}
+
+extension SubscriptionInfo {
+     
+    init(usage: ConfigurationSubscriptionUsage) {
+        self.init(upload: usage.upload, download: usage.download, total: usage.total, expire: usage.expire)
+    }
+}
+
+extension ProviderRefreshState.Entry {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    var usage: SubscriptionInfo? { subscriptionInfo.flatMap(SubscriptionInfo.parse(header:)) }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    var countOfCheckedContent: Int? {
+        guard result == .updated || result == .unchanged, let count = countAfter, count > 0 else { return nil }
+        return count
+    }
+
+     
+     
+     
+    func isNewer(than date: Date?) -> Bool {
+        guard let checked = checkedAt else { return false }
+        return date.map { checked > $0 } ?? true
+    }
+}
+
+extension ProviderRefreshState {
+     
+     
+     
+     
+     
+     
+     
+    func newerEntry(of provider: ProviderCatalog.Entry, than date: Date?) -> Entry? {
+        newerEntry(kind: provider.kind, name: provider.name, url: provider.url, than: date)
+    }
+
+    func newerEntry(kind: String, name: String, url: String, than date: Date?) -> Entry? {
+        guard let found = entry(kind: kind, name: name, url: url), found.isNewer(than: date) else { return nil }
+        return found
     }
 }
 
@@ -85,6 +153,8 @@ struct ProviderRuntimeSummary: Equatable {
     let healthyCount: Int?
     let unhealthyCount: Int?
     let healthCheckAvailable: Bool
+     
+    var subscriptionInfo: SubscriptionInfo? = nil
 }
 
 struct ProviderRuntimeCatalog: Equatable {
@@ -103,7 +173,8 @@ struct ProviderRuntimeCatalog: Equatable {
                 entryCount: provider.nodeCount,
                 healthyCount: provider.healthyCount,
                 unhealthyCount: provider.unhealthyCount,
-                healthCheckAvailable: provider.hasHealthCheck
+                healthCheckAvailable: provider.hasHealthCheck,
+                subscriptionInfo: provider.subscriptionInfo
             )
         case "rule":
             guard let provider = ruleProviders[name] else { return nil }
@@ -139,6 +210,7 @@ enum ProviderRuntimeCatalogParser {
          
         let total: Int?
         let dead: Int?
+        let subscriptionInfo: CoreSubscriptionInfo?
     }
 
     private struct ProxyPayloadEntry: Decodable {
@@ -221,7 +293,8 @@ enum ProviderRuntimeCatalogParser {
                 hasHealthCheck: !(provider.testURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                 proxies: [],
                 total: provider.total,
-                deadCount: provider.dead
+                deadCount: provider.dead,
+                subscriptionInfo: provider.subscriptionUsage.map(SubscriptionInfo.init(usage:))
             )
         }
         return providers
@@ -275,7 +348,8 @@ enum ProviderRuntimeCatalogParser {
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             proxies: proxies,
             total: payload.total,
-            deadCount: payload.dead
+            deadCount: payload.dead,
+            subscriptionInfo: payload.subscriptionInfo?.usage.map(SubscriptionInfo.init(usage:))
         )
     }
 

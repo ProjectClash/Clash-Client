@@ -19,6 +19,9 @@ struct ProfileListenerPorts: Equatable, Sendable {
     let allowLAN: Bool
      
     let credentials: Credentials?
+     
+     
+    var bindAddress: String? = nil
 
     static func parse(yaml: String) -> ProfileListenerPorts? {
          
@@ -35,7 +38,7 @@ struct ProfileListenerPorts: Equatable, Sendable {
 
      
      
-    static let topLevelKeys = ["mixed-port", "port", "socks-port", "allow-lan", "authentication"]
+    static let topLevelKeys = ["mixed-port", "port", "socks-port", "allow-lan", "authentication", "bind-address"]
 
      
     static func parse(topLevel: [String: Any]) -> ProfileListenerPorts? {
@@ -88,7 +91,8 @@ struct ProfileListenerPorts: Equatable, Sendable {
         }
         return ProfileListenerPorts(
             mixedPort: mixed, httpPort: http, socksPort: socks,
-            allowLAN: decodeAllowLAN(root: root), credentials: credentials
+            allowLAN: decodeAllowLAN(root: root), credentials: credentials,
+            bindAddress: root["bind-address"] as? String
         )
     }
 }

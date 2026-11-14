@@ -22,6 +22,9 @@ struct ClashWidgetEntry: TimelineEntry {
      
      
     var throughputUnit: ClashThroughputUnit = .bits
+     
+     
+    var notice: String?
 }
 
 enum ClashWidgetTimelineBuilder {
@@ -56,9 +59,10 @@ enum ClashWidgetTimelineBuilder {
             tunnelActive: active, style: style, group: shown,
             tunnelControllable: state?.controllable ?? false,
             storedMode: store.restingMode(
-                stored: UserDefaults(suiteName: ClashAppIdentifiers.appGroup).flatMap(ClashWidgetStoredMode.read(from:))
+                stored: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite).flatMap(ClashWidgetStoredMode.read(from:))
             ),
-            throughputUnit: ClashThroughputUnit.stored(in: UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+            throughputUnit: ClashThroughputUnit.stored(in: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)),
+            notice: store.readNotice()?.text(at: Date())
         )
     }
 
@@ -91,7 +95,7 @@ enum ClashWidgetTimelineBuilder {
 
      
     private static var storedThroughputUnit: ClashThroughputUnit {
-        ClashThroughputUnit.stored(in: UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+        ClashThroughputUnit.stored(in: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
     }
 
      

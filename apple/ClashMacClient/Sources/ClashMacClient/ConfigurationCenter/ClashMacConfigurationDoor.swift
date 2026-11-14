@@ -53,12 +53,7 @@ public struct ClashMacLibrarySelection: Identifiable, Equatable {
      
      
     public var pane: ClashMacRuleEditorSheet.Pane = .rules
-     
-     
-     
-     
-    public var profileID: String?
-    public init(id: String, pane: ClashMacRuleEditorSheet.Pane = .rules, profileID: String? = nil) {
-        self.id = id; self.pane = pane; self.profileID = profileID
+    public init(id: String, pane: ClashMacRuleEditorSheet.Pane = .rules) {
+        self.id = id; self.pane = pane
     }
 }

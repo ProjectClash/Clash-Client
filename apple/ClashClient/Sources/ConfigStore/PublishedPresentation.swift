@@ -84,6 +84,7 @@ enum PublishedPresentation {
         facts.selectedMap = [:]
         facts.currentGroupName = nil
         facts.unfoldedGroups = nil
+        facts.globalPickedByReader = nil
         facts.order = 0
         facts.activeRevision = nil
         facts.subscriptionInfo = nil

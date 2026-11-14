@@ -367,7 +367,7 @@ struct StartupOutcomeRecord: Equatable, Sendable {
      
     func answersStart(issuedAt: Date) -> Bool {
         guard operation == "start", let at else { return false }
-        return at >= issuedAt.addingTimeInterval(-1)
+        return at.timeIntervalSince(issuedAt.addingTimeInterval(-1)) >= 0
     }
 
      
@@ -398,6 +398,46 @@ struct StartupOutcomeRecord: Equatable, Sendable {
     func runningProfileID(ifNot selected: String?) -> String? {
         guard let running = running?.profileID, running != selected else { return nil }
         return running
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+struct CoreStartRefusal: Equatable, Sendable {
+     
+     
+    static let configurationMessage = "The core rejected this configuration: %@"
+     
+    static let startMessage = "The core couldn’t start: %@"
+
+     
+    let message: String
+     
+    let words: String
+
+    static func isLead(_ message: String) -> Bool {
+        message == configurationMessage || message == startMessage
+    }
+
+     
+     
+     
+     
+     
+     
+    static func from(error: NSError?, record: StartupOutcomeRecord?, issuedAt: Date? = nil) -> CoreStartRefusal? {
+        guard let error, error.domain == ClashTunnelStart.startErrorDomain,
+              error.code == ClashTunnelStart.StartErrorCode.coreRefused.rawValue,
+              let record, record.operation == "start", record.outcome == .refused,
+              issuedAt.map(record.answersStart(issuedAt:)) ?? true,
+              let words = record.message?.trimmingCharacters(in: .whitespacesAndNewlines), !words.isEmpty,
+              !NodeLibraries.isUnavailable(words)
+        else { return nil }
+        return CoreStartRefusal(message: record.errorClass == .config ? configurationMessage : startMessage,
+                                words: String(words.prefix(512)))
     }
 }
 

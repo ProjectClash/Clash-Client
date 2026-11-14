@@ -15,7 +15,7 @@ struct HomeView: View {
     private var snapshot: OverviewSnapshot {
         OverviewSnapshot(
             connectionStatus: vpn.status,
-            errorMessage: vpn.lastError.isEmpty ? command.lastError : vpn.lastError,
+            errorMessage: vpn.reportableLastError.isEmpty ? command.lastError : vpn.reportableLastError,
             noticeMessage: vpn.configurationNotice,
             traffic: OverviewTrafficSnapshot(
                 upload: command.traffic.upload,
@@ -91,7 +91,7 @@ struct HomeView: View {
                     .accessibilityIdentifier("overview.dashboard.menu")
                 }
             }
-            .sheet(isPresented: $showsDashboardCustomization) {
+            .clashSheet(isPresented: $showsDashboardCustomization) {
                 DashboardCustomizationView(widgets: $dashboardWidgets) { widgets in
                     DashboardLayoutStore().save(widgets)
                 }

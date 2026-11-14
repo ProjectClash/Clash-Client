@@ -1,3 +1,5 @@
+import SwiftUI
+
  
  
  
@@ -87,6 +89,8 @@ public enum ClashSymbol: String, CaseIterable, Sendable {
      
     case starFill = "star.fill"
     case houseFill = "house.fill"
+     
+    case bookClosed = "book.closed"
     case icloudAndArrowDown = "icloud.and.arrow.down"
     case icloudAndArrowUp = "icloud.and.arrow.up"
     case infoCircle = "info.circle"
@@ -161,6 +165,16 @@ public enum ClashSymbol: String, CaseIterable, Sendable {
     public var isCustom: Bool {
         self == .catCircleFill || self == .ruleDomain
             || self == .dnsDomain || self == .githubMark || self == .xLogo
+    }
+
+     
+     
+     
+     
+     
+     
+    public func customImage(bundle: Bundle? = nil) -> Image {
+        Image(decorative: rawValue, bundle: bundle)
     }
 
      

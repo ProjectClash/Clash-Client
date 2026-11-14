@@ -1,5 +1,6 @@
 import ClashClientKit
 import ClashClientUI
+import Combine
 import SwiftUI
 
  
@@ -72,7 +73,33 @@ public struct ClashMacSettingsSectionDocument: Equatable {
      
      
      
-    public var copies: (scheme: String, configuration: String)?
+     
+    public var scope: ClashDisplayText?
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func scope(running scheme: ConfigurationRuleScheme?, ownership: ConfigurationSchemePageOwnership,
+                             ownLayer: Bool) -> ClashDisplayText {
+        if !ownLayer, case .own(_, let label, let count) = ownership, count > 1, scheme?.ownViewBaseID == nil {
+            return all(count, on: label)
+        }
+        return thisConfigurationOnly
+    }
+
+     
+    public static func all(_ count: Int, on scheme: String) -> ClashDisplayText {
+        .format("Changes here apply to all %@ configurations on rule scheme “%@”.", [String(count), scheme])
+    }
+
+    public static let thisConfigurationOnly = ClashDisplayText.copy("Changes here apply to this configuration only.")
      
     public var elsewhere: Set<String>
      
@@ -110,10 +137,10 @@ public struct ClashMacSettingsSectionDocument: Equatable {
     public var catalog: ConfigurationFieldCatalog?
 
     public init(page: OrderedJSON, ownLayer: OrderedJSON? = nil, scheme: String?,
-                copies: (scheme: String, configuration: String)? = nil, elsewhere: Set<String> = [],
+                scope: ClashDisplayText? = nil, elsewhere: Set<String> = [],
                 platformReasons: [String: String] = [:], choices: [String: [String]] = [:],
                 catalog: ConfigurationFieldCatalog? = nil) {
-        self.page = page; self.ownLayer = ownLayer; self.scheme = scheme; self.copies = copies
+        self.page = page; self.ownLayer = ownLayer; self.scheme = scheme; self.scope = scope
         self.elsewhere = elsewhere; self.platformReasons = platformReasons; self.choices = choices
         self.catalog = catalog
     }
@@ -320,7 +347,7 @@ public struct ClashMacSettingsSectionDocument: Equatable {
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.page == rhs.page && lhs.ownLayer == rhs.ownLayer && lhs.scheme == rhs.scheme
-            && lhs.copies?.scheme == rhs.copies?.scheme && lhs.copies?.configuration == rhs.copies?.configuration
+            && lhs.scope == rhs.scope
             && lhs.elsewhere == rhs.elsewhere && lhs.platformReasons == rhs.platformReasons && lhs.choices == rhs.choices
             && lhs.platformKeysKnown == rhs.platformKeysKnown && lhs.catalogVersion == rhs.catalogVersion
             && lhs.activeConditions == rhs.activeConditions && lhs.removesFileText == rhs.removesFileText
@@ -505,9 +532,39 @@ public struct ClashMacSettingsSectionActions {
      
      
     public var runsOver: (@MainActor () async -> ClashMacRunsOver?)? = nil
+     
+     
+     
+     
+     
+     
+    public var generalOverrides: (@MainActor () async -> ClashMacGeneralOverrides?)? = nil
+     
+     
+     
+     
+    public var generalOverridesChanged: AnyPublisher<Void, Never>? = nil
     public init(load: @escaping @MainActor (ConfigurationOutlineSection) async throws -> ClashMacSettingsSectionDocument,
                 save: @escaping @MainActor ([ConfigurationPageEdit], String?) async throws -> Void) {
         self.load = load; self.save = save
+    }
+}
+
+ 
+ 
+ 
+ 
+public struct ClashMacGeneralOverrides {
+    public let outboundMode: ClashDisplayText?
+    public let logLevel: ClashDisplayText?
+     
+     
+    public let followConfiguration: (@MainActor () async -> Void)?
+    public init(outboundMode: ClashDisplayText? = nil, logLevel: ClashDisplayText? = nil,
+                followConfiguration: (@MainActor () async -> Void)? = nil) {
+        self.outboundMode = outboundMode
+        self.logLevel = logLevel
+        self.followConfiguration = followConfiguration
     }
 }
 
@@ -639,10 +696,13 @@ struct ClashMacSettingsSectionPage: View {
     @State private var adding = false
      
      
-    @State private var pending: [ConfigurationPageEdit]?
-     
-     
     @State private var runsOver: ClashMacRunsOver?
+     
+     
+    @State private var generalOverrides: ClashMacGeneralOverrides?
+     
+     
+    @State private var following = false
     @State private var reads = 0
     @Environment(\.locale) private var locale
     @Environment(\.configurationFieldCopy) private var copy
@@ -764,6 +824,7 @@ struct ClashMacSettingsSectionPage: View {
                             if let reason = failure(under: row) { ClashMacRowFailure(message: reason) }
                         }
                     }
+                    generalOverrideRows(block)
                 } header: {
                     if let title = block.title { Text(clash: title) }
                 } footer: {
@@ -797,15 +858,31 @@ struct ClashMacSettingsSectionPage: View {
                     ForEach(stray, id: \.self) { ClashMacRowFailure(message: $0) }
                 }
             }
-            if let copies = document?.copies {
-                Section {} footer: {
-                    Text(clash: .format("Saving here copies rule scheme “%@” for this configuration only.", [copies.scheme]))
-                }
+             
+             
+             
+            if !readOnly, let scope = document?.scope {
+                Section {} footer: { Text(clash: scope) }
             }
         }
         .formStyle(.grouped)
         .task { await reload() }
-        .task(id: reads) { if reads > 0, let read = actions.runsOver { runsOver = await read() } }
+        .task(id: reads) {
+            guard reads > 0 else { return }
+            if let read = actions.runsOver { runsOver = await read() }
+            if let read = actions.generalOverrides { generalOverrides = await read() }
+        }
+         
+         
+         
+         
+         
+         
+         
+         
+        .onReceive(actions.generalOverridesChanged ?? Empty<Void, Never>().eraseToAnyPublisher()) { _ in
+            Task { if let read = actions.generalOverrides { generalOverrides = await read() } }
+        }
         .sheet(item: $editing) { edit in
             ClashMacValueEditSheet(edit: edit, save: { value in
                 request([.set(path: edit.path, to: value)])
@@ -822,19 +899,6 @@ struct ClashMacSettingsSectionPage: View {
                 ) { key, value in
                     request([.set(path: basePath + [key], to: value)])
                 }
-            }
-        }
-        .alert(Text(clash: .copy("Save as your own rule scheme?")), isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
-            Button(role: .cancel) { pending = nil } label: { Text(clash: .copy("Cancel")) }
-            Button {
-                let edits = pending ?? []
-                pending = nil
-                if !edits.isEmpty { perform(.edits(edits)) }
-            } label: { Text(clash: .copy("Save")) }
-                .accessibilityIdentifier("configuration-center.section.copy-scheme.confirm")
-        } message: {
-            if let copies = document?.copies {
-                Text(clash: .format("Only “%@” will use it; rule scheme “%@” stays as it is.", [copies.configuration, copies.scheme]))
             }
         }
     }
@@ -1073,7 +1137,61 @@ struct ClashMacSettingsSectionPage: View {
     }
 
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @ViewBuilder
+    private func generalOverrideRows(_ block: (title: ClashDisplayText?, rows: [ClashMacSectionRow], footer: String?)) -> some View {
+        if section == .general, basePath.isEmpty, let overrides = generalOverrides {
+            if let note = overrides.outboundMode, block.rows.contains(where: { $0.key == "mode" }) {
+                Text(clash: note)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("configuration-center.section.general.runs-over.mode")
+                if let follow = overrides.followConfiguration, !readOnly {
+                    Button {
+                         
+                         
+                         
+                         
+                         
+                        guard !following else { return }
+                        following = true
+                        Task {
+                            defer { following = false }
+                            await follow()
+                            if let read = actions.generalOverrides { generalOverrides = await read() }
+                            await reload()
+                        }
+                    } label: {
+                        Text(clash: ClashGeneralOverrideNote.followConfiguration)
+                    }
+                    .disabled(writes.busy || following)
+                    .accessibilityIdentifier("configuration-center.section.general.follow-configuration")
+                }
+            } else if let note = overrides.logLevel, block.rows.contains(where: { $0.key == "log-level" }) {
+                 
+                 
+                 
+                 
+                Text(clash: note)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("configuration-center.section.general.runs-over.log-level")
+            }
+        }
+    }
 
+     
     @ViewBuilder
     private func ownedRow(_ row: ClashMacSectionRow, owner: ClashMacKeyOwner) -> some View {
         let title = Text(clash: .format("Change in %@", [ClashCopy.string(for: owner.title, locale: locale)]))
@@ -1129,13 +1247,11 @@ struct ClashMacSettingsSectionPage: View {
 
      
      
+     
+     
+     
     private func request(_ edits: [ConfigurationPageEdit]) {
         guard !edits.isEmpty else { return }
-         
-        if !writes.busy, document?.copies != nil {
-            pending = edits
-            return
-        }
         perform(.edits(edits))
     }
 
@@ -1182,7 +1298,7 @@ struct ClashMacSettingsSectionPage: View {
             do {
                 switch try await off(path) {
                 case .edits(let edits):
-                    if document?.copies != nil { pending = edits } else { await save(edits) }
+                    await save(edits)
                 case .written: clearFailures(at: [path])
                 case .nothing: break
                 }
@@ -1275,7 +1391,6 @@ struct ClashMacObjectListPage: View {
     @State private var reads = 0
     @State private var adding = false
     @State private var editing: ClashMacListItemEdit?
-    @State private var pending: PendingWrite?
     @Environment(\.locale) private var locale
     @Environment(\.configurationFieldCopy) private var copy
 
@@ -1285,12 +1400,6 @@ struct ClashMacObjectListPage: View {
         case field(index: Int, key: String)
         case item(Int)
         case add
-    }
-
-     
-    struct PendingWrite {
-        let edits: [ConfigurationPageEdit]
-        let place: WritePlace
     }
 
     private var items: [OrderedJSON] { document?.items(at: listPath) ?? [] }
@@ -1357,6 +1466,12 @@ struct ClashMacObjectListPage: View {
                     }
                 }
             }
+             
+             
+             
+            if let scope = document?.scope, only.map(items.indices.contains) ?? true {
+                Section {} footer: { Text(clash: scope) }
+            }
         }
         .formStyle(.grouped)
         .task { await reload() }
@@ -1379,18 +1494,6 @@ struct ClashMacObjectListPage: View {
             ClashMacValueEditSheet(edit: edit.edit, save: { value in
                 set(edit.key, to: value, at: edit.index)
             }, useDefault: edit.edit.removable ? { set(edit.key, to: nil, at: edit.index) } : nil, geoValues: actions.geoValues)
-        }
-        .alert(Text(clash: .copy("Save as your own rule scheme?")), isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
-            Button(role: .cancel) { pending = nil } label: { Text(clash: .copy("Cancel")) }
-            Button {
-                let write = pending
-                pending = nil
-                if let write { perform(write.edits, at: write.place) }
-            } label: { Text(clash: .copy("Save")) }
-        } message: {
-            if let copies = document?.copies {
-                Text(clash: .format("Only “%@” will use it; rule scheme “%@” stays as it is.", [copies.configuration, copies.scheme]))
-            }
         }
     }
 
@@ -1472,7 +1575,7 @@ struct ClashMacObjectListPage: View {
             )) { Text(verbatim: copy.title(for: field, key: key, locale: locale)) }
             .toggleStyle(.switch)
             .accessibilityIdentifier("configuration-center.section.item.toggle")
-        case .number(_, _, let unit?)? where field != nil && ClashMacTimeMenuRow<EmptyView>.unit(of: control, field: field) != nil:
+        case .number(_, _, let unit?, _)? where field != nil && ClashMacTimeMenuRow<EmptyView>.unit(of: control, field: field) != nil:
              
             if let field {
                 ClashMacTimeMenuRow(field: field, unit: unit, value: value, offersDefault: true,
@@ -1556,13 +1659,9 @@ struct ClashMacObjectListPage: View {
                 at: place)
     }
 
+     
     private func request(_ edits: [ConfigurationPageEdit], at place: WritePlace) {
         guard !edits.isEmpty else { return }
-         
-        if !writes.busy, document?.copies != nil {
-            pending = PendingWrite(edits: edits, place: place)
-            return
-        }
         perform(edits, at: place)
     }
 
@@ -1992,7 +2091,7 @@ struct ClashMacInlineValueRow: View {
             Text(verbatim: copy.title(for: row.field, key: row.key, locale: locale))
             if let problem { Text(clash: problem.words).foregroundStyle(.red) }
              
-            else if case .number(_, _, let unit?) = control,
+            else if case .number(_, _, let unit?, _) = control,
                     let number = text.isEmpty ? ClashMacValueWords.placeholder(row.field, locale: locale, copy: copy) : text,
                     Double(number) != nil {
                 Text(clash: ConfigurationValueWords.number(number, unit: unit, locale: locale))
@@ -2560,5 +2659,40 @@ extension ConfigurationPageEdit {
         case .insertKey(let path, let key, _, _):
             return path + [key]
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashMacSettingsChapterPage: View {
+    let section: ConfigurationOutlineSection
+    let actions: ClashMacSettingsSectionActions
+
+    public init(section: ConfigurationOutlineSection, actions: ClashMacSettingsSectionActions) {
+        self.section = section
+        self.actions = actions
+    }
+
+    public var body: some View {
+        ClashSingleColumnNavigationContainer {
+            ClashMacSettingsSectionPage(
+                section: section, basePath: [], knownKeys: ConfigurationOutline.settingKeys(in: section), actions: actions
+            )
+            .navigationTitle(Text(clash: ClashMacConfigurationOutlineCard.title(section)))
+             
+             
+             
+            .clashProductModalRoot(title: ClashMacConfigurationOutlineCard.title(section))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("configuration-center.chapter-page.\(section.rawValue)")
     }
 }

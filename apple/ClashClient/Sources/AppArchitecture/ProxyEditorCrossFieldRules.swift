@@ -34,15 +34,21 @@ enum ProxyEditorCrossFieldRules {
      
      
      
+     
+     
+     
+     
     static func violations(
         typeID: String,
         value: (String) -> String,
         nested: (String, String) -> String,
         hasObject: (String) -> Bool = { _ in false },
         list: (String) -> [String] = { _ in [] },
-        elementLists: (String, String) -> [[String]] = { _, _ in [] }
+        elementLists: (String, String) -> [[String]] = { _, _ in [] },
+        written: ((String) -> Bool?)? = nil
     ) -> [Violation] {
         var found: [Violation] = []
+        func isWritten(_ key: String) -> Bool { written?(key) ?? !value(key).isEmpty }
 
          
          
@@ -217,8 +223,9 @@ enum ProxyEditorCrossFieldRules {
          
          
          
+         
         if typeID == "hysteria2",
-           value("port").isEmpty, value("ports").isEmpty {
+           !isWritten("port"), !isWritten("ports") {
             found.append(Violation(
                 message: "Hysteria 2 needs a port, or a port range to hop across.",
                 key: "port"
@@ -405,15 +412,17 @@ enum ProxyEditorCrossFieldRules {
          
          
          
+         
+         
         if typeID == "mieru" {
-            let port = value("port")
-            let range = value("port-range")
-            if port.isEmpty, range.isEmpty {
+            let port = isWritten("port")
+            let range = isWritten("port-range")
+            if !port, !range {
                 found.append(Violation(
                     message: "Mieru needs a port or a port range. Fill in one of them.",
                     key: "port"
                 ))
-            } else if !port.isEmpty, !range.isEmpty {
+            } else if port, range {
                 found.append(Violation(
                     message: "Mieru takes a port or a port range, not both. Clear one of them.",
                     key: "port-range"

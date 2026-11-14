@@ -106,9 +106,13 @@ public enum ConfigurationCompositionError: LocalizedError, Equatable {
  
  
 public enum ConfigurationComposer {
+     
+     
+     
     public static func compose(
         sources: [ConfigurationInput],
-        rules: ConfigurationInput
+        rules: ConfigurationInput,
+        namedNodesFrom: String? = nil
     ) throws -> ConfigurationComposition {
         var ids = Set<String>()
         for source in sources {
@@ -145,7 +149,8 @@ public enum ConfigurationComposer {
          
          
          
-        let nodeNames = try nameTable(sources, key: "proxies", preferred: rules.id,
+        let ownNodesID = namedNodesFrom ?? rules.id
+        let nodeNames = try nameTable(sources, key: "proxies", preferred: ownNodesID,
             reserved: groupNames.union(builtins), favoured: Set(sources.filter(Self.picksNodesByPattern).map(\.id)))
          
          
@@ -241,6 +246,16 @@ public enum ConfigurationComposer {
                 providers.append((name, value))
             }
         }
+         
+         
+         
+         
+        func resolveNode(_ name: String) -> String? {
+            if let own = sources.first(where: { $0.id == ownNodesID }), !own.hiddenNodeNames.contains(name),
+               let mapped = nodeNames[ownNodesID]?[name] { return mapped }
+            return sources.lazy.filter { !$0.hiddenNodeNames.contains(name) }.compactMap { nodeNames[$0.id]?[name] }.first
+                ?? sources.lazy.compactMap { nodeNames[$0.id]?[name] }.first
+        }
         let originalNodes = Set((rules.document.topLevelValue("proxies")?.compositionArray ?? [])
             .compactMap { $0.topLevelValue("name")?.compositionString })
         let hiddenNames = sources.flatMap { source in
@@ -254,7 +269,12 @@ public enum ConfigurationComposer {
             var value = group
             let members = group.topLevelValue("proxies")?.compositionArray ?? []
             let uses = group.topLevelValue("use")?.compositionArray ?? []
-            let takesNodes = members.contains { originalNodes.contains($0.compositionString ?? "") }
+             
+             
+             
+             
+            let ownNamed = members.compactMap(\.compositionString).filter(originalNodes.contains)
+            let takesNodes = !ownNamed.isEmpty && !ownNamed.contains { nodeNames[rules.id]?[$0] != nil }
             let takesProviders = !uses.isEmpty
             let includes = ["include-all", "include-all-proxies", "include-all-providers"]
                 .contains { group.topLevelValue($0) == .scalar("true") }
@@ -284,11 +304,7 @@ public enum ConfigurationComposer {
             for member in members {
                 guard let name = member.compositionString else { rewritten.append(member); continue }
                 if originalNodes.contains(name) {
-                    if let mapped = nodeNames[rules.id]?[name],
-                       let filter = group.topLevelValue("filter")?.compositionString, !filter.isEmpty {
-                         
-                         
-                         
+                    if let mapped = nodeNames[rules.id]?[name] {
                         rewritten.append(.string(mapped))
                     }
                      
@@ -306,7 +322,10 @@ public enum ConfigurationComposer {
                     }
                 } else {
                     referencedNodes += 1
-                    if let mapped = sources.lazy.compactMap({ nodeNames[$0.id]?[name] }).first {
+                     
+                     
+                     
+                    if let mapped = resolveNode(name) {
                         rewritten.append(.string(mapped))
                         resolvedNodes += 1
                     }
@@ -415,7 +434,7 @@ public enum ConfigurationComposer {
                      
                      
                      
-                    guard let mapped = sources.lazy.compactMap({ nodeNames[$0.id]?[target] }).first else {
+                    guard let mapped = resolveNode(target) else {
                         droppedRules.append(text)
                          
                          

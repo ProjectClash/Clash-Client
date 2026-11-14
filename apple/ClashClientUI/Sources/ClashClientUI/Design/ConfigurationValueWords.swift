@@ -219,8 +219,14 @@ public enum ConfigurationValueWords {
      
     static func listWords(_ items: [String], locale: Locale) -> String {
         guard items.count <= 3 else { return itemCount(items.count, locale: locale).resolved(locale: locale) }
-        let chinese = ConfigurationFieldCopy.Language(locale: locale) != .en
-        return items.joined(separator: chinese ? "、" : ", ")
+        return listJoined(items, locale: locale)
+    }
+
+     
+     
+     
+    public static func listJoined(_ items: [String], locale: Locale) -> String {
+        items.joined(separator: ConfigurationFieldCopy.Language(locale: locale) == .en ? ", " : "、")
     }
 
      

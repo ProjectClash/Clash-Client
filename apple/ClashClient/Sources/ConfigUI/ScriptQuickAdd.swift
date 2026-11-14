@@ -28,7 +28,7 @@ enum ScriptQuickAdd {
         library: UserDefaults = ScriptLibrary.appGroupDefaults
     ) async throws -> ConfigScript {
         switch input {
-        case .link(let address):
+        case .link(let address, _):
             let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
             let body = try await ScriptImport.body(at: trimmed)
             if var existing = ScriptLibrary.load(from: library).first(where: {
@@ -45,7 +45,7 @@ enum ScriptQuickAdd {
                 label: label, body: body, sourceURL: trimmed, in: library
             )
 
-        case let .document(fileName, data):
+        case let .document(fileName, data, _):
             guard let text = String(data: data, encoding: .utf8) else {
                 throw ScriptImportError.notText
             }

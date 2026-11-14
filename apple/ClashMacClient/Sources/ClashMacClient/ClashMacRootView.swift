@@ -339,6 +339,10 @@ public struct ClashMacRootView: View {
                      .resetVPNProfile, .setCards, .setTrafficScope,
                      .refreshExternalIP, .refreshLANIP:
                     destination = nil
+                case .openOnDemand:
+                     
+                     
+                    destination = nil
                 case .openRuntimeConfiguration:
                     destination = nil
                 }

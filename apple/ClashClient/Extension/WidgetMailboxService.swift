@@ -46,9 +46,11 @@ final class WidgetMailboxService {
              
              
              
+             
+             
             if let choice = self.store.readModeChoice() {
                 self.act(
-                    #"{"cmd":"setMode","mode":"\#(choice.mode.rawValue)"}"#,
+                    #"{"cmd":"setMode","mode":"\#(choice.mode.rawValue)","closes":false}"#,
                     then: nil, reason: "start, card's mode \(choice.mode.rawValue)"
                 )
             } else {
@@ -134,6 +136,17 @@ final class WidgetMailboxService {
              
             publish(group: request.group, reason: "refresh", reloads: false)
         case .setMode(let mode):
+             
+             
+             
+             
+            if mode == .global, case let exit = TunnelGlobalReading.exit(), exit != .proxy {
+                let notice = ClashWidgetNotice(exit: exit?.rawValue, at: Date())
+                try? store.writeNotice(notice)
+                ClashLogStore.shared.append(#"widget: mode global not set: \#(notice.text)"#, stream: .app, level: .info)
+                publish(group: request.group, reason: #"setMode global refused"#, reloads: true, reloadDelay: Self.interactionGrace)
+                return
+            }
             act(#"{"cmd":"setMode","mode":"\#(mode.rawValue)"}"#, then: request.group, reason: "setMode \(mode.rawValue)")
         case .select(let group, let name):
             let payload = try? JSONSerialization.data(withJSONObject: ["cmd": "select", "group": group, "name": name])

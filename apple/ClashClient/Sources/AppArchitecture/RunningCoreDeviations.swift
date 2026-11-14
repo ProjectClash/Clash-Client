@@ -60,7 +60,7 @@ enum RunningCoreDeviations {
         guard let sidecarYAML else { return nil }
         guard let finished = try? ProfileRuntimeConfigBuilder.buildProductionStages(
             raw: sidecarYAML, profile: profile,
-            runtimeOverride: runtime, globalOverride: appWide, applyProxyChain: false
+            runtimeOverride: runtime, globalOverride: appWide, applyProxyChain: false, scripts: .silent
         ).finished() else { return nil }
         guard let report = try? ConfigTransforms.configDeviations(
             configContent: finished,
@@ -109,13 +109,13 @@ enum RunningCoreDeviations {
      
      
     static func keysThePlatformDecides() -> Set<String> {
-        let bare = """
+        let bare = #"""
         mode: direct
         proxies: []
         proxy-groups: []
         rules:
             - MATCH,DIRECT
-        """
+        """#
         guard let report = try? ConfigTransforms.configDeviations(
             configContent: bare, targetProfile: clashAppleRuntimeProfile.rawValue
         ) else { return [] }
@@ -152,7 +152,7 @@ enum RunningCoreDeviations {
         var bare = profile
         bare.override = OverrideSpec()
         return try? ProfileRuntimeConfigBuilder.buildProductionStages(
-            raw: sidecarYAML, profile: bare, applyProxyChain: false
+            raw: sidecarYAML, profile: bare, applyProxyChain: false, scripts: .silent
         ).afterClientTransforms
     }
 
@@ -178,7 +178,7 @@ enum RunningCoreDeviations {
         bare.override = OverrideSpec()
         return try? ProfileRuntimeConfigBuilder.buildProductionStages(
             raw: sidecarYAML, profile: bare,
-            runtimeOverride: runtime, globalOverride: appWide, applyProxyChain: false
+            runtimeOverride: runtime, globalOverride: appWide, applyProxyChain: false, scripts: .silent
         ).finished()
     }
 

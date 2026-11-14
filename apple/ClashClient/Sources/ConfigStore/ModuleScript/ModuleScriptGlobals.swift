@@ -98,7 +98,7 @@ enum ModuleScriptGlobals {
           };
         })
         """#)
-        _ = installer?.call(withArguments: [report])
+        _ = installer?.call(withArguments: [ModuleScriptValues.function(report, in: context)])
     }
 
      
@@ -130,7 +130,8 @@ enum ModuleScriptGlobals {
           });
         })
         """#)
-        _ = installer?.call(withArguments: [began, settled, webAssemblyAsyncCalls])
+        _ = installer?.call(withArguments: [ModuleScriptValues.function(began, in: context),
+                                             ModuleScriptValues.function(settled, in: context), webAssemblyAsyncCalls])
     }
 
     private static func installDone(_ context: JSContext, _ session: ModuleScriptSession) {
@@ -533,6 +534,10 @@ enum ModuleScriptGlobals {
              
             guard let number = ModuleScriptValues.integer(model), let mode = [0: "direct", 1: "rule", 2: "global"][number] else {
                 session.log(#"$config.setRunningModel: 0, 1 or 2; false"#)
+                return false
+            }
+            if mode == #"global"#, let refusal = access.globalRefusal() {
+                session.log(#"$config.setRunningModel(\#(number)): \#(refusal); false"#)
                 return false
             }
             let changed = access.setMode(mode)

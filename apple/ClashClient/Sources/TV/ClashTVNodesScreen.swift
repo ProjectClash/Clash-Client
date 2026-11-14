@@ -44,6 +44,14 @@ struct ClashTVNodesScreen: View {
      
      
     var onNeedMoreMembers: ((String) -> Void)? = nil
+     
+     
+     
+     
+    var opening: String? = nil
+     
+     
+    var openingState: OpeningGroup = .listed
 
     @State private var shownGroupName: String?
 
@@ -57,13 +65,22 @@ struct ClashTVNodesScreen: View {
      
      
     private var browsingMode: ClashTVOutboundMode {
-        state.observations.mode.hasValue ? state.outboundMode : .rule
+        let mode = state.observations.mode.hasValue ? state.outboundMode : .rule
+        return Self.browsingMode(mode, opening: opening)
+    }
+
+     
+     
+     
+     
+    private func memberMode(_ group: ClashProxyGroupSnapshot) -> ClashTVOutboundMode {
+        Self.memberMode(for: group.name, browsing: browsingMode, opening: opening)
     }
 
      
     private var visibleGroups: [ClashProxyGroupSnapshot] {
         guard state.observations.proxies.hasValue else { return [] }
-        return Self.visibleGroups(state.proxyGroups, mode: browsingMode)
+        return Self.visibleGroups(state.proxyGroups, mode: browsingMode, opening: opening, hidden: state.hiddenProxyGroups)
     }
 
      
@@ -76,6 +93,43 @@ struct ClashTVNodesScreen: View {
     }
 
     var body: some View {
+        switch Self.shown(openingState, opening: opening, in: state.proxyGroups + state.hiddenProxyGroups) {
+        case .reading:
+            VStack(alignment: .leading, spacing: 12) {
+                 
+                ClashTVObservationNote(observations: [state.observations.proxies])
+                ProgressView("Loading GLOBAL")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .missing:
+            VStack(alignment: .leading, spacing: 12) {
+                ClashTVObservationNote(observations: [state.observations.proxies])
+                 
+                Text(ClashTunnelOutboundMode.globalNotLoadedKey.localizedForTelevision)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .listed:
+            browser
+        }
+    }
+
+     
+     
+    enum OpeningGroup: Equatable { case listed, reading, missing }
+
+     
+     
+     
+     
+    static func shown(_ state: OpeningGroup, opening name: String?, in groups: [ClashProxyGroupSnapshot]) -> OpeningGroup {
+        guard let name, state != .listed, !groups.contains(where: { $0.name == name }) else { return .listed }
+        return state
+    }
+
+    private var browser: some View {
         VStack(alignment: .leading, spacing: 12) {
             ClashTVObservationNote(observations: [state.observations.proxies, state.observations.latency, state.observations.mode])
             HStack(alignment: .top, spacing: 40) {
@@ -102,7 +156,7 @@ struct ClashTVNodesScreen: View {
 
     private var vacancy: Vacancy? {
         guard state.observations.proxies.hasValue else { return .noGroups }
-        return Self.vacancy(mode: state.observations.mode.hasValue ? state.outboundMode : .rule, visibleGroups: visibleGroups)
+        return Self.vacancy(mode: browsingMode, visibleGroups: visibleGroups)
     }
 
      
@@ -178,7 +232,7 @@ struct ClashTVNodesScreen: View {
         if let group = shownGroup {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(Self.header(for: group, mode: browsingMode))
+                    Text(Self.header(for: group, mode: memberMode(group)))
                         .font(.caption)
                         .textCase(.uppercase)
                         .foregroundStyle(.tertiary)
@@ -239,11 +293,11 @@ struct ClashTVNodesScreen: View {
                 }
                 ScrollView {
                     LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 20), count: Self.columnCount(for: group, mode: browsingMode)),
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 20), count: Self.columnCount(for: group, mode: memberMode(group))),
                         alignment: .leading,
                         spacing: 20
                     ) {
-                        ForEach(Self.browsedMembers(of: group, mode: browsingMode)) { member in
+                        ForEach(Self.browsedMembers(of: group, mode: memberMode(group))) { member in
                             cell(member, in: group)
                                 .onAppear {
                                     if Self.needsMoreMembers(group, after: member.name) { onNeedMoreMembers?(group.name) }
@@ -437,16 +491,35 @@ struct ClashTVNodesScreen: View {
         )
     }
 
+     
+    static func browsingMode(_ mode: ClashTVOutboundMode, opening: String?) -> ClashTVOutboundMode {
+        opening != nil && mode == .direct ? .rule : mode
+    }
+
+    static func memberMode(for group: String, browsing: ClashTVOutboundMode, opening: String?) -> ClashTVOutboundMode {
+        group == opening ? .global : browsing
+    }
+
     static func visibleGroups(
         _ groups: [ClashProxyGroupSnapshot],
-        mode: ClashTVOutboundMode
+        mode: ClashTVOutboundMode,
+        opening: String? = nil,
+        hidden: [ClashProxyGroupSnapshot] = []
     ) -> [ClashProxyGroupSnapshot] {
-        ProxyBrowsingVisibility.groups(
+        var shown = ProxyBrowsingVisibility.groups(
             groups,
             mode: .init(coreValue: mode.kernelToken),
             name: { $0.name },
             isHidden: { _ in false }
         )
+         
+         
+         
+        if let opening, let group = groups.first(where: { $0.name == opening }) ?? hidden.first(where: { $0.name == opening }) {
+            shown.removeAll { $0.name == opening }
+            shown.insert(group, at: 0)
+        }
+        return shown
     }
 
      

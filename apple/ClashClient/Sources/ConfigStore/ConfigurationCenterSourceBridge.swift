@@ -10,7 +10,7 @@ enum ConfigurationCenterSourceBridge {
      
      
     static func fetch(url: String, label: String, credentials: CredentialStore, downloader: HTTPFetching = ResourceDownloader(),
-                      nodesOnly: Bool = false) async throws -> ConfigurationSourcePayload {
+                      nodesOnly: Bool = false, unreadBody: ((Data) -> Void)? = nil) async throws -> ConfigurationSourcePayload {
         let id = UUID().uuidString
         let profile = Profile(id:id,label:label,source:.url(url),autoUpdate:true,
             updateIntervalHours:12,subscriptionInfo:nil,selectedMap:[:],override:OverrideSpec(),
@@ -18,7 +18,8 @@ enum ConfigurationCenterSourceBridge {
          
          
         let manager = SubscriptionManager(downloader: downloader, credentials: credentials)
-        guard let fetched = try await manager.fetch(profile:profile,useConditionalValidators:false,nodesOnly:nodesOnly) else {
+        guard let fetched = try await manager.fetch(profile:profile,useConditionalValidators:false,nodesOnly:nodesOnly,
+                                                    unreadBody:unreadBody) else {
             throw PipelineError.sourceUnavailable("The profile URL returned no YAML.")
         }
         let proposed = label.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -350,7 +351,7 @@ enum ConfigurationCenterSourceBridge {
         guard let root = ConfigTransforms.parsedRoot(forYAML: yaml)?.root, root.count == 1,
               let proxies = root["proxies"] as? [[String: Any]], !proxies.isEmpty else { return nil }
         let names = proxies.compactMap { $0["name"] as? String }
-        return try payload(label: label.isEmpty ? (names.count == 1 ? names[0] : "Custom Nodes") : label,
+        return try payload(label: label.isEmpty ? (names.count == 1 ? names[0] : ConfigurationBuiltins.customNodesName) : label,
                            origin: .customNodes, original: Data(yaml.utf8), yaml: yaml)
     }
 
@@ -794,11 +795,14 @@ enum ConfigurationCollectionContentBridge {
      
      
      
+     
+     
     static func updateNodeLibrary(_ sources: [ConfigurationSourceRecord],
         updateSource: (ConfigurationSourceRecord) async throws -> Void,
         collections: () async throws -> [ConfigurationCollectionEntry],
         updateCollection: (ConfigurationCollectionEntry) async throws -> Void,
         progress: (NodeUpdatePhase, Int, Int, String) async -> Void,
+        naming: (ConfigurationSourceRecord) -> String = \.label,
         describe: (_ subject: String?, _ error: Error) -> String = BatchResult.plainLine) async -> BatchResult {
         var seen = Set<String>()
         let targets = sources.filter { source in
@@ -809,10 +813,10 @@ enum ConfigurationCollectionContentBridge {
         var result = BatchResult()
         for (index, source) in targets.enumerated() {
             if Task.isCancelled { return result }
-            await progress(.sources, index + 1, targets.count, source.label)
+            await progress(.sources, index + 1, targets.count, naming(source))
             do { try await updateSource(source); result.updated += 1 }
             catch is CancellationError { return result }
-            catch { result.failures.append(describe(source.label, error)) }
+            catch { result.failures.append(describe(naming(source), error)) }
         }
         if Task.isCancelled { return result }
         do {
@@ -821,7 +825,7 @@ enum ConfigurationCollectionContentBridge {
             let entries = try await collections()
             let downloaded = await updateCollections(entries, kind: .nodes, update: updateCollection,
                 progress: { index, total, name in await progress(.collections, index, total, name) },
-                describe: describe)
+                naming: naming, describe: describe)
             result.updated += downloaded.updated
             result.failures += downloaded.failures
             result.updatedEntries += downloaded.updatedEntries
@@ -837,18 +841,21 @@ enum ConfigurationCollectionContentBridge {
     static func updateNodeCollections(_ entries: [ConfigurationCollectionEntry],
         update: (ConfigurationCollectionEntry) async throws -> Void,
         progress: (Int, Int, String) async -> Void = { _, _, _ in },
+        naming: (ConfigurationSourceRecord) -> String = \.label,
         describe: (_ subject: String?, _ error: Error) -> String = BatchResult.plainLine) async -> BatchResult {
-        await updateCollections(entries, kind: .nodes, update: update, progress: progress, describe: describe)
+        await updateCollections(entries, kind: .nodes, update: update, progress: progress, naming: naming, describe: describe)
     }
     static func updateRuleCollections(_ entries: [ConfigurationCollectionEntry],
         update: (ConfigurationCollectionEntry) async throws -> Void,
         progress: (Int, Int, String) async -> Void,
+        naming: (ConfigurationSourceRecord) -> String = \.label,
         describe: (_ subject: String?, _ error: Error) -> String = BatchResult.plainLine) async -> BatchResult {
-        await updateCollections(entries, kind: .rules, update: update, progress: progress, describe: describe)
+        await updateCollections(entries, kind: .rules, update: update, progress: progress, naming: naming, describe: describe)
     }
     private static func updateCollections(_ entries: [ConfigurationCollectionEntry], kind: ConfigurationCollection.Kind,
         update: (ConfigurationCollectionEntry) async throws -> Void,
         progress: (Int, Int, String) async -> Void,
+        naming: (ConfigurationSourceRecord) -> String,
         describe: (_ subject: String?, _ error: Error) -> String) async -> BatchResult {
         var seen = Set<ConfigurationCollection.ID>()
          
@@ -893,7 +900,7 @@ enum ConfigurationCollectionContentBridge {
             guard let outcome = outcomes[index] else { continue }
             if let error = outcome {
                 if error is CancellationError { continue }
-                result.failures.append(describe(entry.source.label + " / " + entry.collection.name, error))
+                result.failures.append(describe(naming(entry.source) + " / " + entry.collection.name, error))
             } else {
                 result.updated += 1
                 result.updatedEntries.append(entry)
@@ -1156,6 +1163,84 @@ enum ConfigurationCollectionContentBridge {
         }
     }
 
+     
+     
+     
+     
+     
+    struct RunningProviders: Sendable {
+        let catalog: ProviderCatalog
+         
+         
+        private let answers: [String: [ProviderRefreshState.Entry]]
+
+        init(catalog: ProviderCatalog, state: ProviderRefreshState?) {
+            self.catalog = catalog
+            var answers: [String: [ProviderRefreshState.Entry]] = [:]
+            for provider in catalog.entries where provider.kind == "proxy" {
+                guard let answer = state?.entry(kind: provider.kind, name: provider.name, url: provider.url) else { continue }
+                answers[runningKey(kind: .nodes, address: provider.url), default: []].append(answer)
+            }
+            self.answers = answers
+        }
+
+        static func load(container: URL?) -> RunningProviders? {
+            guard let container, let store = try? ConfigResourceStore(containerURL: container),
+                  let directory = try? store.activeProvidersDirectory(),
+                  let catalog = ProviderCatalog.load(providersDir: directory) else { return nil }
+            return RunningProviders(
+                catalog: catalog,
+                state: ProviderRefreshState.read(workingDirectory: container.appendingPathComponent("working")))
+        }
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        func newerUsage(of entry: ConfigurationCollectionEntry, than date: Date?) -> ConfigurationSubscriptionUsage? {
+            guard entry.id.kind == .nodes, entry.collection.type == "http", let location = entry.collection.location,
+                  let candidates = answers[runningKey(kind: .nodes, address: location)] else { return nil }
+            var found: ConfigurationSubscriptionUsage?
+            for answer in candidates where answer.isNewer(than: date) {
+                guard let usage = answer.usage.map(ConfigurationCenterSourceBridge.subscriptionUsage) else { continue }
+                if let known = found, known != usage { return nil }
+                found = usage
+            }
+            return found
+        }
+    }
+
+     
+     
+     
+     
+    static func withRunningUsage(_ entries: [ConfigurationCollectionEntry],
+                                 running: RunningProviders?) -> [ConfigurationCollectionEntry] {
+        guard let running else { return entries }
+        return entries.map { entry in
+            guard let usage = running.newerUsage(of: entry, than: entry.copyUpdatedAt) else { return entry }
+            var result = entry
+            result.subscriptionUsage = usage
+            return result
+        }
+    }
+
+     
+     
+     
+    static func shownUsage(_ page: Page, of entry: ConfigurationCollectionEntry,
+                           running: RunningProviders?) -> ConfigurationSubscriptionUsage? {
+        running?.newerUsage(of: entry, than: page.updatedAt) ?? page.subscriptionUsage
+    }
+
     private static func runningKind(_ catalogKind: String) -> ConfigurationCollection.Kind? {
         switch catalogKind {
         case "rule": return .rules
@@ -1190,6 +1275,7 @@ enum ConfigurationCollectionContentBridge {
                    FileManager.default.fileExists(atPath: folder.appendingPathComponent(filename).path) {
                     result.memberCount = cache.count
                     result.subscriptionUsage = cache.subscriptionUsage
+                    result.copyUpdatedAt = cache.updatedAt
                 }
             }
             return result
@@ -1852,7 +1938,7 @@ enum ConfigurationCollectionContentBridge {
 enum ConfigurationSourceRefusals {
     static let key = "configuration.sources.refusals"
     static let didChange = Notification.Name("ClashConfigurationSourceRefusalsDidChange")
-    static var appGroup: UserDefaults { UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard }
+    static var appGroup: UserDefaults { UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard }
 
     static func all(in defaults: UserDefaults = appGroup) -> [String: String] {
         defaults.dictionary(forKey: key) as? [String: String] ?? [:]

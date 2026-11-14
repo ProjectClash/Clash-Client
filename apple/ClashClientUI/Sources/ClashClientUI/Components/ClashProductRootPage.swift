@@ -179,10 +179,32 @@ public final class ClashRegularRootChannels: ObservableObject {
 
     public init() {}
 
-    public func requestOpenGroup(_ name: String) {
+     
+     
+     
+     
+    public func requestOpenGroup(
+        _ name: String,
+        opening: ClashRootOpenGroupSignal.Opening = .browsing
+    ) {
         openGroup = ClashRootOpenGroupSignal(
             token: openGroup.token &+ 1,
-            group: name
+            group: name,
+            opening: opening
+        )
+    }
+
+     
+     
+     
+     
+     
+     
+    public func requestBrowsing() {
+        openGroup = ClashRootOpenGroupSignal(
+            token: openGroup.token &+ 1,
+            group: nil,
+            opening: .browsing
         )
     }
 
@@ -207,12 +229,25 @@ public final class ClashRegularRootChannels: ObservableObject {
  
  
 public struct ClashRootOpenGroupSignal: Equatable, Sendable {
+     
+     
+     
+    public enum Opening: Equatable, Hashable, Sendable {
+         
+        case browsing
+         
+         
+        case choosingInGlobal
+    }
+
     public var token = 0
     public var group: String?
+    public var opening: Opening = .browsing
 
-    public init(token: Int = 0, group: String? = nil) {
+    public init(token: Int = 0, group: String? = nil, opening: Opening = .browsing) {
         self.token = token
         self.group = group
+        self.opening = opening
     }
 }
 

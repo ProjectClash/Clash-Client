@@ -37,7 +37,15 @@ enum ClashMacSymbolImageCache {
             return cached
         }
         lookups[name, default: 0] += 1
-        let found = Bundle.module.image(forResource: NSImage.Name(name))
+         
+         
+         
+        let found = Bundle.module.image(forResource: NSImage.Name(name)).map { asset -> NSImage in
+            let copy = asset.copy() as? NSImage ?? asset
+            _ = copy.setName(nil)
+            copy.accessibilityDescription = nil
+            return copy
+        }
         images[name] = found
         return found
     }

@@ -67,6 +67,25 @@ public enum ClashConnectionDuration {
 }
 
  
+public enum HomeConnectionClock {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func startedAtUnixSeconds(coreReported: Int64?, connectedSince: Date?) -> Int64 {
+        let core = max(coreReported ?? 0, 0)
+        guard let connectedSince else { return core }
+        return max(core, Int64(connectedSince.timeIntervalSince1970))
+    }
+}
+
+ 
  
  
  

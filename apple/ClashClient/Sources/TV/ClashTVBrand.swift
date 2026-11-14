@@ -64,6 +64,11 @@ enum ClashTVTestStage: String, Equatable, Sendable {
      
     case outboundMode = "outbound-mode"
      
+    case globalQuestion = "global-question"
+     
+     
+    case chooseNodeGlobal = "choose-node-global"
+     
      
     case nodes
      
@@ -208,6 +213,8 @@ struct ClashTVLaunchOverrides: Equatable, Sendable {
      
     let externalControllerSample: String?
 
+
+
     init(environment: [String: String]) {
         appearance = environment["CLASH_TV_APPEARANCE"]
             .flatMap(ClashTVTestAppearance.init(rawValue:))
@@ -232,6 +239,8 @@ struct ClashTVLaunchOverrides: Equatable, Sendable {
         opens = environment["CLASH_TV_OPEN"]
         feedbackSample = environment["CLASH_TV_FEEDBACK_SAMPLE"]
         externalControllerSample = environment["CLASH_TV_EXTERNAL_CONTROLLER"]
+
+
     }
 }
 

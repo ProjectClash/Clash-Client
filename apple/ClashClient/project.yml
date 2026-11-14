@@ -1,6 +1,7 @@
 name: ClashClient
 options:
   bundleIdPrefix: org.example.clash
+  createIntermediateGroups: true
   deploymentTarget:
     iOS: '15.0'
     macOS: '13.0'
@@ -26,8 +27,7 @@ packages:
   ClashMacClient:
     path: ../ClashMacClient
   swift-certificates:
-    url: https://github.com/apple/swift-certificates.git
-    exactVersion: 1.9.0
+    path: ../../third_party/swift-certificates
   swift-crypto:
     url: https://github.com/apple/swift-crypto.git
     exactVersion: 3.15.1
@@ -288,6 +288,7 @@ targets:
       group: Shared
     - path: ../ClashClientUI/Sources/ClashClientUI/Features/Widgets/ClashWidgetMailbox.swift
       group: Shared
+    - path: ../ClashClientUI/Sources/ClashClientUI/Features/Tunnel/ClashTunnelOutboundMode.swift
     - path: ../ClashClientUI/Sources/ClashClientUI/Features/Widgets/ClashWidgetFormat.swift
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashThroughputFormatter.swift
       group: Shared
@@ -558,6 +559,7 @@ targets:
       group: Shared
     - path: ../ClashClientUI/Sources/ClashClientUI/Features/Widgets/ClashWidgetMailbox.swift
       group: Shared
+    - path: ../ClashClientUI/Sources/ClashClientUI/Features/Tunnel/ClashTunnelOutboundMode.swift
     - path: ../ClashClientUI/Sources/ClashClientUI/Features/Widgets/ClashWidgetFormat.swift
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashThroughputFormatter.swift
       group: Shared
@@ -693,6 +695,7 @@ targets:
     - path: ../ClashClientUI/Sources/ClashClientUI/Features/Rules/ClashRulesSnapshot.swift
     - path: ../ClashClientUI/Sources/ClashClientUI/Features/Proxies/ClashProbeFailureCopy.swift
       group: SharedFacts
+    - path: ../ClashClientUI/Sources/ClashClientUI/Features/Tunnel/ClashTunnelOutboundMode.swift
     - path: ../ClashClientUI/Sources/ClashClientUI/Components/InheritedValue.swift
       group: SharedFacts
     - path: ../ClashClientUI/Sources/ClashClientUI/Components/InheritedList.swift
@@ -724,7 +727,7 @@ targets:
     - path: ../ClashClientUI/Sources/ClashClientUI/Features/Home/ClashStartupExplanation.swift
       group: SharedFacts
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashCopy.swift
-      group: SharedFacts
+      group: Shared
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashAccentRole.swift
       group: SharedFacts
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashSymbol.swift
@@ -732,7 +735,7 @@ targets:
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashSurfaceRole.swift
       group: SharedFacts
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashThroughputFormatter.swift
-      group: SharedFacts
+      group: Shared
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashFeedbackPresentation.swift
       group: SharedFacts
     - path: ../ClashClientUI/Sources/ClashClientUI/Design/ClashFeedbackCopy.swift

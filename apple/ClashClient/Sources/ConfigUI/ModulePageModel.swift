@@ -127,27 +127,49 @@ final class ModulePageModel: ObservableObject {
          
          
         var runPanelScript: @MainActor (_ module: String, _ script: String, _ byReader: Bool) async -> ModuleAppScriptResult? = { _, _, _ in nil }
+         
+         
+         
+        var runAppScript: @MainActor (_ id: String) async -> ModuleAppScriptResult? = { _ in nil }
         var now: () -> Date = Date.init
+         
+         
+        var activation: Notification.Name?
 
         var certificates: ModuleCertificateStore { readiness.certificates }
 
         static func production() -> Dependencies? {
-            guard let container = ClashAppIdentifiers.appGroupContainer else { return nil }
+            guard let container = productionContainer() else { return nil }
             var dependencies = Dependencies(container: container, modules: ModuleStore.shared(container),
                                             readiness: ModuleEngineReadinessSource.shared(container))
-#if os(macOS)
              
-            dependencies.openCertificateFile = { ModuleKeychainAccess.open($0) }
-            dependencies.installAndTrust = { ModuleKeychainAccess.installAndTrust($0) }
-            dependencies.openKeychainAccess = { ModuleKeychainAccess.openApplication() }
-            dependencies.removeCertificate = { ModuleKeychainAccess.remove($0) }
-            dependencies.isCertificateLeft = { ModuleKeychainAccess.isInKeychain($0) }
+             
+             
+            if !isReviewLaunch {
+#if os(macOS)
+                 
+                dependencies.openCertificateFile = { ModuleKeychainAccess.open($0) }
+                dependencies.installAndTrust = { ModuleKeychainAccess.installAndTrust($0) }
+                dependencies.openKeychainAccess = { ModuleKeychainAccess.openApplication() }
+                dependencies.removeCertificate = { ModuleKeychainAccess.remove($0) }
+                dependencies.isCertificateLeft = { ModuleKeychainAccess.isInKeychain($0) }
 #endif
-            dependencies.runPanelScript = { module, script, byReader in
-                let runner = ModuleAppScriptRunner.shared
-                guard let entry = runner.entries(.generic).first(where: { $0.moduleID == module && $0.name == script }) else { return nil }
-                return await runner.run(entry, trigger: .panel(byReader: byReader))
+                dependencies.runPanelScript = { module, script, byReader in
+                    let runner = ModuleAppScriptRunner.shared
+                    guard let entry = runner.entries(.generic).first(where: { $0.moduleID == module && $0.name == script }) else { return nil }
+                    return await runner.run(entry, trigger: .panel(byReader: byReader))
+                }
+                dependencies.runAppScript = { id in
+                    let runner = ModuleAppScriptRunner.shared
+                    guard let entry = runner.entry(id: id) else { return nil }
+                    return await runner.run(entry, trigger: .byReader)
+                }
             }
+#if os(iOS)
+            dependencies.activation = UIApplication.didBecomeActiveNotification
+#else
+            dependencies.activation = NSApplication.didBecomeActiveNotification
+#endif
             return dependencies
         }
     }
@@ -170,6 +192,27 @@ final class ModulePageModel: ObservableObject {
 
     static let shared = ModulePageModel(dependencies: .production())
 
+     
+     
+    static func updateOperation(of id: String) -> String { "modules.update.\(id)" }
+
+
+
+     
+    nonisolated static var isReviewLaunch: Bool {
+
+        false
+
+    }
+
+     
+     
+    nonisolated static func productionContainer(reviewing: Bool = isReviewLaunch) -> URL? {
+
+
+        return ClashAppIdentifiers.appGroupContainer
+    }
+
     @Published private(set) var snapshot = ClashModulesSnapshot.off
     @Published private(set) var details = Details()
     @Published private(set) var isAdding = false
@@ -185,24 +228,12 @@ final class ModulePageModel: ObservableObject {
      
      
      
-    private var switching: [String: Bool] = [:]
-     
-    private var switchQueue: Task<Void, Never>?
      
      
      
      
-    private var written: Set<String> = []
      
-     
-    private var decryptionSwitching: Bool?
-    private var decryptionWritten = false
-     
-     
-     
-     
-    private var shownArguments: [String: [String: String?]] = [:]
-    private var argumentsWritten: Set<String> = []
+    let writes = ClashModulesWrites()
     private var updating: Set<String> = []
      
     private var batch: ClashModulesSnapshot.Batch?
@@ -216,6 +247,8 @@ final class ModulePageModel: ObservableObject {
      
     private var panelResults: [String: ModulePanelResult]?
     private var panelsRefreshing: Set<String> = []
+     
+    private var appScriptsRunning: Set<String> = []
     private var panelsFailed: Set<String> = []
     private var certificateFailure: AuthoredText?
      
@@ -274,6 +307,31 @@ final class ModulePageModel: ObservableObject {
                 }
             })
         }
+        if let activation = deps.activation {
+            observers.append(NotificationCenter.default.addObserver(forName: activation, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in await self?.cameToTheFront() }
+            })
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func cameToTheFront() async {
+        guard let facts = lastFacts, Self.waitsOnTheReaderOutsideTheApp(facts) else { return }
+        await reload()
+    }
+
+     
+     
+    static func waitsOnTheReaderOutsideTheApp(_ facts: ModulePageFacts) -> Bool {
+        !facts.certificateUnreadable && (facts.certificate == .notInstalled || facts.certificate == .installedNotTrusted)
     }
 
     deinit {
@@ -294,6 +352,8 @@ final class ModulePageModel: ObservableObject {
         var sources: [String: Data]
         var storedValues: [String: String]
         var panelResults: [String: ModulePanelResult]?
+         
+        var counted: [String: ModulePageSnapshotBuilder.Counted]
     }
 
      
@@ -332,22 +392,10 @@ final class ModulePageModel: ObservableObject {
         reloads += 1
         let woke = readinessWoke
         readinessWoke = false
-         
-        let settled = written
-        let decryptionSettled = decryptionWritten
-        let argumentsSettled = argumentsWritten
         let state: ModuleState
         do {
             state = try await deps.modules.state()
             readFailure = nil
-            written.subtract(settled)
-            for id in settled { switching[id] = nil }
-            if decryptionSettled {
-                decryptionWritten = false
-                decryptionSwitching = nil
-            }
-            argumentsWritten.subtract(argumentsSettled)
-            for id in argumentsSettled { shownArguments[id] = nil }
         } catch {
              
              
@@ -363,8 +411,6 @@ final class ModulePageModel: ObservableObject {
             facts.actionFailure = actionFailure ?? readFailure
             facts.isConnected = deps.isConnected()
             facts.isBusy = busy
-            facts.switching = switching
-            facts.decryptionSwitching = decryptionSwitching
             publish(facts, entry: readBefore)
             return
         }
@@ -390,6 +436,7 @@ final class ModulePageModel: ObservableObject {
         })
         let isLeft = deps.isCertificateLeft
         let readsPanels = panelResults == nil
+        let records = state.modules
 
 
         let read = await Task.detached(priority: .userInitiated) { () -> Read in
@@ -414,6 +461,7 @@ final class ModulePageModel: ObservableObject {
             }
             var sources: [String: Data] = [:]
             for id in ids { sources[id] = try? Data(contentsOf: modules.source(id)) }
+            let summary = ModulePublicationSummary.load(locations: modules)
             var stored: [String: String] = [:]
             if !storedKeys.isEmpty {
                 let store = ModuleScriptStore(directory: container.appendingPathComponent(ModuleScriptStore.directoryName, isDirectory: true),
@@ -421,10 +469,12 @@ final class ModulePageModel: ObservableObject {
                 for key in storedKeys { stored[key] = store.readShared(key: key) }
             }
             return Read(certificate: certificate, certificateUnreadable: unreadable, certificateName: name, oldCertificateLeft: oldLeft,
-                        report: report, summary: ModulePublicationSummary.load(locations: modules), sources: sources,
-                        storedValues: stored, panelResults: readsPanels ? ModulePanelResults.load(container: container) : nil)
+                        report: report, summary: summary, sources: sources,
+                        storedValues: stored, panelResults: readsPanels ? ModulePanelResults.load(container: container) : nil,
+                        counted: ModulePageSnapshotBuilder.counted(records, modules: irs, sources: sources, summary: summary))
         }.value
         var facts = ModulePageFacts(platform: deps.platform, state: state)
+        facts.locations = ModuleLocations(container: deps.container)
         facts.modules = irs
         facts.certificate = read.certificate
         facts.certificateUnreadable = read.certificateUnreadable
@@ -441,9 +491,8 @@ final class ModulePageModel: ObservableObject {
         facts.certificateFailure = certificateFailure
         facts.isConnected = deps.isConnected()
         facts.isBusy = busy
-        facts.switching = switching
-        facts.decryptionSwitching = decryptionSwitching
         facts.sources = read.sources
+        facts.counted = read.counted
         facts.storedValues = read.storedValues
         facts.settingsFailure = settingsFailure
         facts.settingsModuleID = settingsModuleID
@@ -485,7 +534,10 @@ final class ModulePageModel: ObservableObject {
         let canWork = facts.state.enabled && facts.certificate == .ready && !facts.certificateUnreadable
         let before = decryptionCouldWork
         decryptionCouldWork = canWork
-        if !facts.state.enabled, facts.certificate == .ready, !facts.certificateUnreadable,
+         
+         
+        if !writes.switches.isPending(ClashModulesWrites.decryption),
+           !facts.state.enabled, facts.certificate == .ready, !facts.certificateUnreadable,
            let name = facts.certificateName, turnedOnFor != name,
            ModulePageSnapshotBuilder.wantsDecryption(facts),
            ModuleDecryptionChoice.read(deps.certificates.locations) == .followsTrust {
@@ -541,8 +593,7 @@ final class ModulePageModel: ObservableObject {
         page.editor = editor
         page.batch = batch
         if page != snapshot { snapshot = page }
-        let details = Details(facts: facts, updating: updating, switching: switching, shownArguments: shownArguments,
-                              locale: locale)
+        let details = Details(facts: facts, updating: updating, locale: locale)
         if details != self.details { self.details = details }
         if entry { entrySource.set(ModulePageSnapshotBuilder.entry(facts)) }
     }
@@ -553,18 +604,14 @@ final class ModulePageModel: ObservableObject {
     struct Details: Equatable {
         fileprivate var facts: ModulePageFacts?
         fileprivate var updating: Set<String> = []
-        fileprivate var switching: [String: Bool] = [:]
-        fileprivate var shownArguments: [String: [String: String?]] = [:]
         fileprivate var locale = Locale.current
 
+         
+         
         subscript(id: String) -> ClashModuleDetailSnapshot? {
-            guard let facts, var record = facts.state.modules.first(where: { $0.id == id }) else { return nil }
-             
-            for (name, value) in shownArguments[id] ?? [:] { record.argumentValues[name] = value }
-            var detail = ModuleDetailBuilder.detail(record: record, facts: facts, source: facts.sources[id],
-                                                    isUpdating: updating.contains(id), locale: locale)
-            detail.switching = switching[id]
-            return detail
+            guard let facts, let record = facts.state.modules.first(where: { $0.id == id }) else { return nil }
+            return ModuleDetailBuilder.detail(record: record, facts: facts, source: facts.sources[id],
+                                              isUpdating: updating.contains(id), locale: locale)
         }
 
          
@@ -573,8 +620,7 @@ final class ModulePageModel: ObservableObject {
          
          
         static func == (lhs: Details, rhs: Details) -> Bool {
-            guard lhs.updating == rhs.updating, lhs.switching == rhs.switching, lhs.shownArguments == rhs.shownArguments,
-                  lhs.locale == rhs.locale else { return false }
+            guard lhs.updating == rhs.updating, lhs.locale == rhs.locale else { return false }
             guard let a = lhs.facts, let b = rhs.facts else { return lhs.facts == nil && rhs.facts == nil }
             func omitted(_ facts: ModulePageFacts) -> [ModuleEngineReport.OmittedModule]? {
                 facts.isConnected ? facts.report?.omittedModules : nil
@@ -610,12 +656,17 @@ final class ModulePageModel: ObservableObject {
     func refreshRuntime() async {
          
          
-        guard let deps, lastFacts != nil else { return }
+        guard let deps, let before = lastFacts else { return }
         let mine = generation
         let container = deps.container
-        let (report, summary) = await Task.detached(priority: .utility) { () -> (ModuleEngineReport?, ModulePublicationSummary?) in
-            (ModuleEngineReport.load(ModuleEngineLocations(container: container)),
-             ModulePublicationSummary.load(locations: ModuleLocations(container: container)))
+         
+         
+        let records = before.state.modules, modules = before.modules, sources = before.sources, last = before.summary
+        let (report, summary, counted) = await Task.detached(priority: .utility) {
+            () -> (ModuleEngineReport?, ModulePublicationSummary?, [String: ModulePageSnapshotBuilder.Counted]?) in
+            let summary = ModulePublicationSummary.load(locations: ModuleLocations(container: container))
+            return (ModuleEngineReport.load(ModuleEngineLocations(container: container)), summary,
+                    summary == last ? nil : ModulePageSnapshotBuilder.counted(records, modules: modules, sources: sources, summary: summary))
         }.value
 
 
@@ -625,10 +676,9 @@ final class ModulePageModel: ObservableObject {
         guard report != facts.report || summary != facts.summary || connected != facts.isConnected else { return }
         facts.report = report
         facts.summary = summary
+        if let counted { facts.counted = counted }
         facts.isConnected = connected
         facts.isBusy = busy
-        facts.switching = switching
-        facts.decryptionSwitching = decryptionSwitching
         publish(facts)
     }
 
@@ -642,17 +692,15 @@ final class ModulePageModel: ObservableObject {
         case .setEnabled(let on):
              
              
-            ModuleDecryptionChoice.record(on ? .followsTrust : .offByReader, in: deps.certificates.locations)
-            decryptionSwitching = on
-            snapshot.decryptionSwitching = on
-            run {
-                defer { self.decryptionWritten = true }
-                guard on else { return try await deps.modules.setEnabled(false) }
-                 
-                 
-                 
-                 
-                try await self.turnDecryptionOn(deps)
+             
+             
+             
+             
+             
+            actionFailure = nil
+            actionModuleID = nil
+            writes.switches.press(ClashModulesWrites.decryption, on) { [weak self] on in
+                try await self?.writeDecryption(on, deps)
             }
         case .setModule(let id, let enabled):
             switchModule(id, enabled: enabled, deps)
@@ -663,9 +711,18 @@ final class ModulePageModel: ObservableObject {
             guard !updating.contains(id) else { return }
             updating.insert(id)
             details.updating.insert(id)
-            run(module: id) {
+            var result: ModuleStore.RefreshResult?
+             
+             
+             
+             
+             
+            run(module: id, afterReading: { [weak self] in
+                guard let self, let result, let said = self.updateResult([(id, result)]) else { return }
+                feedback?.show(said, operation: Self.updateOperation(of: id))
+            }) {
                  
-                _ = await deps.modules.refresh(id, readerAsked: true)
+                result = await deps.modules.refresh(id, readerAsked: true)
                 self.updating.remove(id)
             }
         case .certificate(let kind):
@@ -706,17 +763,25 @@ final class ModulePageModel: ObservableObject {
                 deps.copy(words)
             }
         case .setArgument(let id, let name, let value):
-            shownArguments[id, default: [:]][name] = .some(value)
-            details.shownArguments = shownArguments
              
-            run(module: id, settings: true) {
-                defer { self.argumentsWritten.insert(id) }
-                try await deps.modules.setArgumentValue(value, for: name, module: id)
+             
+             
+             
+            settingsFailure = nil
+            settingsModuleID = nil
+            writes.settings.press(ClashModulesWrites.setting(module: id, name: name), value) { [weak self] value in
+                try await self?.writeSettings(of: id, deps) { try await deps.modules.setArgumentValue(value, for: name, module: id) }
             }
         case .resetArguments(let id):
-            run(module: id, settings: true) { try await deps.modules.resetArguments(module: id) }
+            settingsFailure = nil
+            settingsModuleID = nil
+            writes.settings.press(ClashModulesWrites.reset(module: id), nil) { [weak self] _ in
+                try await self?.writeSettings(of: id, deps) { try await deps.modules.resetArguments(module: id) }
+            }
         case .refreshPanel(let key):
             refreshPanel(key, byReader: true, deps)
+        case .runAppScript(let id):
+            runAppScript(id, deps, feedback)
         case .panelsAppeared(let id):
             refreshDuePanels(of: id, deps)
         case .renameModule(let id, let name):
@@ -724,7 +789,7 @@ final class ModulePageModel: ObservableObject {
         case .moveModules(let ids):
             run { try await deps.modules.move(ids) }
         case .refreshAll:
-            track(Task { @MainActor in await self.refreshAll() })
+            track(Task { @MainActor in await self.refreshAll(feedback: feedback) })
         }
     }
 
@@ -732,20 +797,28 @@ final class ModulePageModel: ObservableObject {
      
      
      
-    func refreshAll() async {
+     
+     
+    func refreshAll(feedback: ClashFeedbackCenter? = nil) async {
         guard let deps, batch?.isRunning != true else { return }
         let ids = (lastFacts?.state.modules ?? []).filter { if case .url = $0.origin { return true } else { return false } }.map(\.id)
         guard !ids.isEmpty else { return }
         setBatch(.init(done: 0, total: ids.count, isRunning: true))
+        var results: [(id: String, result: ModuleStore.RefreshResult)] = []
         for (index, id) in ids.enumerated() {
             updating.insert(id)
-            _ = await deps.modules.refresh(id, readerAsked: true)
+            let result = await deps.modules.refresh(id, readerAsked: true)
+            results.append((id, result))
             updating.remove(id)
             setBatch(.init(done: index + 1, total: ids.count, isRunning: true))
         }
         await reload()
         let finished = ClashModulesSnapshot.Batch(done: ids.count, total: ids.count, isRunning: false)
         setBatch(finished)
+         
+        if let said = updateResult(results) {
+            feedback?.show(said, operation: "modules.update-all")
+        }
         track(Task { @MainActor in
             try? await Task.sleep(nanoseconds: Self.batchLingersNanoseconds)
             if self.batch == finished { self.setBatch(nil) }
@@ -758,6 +831,202 @@ final class ModulePageModel: ObservableObject {
     private func setBatch(_ value: ClashModulesSnapshot.Batch?) {
         batch = value
         snapshot.batch = value
+    }
+
+     
+
+     
+     
+     
+     
+     
+    private func updateResult(_ results: [(id: String, result: ModuleStore.RefreshResult)]) -> ClashFeedbackPresentation? {
+        guard let facts = lastFacts else { return nil }
+        var outcome = UpdateOutcome()
+        for (id, result) in results {
+            guard let record = facts.state.modules.first(where: { $0.id == id }) else { continue }
+            let name = ModulePageSnapshotBuilder.shownName(record, locale: locale)
+            switch result {
+            case .updated: outcome.changed.append(name)
+            case .unchanged:
+                 
+                 
+                 
+                 
+                let missed = Self.downloadsMissed(by: record, ir: facts.modules[id])
+                if let reason = missed.said.first {
+                    outcome.failed.append((name, reason.displayText))
+                } else if missed.unsaid == 0 {
+                    outcome.unchanged.append(name)
+                }
+            case .failed(let why):
+                 
+                outcome.failed.append((name, ModuleStoredSentence.failure(why, linked: true).displayText))
+            case .superseded, .cancelled, .outOfTime, .missing, .listUnreadable:
+                continue
+            }
+        }
+        return outcome.presentation(locale: locale)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func downloadsMissed(by record: ModuleRecord, ir: ModuleIR?) -> (said: [AuthoredText], unsaid: Int) {
+        guard let checked = record.lastCheckedAt else { return ([], 0) }
+         
+         
+        var addresses = record.scriptFailureCount.compactMap { address, count -> String? in
+            guard count > 0, let tried = record.scriptAttemptedAt[address], tried.timeIntervalSince(checked) >= 0 else { return nil }
+            return address
+        }.sorted()
+         
+        addresses += record.fileStates.compactMap { key, state -> String? in
+            guard state.failures > 0, let tried = state.attemptedAt, tried.timeIntervalSince(checked) >= 0,
+                  let space = key.firstIndex(of: " ") else { return nil }
+            return String(key[key.index(after: space)...])
+        }.sorted()
+        var said: [AuthoredText] = []
+        var unsaid = 0
+        for address in addresses {
+             
+            if let entry = ir?.ignored.first(where: { $0.text == address }) {
+                said.append(entry.reason.authoredText)
+            } else {
+                unsaid += 1
+            }
+        }
+        return (said, unsaid)
+    }
+
+     
+     
+     
+     
+     
+     
+    struct UpdateOutcome {
+        var changed: [String] = []
+        var unchanged: [String] = []
+        var failed: [(name: String, reason: ClashDisplayText)] = []
+
+        func presentation(locale: Locale) -> ClashFeedbackPresentation? {
+            switch changed.count + unchanged.count + failed.count {
+            case 0:
+                return nil
+            case 1:
+                if let name = changed.first {
+                    return .success(title: ClashFeedbackCopy.updated(name), accessibilityIdentifier: "feedback.modules.update")
+                }
+                if let name = unchanged.first {
+                    return .information(title: ClashFeedbackCopy.upToDate(name), accessibilityIdentifier: "feedback.modules.update")
+                }
+                guard let failure = failed.first else { return nil }
+                return .error(title: ClashFeedbackCopy.couldNotUpdate(failure.name), message: failure.reason,
+                              accessibilityIdentifier: "feedback.modules.update")
+            default:
+                let title = ClashFeedbackCopy.batch(updated: changed.count, failed: failed.count, unchanged: unchanged.count)
+                if failed.isEmpty {
+                    return changed.isEmpty
+                        ? .information(title: title, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
+                        : .success(title: title, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
+                }
+                 
+                let reasons = ClashDisplayText.verbatim(failed.map { failure in
+                    "\(failure.name): \(ClashCopy.string(for: failure.reason, locale: locale))"
+                }.joined(separator: "\n"))
+                return changed.isEmpty && unchanged.isEmpty
+                    ? .error(title: title, message: reasons, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
+                    : .warning(title: title, message: reasons, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
+            }
+        }
+    }
+
+     
+
+     
+    private func appScriptName(_ id: String) -> String? {
+        guard let facts = lastFacts else { return nil }
+        for record in facts.state.modules where record.enabled {
+            for script in facts.modules[record.id]?.appScripts ?? []
+            where ModuleAppScriptEntry.id(module: record.id, origin: script.origin) == id {
+                return script.name
+            }
+        }
+        return nil
+    }
+
+     
+     
+     
+     
+     
+     
+    private func runAppScript(_ id: String, _ deps: Dependencies, _ feedback: ClashFeedbackCenter?) {
+        let name = appScriptName(id) ?? ""
+        let operation = #"modules.app-script.run"#
+        guard deps.isConnected() else {
+            feedback?.show(Self.runResult(.notRun(.tunnelNotConnected), name: name), operation: operation)
+            return
+        }
+         
+         
+        guard appScriptsRunning.insert(id).inserted else {
+            feedback?.show(Self.runResult(.notRun(.busy), name: name), operation: operation)
+            return
+        }
+        let started = feedback?.show(.loading(title: .format("Running %@", [name]),
+                                              accessibilityIdentifier: Self.runResultIdentifier), operation: operation)
+        track(Task { @MainActor in
+            let result = await deps.runAppScript(id)
+            appScriptsRunning.remove(id)
+             
+             
+            let said = name.isEmpty ? result?.entry.name ?? name : name
+            feedback?.answer(started, with: Self.runResult(result?.outcome ?? .notRun(.notFound), name: said),
+                             operation: operation)
+        })
+    }
+
+    static let runResultIdentifier = "modules.appScript.run.result"
+
+     
+     
+     
+    static func runResult(_ outcome: ModuleAppScriptResult.Outcome, name: String) -> ClashFeedbackPresentation {
+        let id = runResultIdentifier
+        switch outcome {
+        case .done:
+            return .success(title: .format("Ran %@", [name]), accessibilityIdentifier: id)
+        case .aborted(let words):
+            return .error(title: .format("%@ ended with an error", [name]), message: .verbatim(words), accessibilityIdentifier: id)
+        case .timedOut:
+            return .error(title: .format("%@ ran too long and was stopped", [name]), accessibilityIdentifier: id)
+        case .notRun(.tunnelNotConnected):
+            return .warning(title: "Connect Clash first",
+                            message: name.isEmpty ? nil : .format("%@ runs while Clash is connected.", [name]),
+                            accessibilityIdentifier: id)
+        case .notRun(.busy):
+            return .information(title: .format("%@ is still running", [name]), accessibilityIdentifier: id)
+        case .notRun(.bodyMissing), .notRun(.bodyMismatch):
+            return .warning(title: .format("%@ is not downloaded yet", [name]),
+                            message: "Update the module, then run it again.", accessibilityIdentifier: id)
+        case .notRun(.notFound):
+            return .warning(title: .format("%@ is not in a module turned on", [name]), accessibilityIdentifier: id)
+        case .skipped(.quarantined):
+            return .warning(title: .format("%@ did not run", [name]),
+                            message: "It ran too long before, so it is held until the module is updated.",
+                            accessibilityIdentifier: id)
+        case .skipped(.paused), .skipped(.lowMemory):
+            return .warning(title: .format("%@ did not run", [name]),
+                            message: "Scripts are paused for now. Try again later.", accessibilityIdentifier: id)
+        case .skipped(.other):
+            return .warning(title: .format("%@ did not run", [name]), accessibilityIdentifier: id)
+        }
     }
 
      
@@ -1011,11 +1280,16 @@ final class ModulePageModel: ObservableObject {
     }
 
      
+     
     func waitForActions() async {
-        while let (id, task) = pending.first {
-            await task.value
-            pending[id] = nil
-        }
+        repeat {
+            while let (id, task) = pending.first {
+                await task.value
+                pending[id] = nil
+            }
+            await writes.switches.waitForWrites()
+            await writes.settings.waitForWrites()
+        } while !pending.isEmpty || writes.switches.isDraining || writes.settings.isDraining
     }
 
      
@@ -1043,7 +1317,9 @@ final class ModulePageModel: ObservableObject {
      
      
      
+     
     private func run(module: String? = nil, certificate: Bool = false, settings: Bool = false,
+                     afterReading: (@MainActor () -> Void)? = nil,
                      _ work: @escaping () async throws -> Void) {
         busy = true
          
@@ -1055,7 +1331,9 @@ final class ModulePageModel: ObservableObject {
         settingsModuleID = nil
         let task = Task { @MainActor in
             do {
-                try await work()
+                 
+                 
+                try await self.writes.turns.run { try await work() }
             } catch {
                 let said = ModuleStore.authoredText(for: error)
                  
@@ -1073,6 +1351,7 @@ final class ModulePageModel: ObservableObject {
             }
             busy = false
             await reload()
+            afterReading?()
         }
         track(task)
     }
@@ -1080,28 +1359,70 @@ final class ModulePageModel: ObservableObject {
      
      
      
+     
+     
     private func switchModule(_ id: String, enabled: Bool, _ deps: Dependencies) {
-        guard switching[id] == nil else { return }
-        switching[id] = enabled
-        snapshot.switching = switching
-        details.switching = switching
         actionFailure = nil
         actionModuleID = nil
-        let previous = switchQueue
-        let task = Task { @MainActor in
-            await previous?.value
-            do {
-                try await deps.modules.setModule(id, enabled: enabled)
-            } catch {
-                actionFailure = ModuleStore.authoredText(for: error)
-                actionModuleID = id
-                ClashLogStore.shared.append(#"modules page action failed: \#(error.localizedDescription)"#, stream: .app)
-            }
-            written.insert(id)
-            await reload()
+        writes.switches.press(ClashModulesWrites.module(id), enabled) { [weak self] enabled in
+            try await self?.writeSwitch(module: id) { try await deps.modules.setModule(id, enabled: enabled) }
         }
-        switchQueue = task
-        track(task)
+    }
+
+     
+     
+     
+    private func writeSwitch(module id: String?, _ work: () async throws -> Void) async throws {
+        var failed = false
+        do {
+            try await work()
+        } catch ModuleStoreError.moduleGone {
+             
+             
+        } catch {
+            failed = true
+            actionFailure = ModuleStore.authoredText(for: error)
+            actionModuleID = id
+            ClashLogStore.shared.append(#"modules page action failed: \#(error.localizedDescription)"#, stream: .app)
+        }
+        await reload()
+        if failed { throw ClashStoredWriteSaidElsewhere() }
+    }
+
+     
+     
+     
+     
+     
+     
+    private func writeDecryption(_ on: Bool, _ deps: Dependencies) async throws {
+        try await writeSwitch(module: nil) {
+            let locations = deps.certificates.locations
+            await Task.detached(priority: .userInitiated) {
+                ModuleDecryptionChoice.record(on ? .followsTrust : .offByReader, in: locations)
+            }.value
+            guard on else { return try await deps.modules.setEnabled(false) }
+            try await self.turnDecryptionOn(deps)
+        }
+    }
+
+     
+     
+     
+    private func writeSettings(of id: String, _ deps: Dependencies, _ work: () async throws -> Void) async throws {
+        var failed = false
+        do {
+            try await work()
+        } catch ModuleStoreError.moduleGone {
+             
+        } catch {
+            failed = true
+            settingsFailure = ModuleStore.authoredText(for: error)
+            settingsModuleID = id
+            ClashLogStore.shared.append(#"modules page action failed: \#(error.localizedDescription)"#, stream: .app)
+        }
+        await reload()
+        if failed { throw ClashStoredWriteSaidElsewhere() }
     }
 
     private func track(_ task: Task<Void, Never>) {

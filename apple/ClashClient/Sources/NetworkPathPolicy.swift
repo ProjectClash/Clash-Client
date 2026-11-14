@@ -326,20 +326,65 @@ enum NetworkPathProbe {
         }
     }
 
-    private final class OneShotReceiver: @unchecked Sendable {
+     
+     
+     
+     
+     
+    static func startInterface(timeout: TimeInterval = 1) async -> NetworkPathInterfaceKind {
+        await withCheckedContinuation { continuation in
+            let monitor = NWPathMonitor()
+            let receiver = OneShotReceiver(continuation: continuation, monitor: monitor)
+            monitor.pathUpdateHandler = { path in
+                receiver.resolve(physicalInterface(
+                    primary: NetworkPathSnapshot(path: path).interface,
+                    available: path.availableInterfaces.map(\.type)
+                ))
+            }
+            monitor.start(queue: DispatchQueue.global(qos: .utility))
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                receiver.resolve(NetworkPathInterfaceKind.unknown)
+            }
+        }
+    }
+
+     
+     
+     
+    static func physicalInterface(
+        primary: NetworkPathInterfaceKind,
+        available: [NWInterface.InterfaceType]
+    ) -> NetworkPathInterfaceKind {
+        switch primary {
+        case .wifi, .cellular, .wiredEthernet:
+            return primary
+        case .other, .loopback, .unknown:
+            for type in available {
+                switch type {
+                case .wifi: return .wifi
+                case .cellular: return .cellular
+                case .wiredEthernet: return .wiredEthernet
+                default: continue
+                }
+            }
+            return primary
+        }
+    }
+
+    private final class OneShotReceiver<Value>: @unchecked Sendable {
         private let lock = NSLock()
-        private var continuation: CheckedContinuation<NetworkPathSnapshot, Never>?
+        private var continuation: CheckedContinuation<Value, Never>?
         private let monitor: NWPathMonitor
 
         init(
-            continuation: CheckedContinuation<NetworkPathSnapshot, Never>,
+            continuation: CheckedContinuation<Value, Never>,
             monitor: NWPathMonitor
         ) {
             self.continuation = continuation
             self.monitor = monitor
         }
 
-        func resolve(_ snapshot: NetworkPathSnapshot) {
+        func resolve(_ snapshot: Value) {
             lock.lock()
             let continuation = self.continuation
             self.continuation = nil

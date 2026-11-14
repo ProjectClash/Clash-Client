@@ -9,17 +9,17 @@ enum ScriptSettings {
     private static let enabledKey = "script.enabled"
     private static let bodyKey = "script.body"
 
-    static let template = """
+    static let template = #"""
     // Edit the full configuration object and return it.
     function main(config) {
       // config['log-level'] = 'warning'
       // config.rules = ['MATCH,DIRECT', ...(config.rules ?? [])]
       return config
     }
-    """
+    """#
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
     static func enabled(from d: UserDefaults = appGroupDefaults) -> Bool {
@@ -37,22 +37,27 @@ enum ScriptSettings {
 
      
      
+     
+     
     static func apply(toConfigYAML yaml: String,
                       profileName: String = "",
-                      d: UserDefaults = appGroupDefaults) throws -> String {
+                      d: UserDefaults = appGroupDefaults,
+                      caller: ScriptEngine.Caller) throws -> String {
         guard enabled(from: d) else { return yaml }
         return try apply(
-            body: body(from: d), toConfigYAML: yaml, profileName: profileName
+            body: body(from: d), toConfigYAML: yaml, profileName: profileName, caller: caller
         )
     }
 
     static func apply(
-        body: String, toConfigYAML yaml: String, profileName: String = ""
+        body: String, toConfigYAML yaml: String, profileName: String = "",
+        caller: ScriptEngine.Caller
     ) throws -> String {
         try ScriptLibraryError.refusingLarge(yaml)
         let configJSON = try ConfigTransforms.yamlToJSON(yaml)
         let rewritten = try ScriptEngine.run(
-            script: body, configJSON: configJSON, profileName: profileName
+            script: body, configJSON: configJSON, profileName: profileName, caller: caller,
+            name: ScriptEngine.LogName.appWide
         )
         return try ConfigTransforms.jsonToYAML(rewritten)
     }

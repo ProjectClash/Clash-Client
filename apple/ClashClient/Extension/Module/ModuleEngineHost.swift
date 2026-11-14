@@ -177,6 +177,9 @@ struct ModuleEngineInputs: Equatable, Sendable {
      
      
     let modules: [ModulePublishedModule]
+     
+     
+    var room: Int64? = nil
 }
 
 final class ModuleEngineHost: ModuleTunnelHooks {
@@ -301,6 +304,76 @@ final class ModuleEngineHost: ModuleTunnelHooks {
      
      
     private let readPlan: (ModuleRunningRevision, ModuleEngineLocations) -> ModuleEnginePlan.Lookup
+     
+     
+    private let headroom: () -> Int64?
+     
+     
+     
+    private var heldKeptOnQueue = 0
+     
+     
+    private var heldRoomOnQueue: Int64 = 0
+     
+     
+    private var leftAtReadOnQueue: Int64?
+
+     
+    private func heldInForce(_ engine: ModuleEngine) -> Int64 {
+        guard builtOnQueue === engine, !engine.passThroughCauses.contains(.memory) else { return 0 }
+        return ModuleEngineBudget.programHeld(keptRuleBytes: heldKeptOnQueue, compiledRegexes: 0) + heldRoomOnQueue
+    }
+     
+     
+     
+     
+    static let shareRetryDelays: [TimeInterval] = [15, 30, 60, 120, 240]
+    private let shareRetryDelays: [TimeInterval]
+     
+     
+    private var shareRetries = 0
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    enum ReadCause { case readersAct, connection, readAgain, memoryStopEnded }
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static let memoryStopRetryCooldown: TimeInterval = 600
+    private let memoryStopRetryCooldown: TimeInterval
+     
+     
+     
+     
+    private let uptime: () -> TimeInterval
+     
+     
+    private var memoryStopEndedAt: TimeInterval?
+    private var memoryStopGaveReadsAgainAt: TimeInterval?
+     
+     
+    private var readersActUnread = false
 
     init(locations: ModuleEngineLocations, log: ModuleEngineLog,
          queue: DispatchQueue = DispatchQueue(label: "modules.engine"), now: @escaping () -> Date = Date.init,
@@ -317,6 +390,10 @@ final class ModuleEngineHost: ModuleTunnelHooks {
          checkWithoutRules: ((ModuleEngine, ModuleEnginePlan.Entry, ModuleEngineReporter) -> Void)? = nil,
          readPlan: @escaping (ModuleRunningRevision, ModuleEngineLocations) -> ModuleEnginePlan.Lookup
              = ModuleEnginePlan.entry(for:locations:),
+         headroom: @escaping () -> Int64? = { ModuleEngineBudget.headroomForShare() },
+         shareRetryDelays: [TimeInterval] = ModuleEngineHost.shareRetryDelays,
+         memoryStopRetryCooldown: TimeInterval = ModuleEngineHost.memoryStopRetryCooldown,
+         uptime: @escaping () -> TimeInterval = { TimeInterval(clock_gettime_nsec_np(CLOCK_MONOTONIC)) / 1_000_000_000 },
          configure: @escaping (ModuleEngine, ModuleEngineInputs, ModuleEngineReporter, ModuleScriptRunning) -> Void
              = { _, _, _, _ in }) {
         self.locations = locations
@@ -341,6 +418,10 @@ final class ModuleEngineHost: ModuleTunnelHooks {
         self.idleRelease = rulesOnDemand ? idleRelease : nil
         self.checkWithoutRules = checkWithoutRules
         self.readPlan = readPlan
+        self.headroom = headroom
+        self.shareRetryDelays = shareRetryDelays
+        self.memoryStopRetryCooldown = max(0, memoryStopRetryCooldown)
+        self.uptime = uptime
         self.configure = configure
     }
 
@@ -818,26 +899,44 @@ final class ModuleEngineHost: ModuleTunnelHooks {
 
      
      
+     
     private func configureOnQueue(_ engine: ModuleEngine, _ entry: ModuleEnginePlan.Entry,
-                                  _ reporter: ModuleEngineReporter, settling: Bool = true, demanded: Bool = false) {
+                                  _ reporter: ModuleEngineReporter, settling: Bool = true, demanded: Bool = false,
+                                  cause: ReadCause = .readersAct) {
         guard activeOnQueue === engine else { return }
         let entry = watching(engine, entry, reporter, settling: settling)
         configurationOnQueue += 1
+        if cause == .memoryStopEnded { memoryStopEndedAt = uptime() }
         if demanded { demandedOnQueue = engine }
         if rulesOnDemand, !demanded, builtOnQueue !== engine, demandedOnQueue !== engine {
              
              
+             
+             
+            if cause == .readersAct { readersActUnread = true }
             awaitRules(engine)
             checkWithoutRules?(engine, entry, reporter)
             return log.say("the modules are read at the first connection that needs them")
         }
+        giveReadsAgain(to: cause)
         let generation = configurationOnQueue
          
+         
+         
+         
+         
+         
         let lists = ModuleEngineBudget.listsHeld(entry.assignment)
-        let ruleBytes = ModuleEngineBudget.ruleBytes(listsHolding: lists)
-        if ruleBytes < ModuleReader.maximumRuleBytes, !entry.assignment.modules.isEmpty {
-            log.say(String(format: "this configuration's host lists hold about %.2f MiB of the engine's %d MiB: its modules may keep %d bytes of rules together, not %d",
-                           Double(lists) / 1_048_576, Int(ModuleEngineBudget.steady >> 20), ruleBytes, ModuleReader.maximumRuleBytes))
+        let held = heldInForce(engine)
+        let left = headroom()
+        leftAtReadOnQueue = left
+        let ruleBytes = ModuleEngineBudget.ruleBytes(headroom: left, holding: held)
+         
+         
+        let room = { (kept: Int) in ModuleEngineBudget.programRoom(headroom: left, holding: held, keptRuleBytes: kept) }
+        if ruleBytes < ModuleReader.maximumRuleBytes, !entry.assignment.modules.isEmpty, let left {
+            log.say(String(format: "%.2f MiB are left now (the host lists' %.2f MiB among what is held, a program of %.2f MiB to be replaced): the modules may keep %d bytes of rules together",
+                           Double(left) / 1_048_576, Double(lists) / 1_048_576, Double(held) / 1_048_576, ruleBytes))
         }
         ModuleReader.read(
             entry.assignment.modules, locations: locations, queue: queue, spacing: moduleRereadSpacing, ruleBytes: ruleBytes,
@@ -847,12 +946,13 @@ final class ModuleEngineHost: ModuleTunnelHooks {
             },
             completion: { [weak self, weak engine] reading in
                 guard let self, let engine else { return }
-                self.finishConfiguration(engine, entry, reporter, reading)
+                self.finishConfiguration(engine, entry, reporter, reading, room: room)
             })
     }
 
     private func finishConfiguration(_ engine: ModuleEngine, _ entry: ModuleEnginePlan.Entry,
-                                     _ reporter: ModuleEngineReporter, _ reading: ModuleReading) {
+                                     _ reporter: ModuleEngineReporter, _ reading: ModuleReading,
+                                     room: (Int) -> Int64?) {
         if let problem = reading.listProblem {
             log.say("\(problem): the modules are checked against the digests this configuration was published with")
         }
@@ -869,7 +969,23 @@ final class ModuleEngineHost: ModuleTunnelHooks {
          
          
         if reporter.report.rung >= .engineStopped { engine.passThroughCauses.insert(.memory) }
-        configure(engine, ModuleEngineInputs(entry: entry, modules: reading.modules), reporter, scripts)
+         
+         
+         
+        let kept = reading.modules.reduce(0) { $0 + $1.keptBytes }
+        let given = room(kept)
+        configure(engine, ModuleEngineInputs(entry: entry, modules: reading.modules, room: given), reporter, scripts)
+        let stopped = engine.passThroughCauses.contains(.memory)
+        heldKeptOnQueue = stopped ? 0 : kept
+        heldRoomOnQueue = stopped ? 0 : (engine.interceptor as? ModuleInterceptor)?.services.program.roomTaken ?? 0
+         
+         
+        let program = (engine.interceptor as? ModuleInterceptor)?.services.program
+        if Self.readsAgainForMemory(omitted: reading.omitted, room: given,
+                                     rulesLeftOut: program.map { $0.rewriteMetrics.overBudget + $0.scriptMetrics.overBudget } ?? 0) {
+            let modulesHeldOut = reading.omitted.contains { $0.reason == .overBudget || $0.reason == .overSharedBudget }
+            readAgainAsMemoryAllows(engine, entry, onlyRules: !modulesHeldOut)
+        }
         if rulesOnDemand {
             builtOnQueue = engine
             if demandedOnQueue === engine { demandedOnQueue = nil }
@@ -878,6 +994,91 @@ final class ModuleEngineHost: ModuleTunnelHooks {
                 demandedAt = nil
             }
             engine.rulesReady()
+        }
+    }
+
+     
+    private func giveReadsAgain(to cause: ReadCause) {
+        let readersAct: Bool
+        switch cause {
+        case .readAgain: return
+        case .readersAct: readersAct = true
+        case .connection: readersAct = readersActUnread
+        case .memoryStopEnded: readersAct = false
+        }
+        readersActUnread = false
+        let at = uptime()
+        if !readersAct, let ended = memoryStopEndedAt, at - ended < memoryStopRetryCooldown {
+             
+            if let gave = memoryStopGaveReadsAgainAt, at - gave < memoryStopRetryCooldown { return }
+            memoryStopGaveReadsAgainAt = at
+        }
+        shareRetries = 0
+    }
+
+     
+     
+     
+     
+    static func readsAgainForMemory(omitted: [ModuleEngineReport.OmittedModule], room: Int64?, rulesLeftOut: Int) -> Bool {
+        omitted.contains { $0.reason == .overBudget || $0.reason == .overSharedBudget } || (room != nil && rulesLeftOut > 0)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    static let moreLeftToReadAgain: Int64 = 2 << 20
+
+     
+     
+     
+     
+     
+     
+    static func readsRulesAgain(leftNow: Int64?, leftAtRead: Int64?, roomNow: Int64?, shareNow: Int,
+                                took: Int64, kept: Int) -> Bool {
+        guard let roomNow else { return true }
+        guard shareNow >= kept, roomNow > took + moreLeftToReadAgain else { return false }
+        guard let leftAtRead else { return true }
+        guard let leftNow else { return false }
+        return leftNow > leftAtRead + moreLeftToReadAgain
+    }
+
+     
+     
+     
+     
+    private func readAgainAsMemoryAllows(_ engine: ModuleEngine, _ entry: ModuleEnginePlan.Entry, onlyRules: Bool = false) {
+        guard !shareRetryDelays.isEmpty else { return }
+         
+         
+        if onlyRules { shareRetries = min(shareRetries, shareRetryDelays.count - 1) }
+        guard shareRetries < shareRetryDelays.count else { return }
+        let delay = shareRetryDelays[shareRetries]
+        shareRetries += 1
+        let generation = configurationOnQueue
+        queue.asyncAfter(deadline: .now() + delay) { [weak self, weak engine] in
+            guard let self, let engine, engine === self.activeOnQueue, self.configurationOnQueue == generation,
+                  !self.rulesOnDemand || self.builtOnQueue === engine, !engine.passThroughCauses.contains(.memory),
+                  let entry = self.entryOnQueue, let reporter = self.reporterOnQueue else { return }
+            if onlyRules {
+                let left = self.headroom(), held = self.heldInForce(engine)
+                let read = Self.readsRulesAgain(
+                    leftNow: left, leftAtRead: self.leftAtReadOnQueue,
+                    roomNow: ModuleEngineBudget.programRoom(headroom: left, holding: held, keptRuleBytes: self.heldKeptOnQueue),
+                    shareNow: ModuleEngineBudget.ruleBytes(headroom: left, holding: held),
+                    took: self.heldRoomOnQueue, kept: self.heldKeptOnQueue)
+                 
+                 
+                guard read else { return self.readAgainAsMemoryAllows(engine, entry, onlyRules: true) }
+            }
+            self.log.say("modules were left out for memory: they are read again with what is left now")
+            self.configureOnQueue(engine, entry, reporter, settling: false, cause: .readAgain)
         }
     }
 
@@ -906,13 +1107,15 @@ final class ModuleEngineHost: ModuleTunnelHooks {
          
         guard demandedOnQueue !== engine else { return }
         demandedAt = now()
-        configureOnQueue(engine, entry, reporter, settling: false, demanded: true)
+        configureOnQueue(engine, entry, reporter, settling: false, demanded: true, cause: .connection)
     }
 
     private func releaseRules(_ engine: ModuleEngine) {
         guard engine === activeOnQueue, builtOnQueue === engine else { return }
         (engine.interceptor as? ModuleInterceptor)?.releaseRules()
         builtOnQueue = nil
+        heldKeptOnQueue = 0
+        heldRoomOnQueue = 0
          
         configurationOnQueue += 1
         awaitRules(engine)
@@ -950,7 +1153,10 @@ final class ModuleEngineHost: ModuleTunnelHooks {
                 guard let self, let engine, engine === self.watchedEngine, engine === self.activeOnQueue,
                       let entry = self.entryOnQueue, let reporter = self.reporterOnQueue else { return }
                 self.log.say(#"the engine runs again after its memory stop: the modules are read again"#)
-                self.configureOnQueue(engine, entry, reporter, settling: false)
+                 
+                self.heldKeptOnQueue = 0
+                self.heldRoomOnQueue = 0
+                self.configureOnQueue(engine, entry, reporter, settling: false, cause: .memoryStopEnded)
             }
         }
         var entry = entry

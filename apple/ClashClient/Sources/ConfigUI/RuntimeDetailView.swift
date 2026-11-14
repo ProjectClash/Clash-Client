@@ -54,13 +54,15 @@ enum RuntimeMemoryPresentation {
     ) -> [Row] {
         guard isLive else { return [] }
         var rows: [Row] = []
-        if let goHeapBytes {
+         
+         
+        if let goHeapBytes, goHeapBytes > 0 {
             rows.append(Row(
                 title: "Go heap",
                 value: .verbatim(megabytes(Double(goHeapBytes)))
             ))
         }
-        if (footprintBytes ?? -1) > 0 {
+        if (footprintBytes ?? -1) > 0, residentBytes > 0 {
             rows.append(Row(
                 title: "Resident memory",
                 value: .verbatim(megabytes(Double(residentBytes)))
@@ -76,9 +78,17 @@ enum RuntimeMemoryPresentation {
 
  
  
+ 
 enum RuntimePathPresentation {
+    static let title: ClashDisplayText = .copy("Current network supports")
+
     static func supports(v4: Bool, v6: Bool) -> ClashDisplayText {
-        .formatCopy("%@ / %@", [v4 ? "Yes" : "No", v6 ? "Yes" : "No"])
+        switch (v4, v6) {
+        case (true, true): return .copy("IPv4 and IPv6")
+        case (true, false): return .copy("IPv4 only")
+        case (false, true): return .copy("IPv6 only")
+        case (false, false): return .copy("No network")
+        }
     }
 }
 
@@ -88,9 +98,19 @@ enum RuntimePathPresentation {
 struct RuntimeDetailView: View {
     @ObservedObject var command: ClashCommandClient
     @ObservedObject private var appCrashReport = AppGoCrashReportStore.shared
+     
+     
+    @State private var memoryBytes: Int64
     let usesRegularDetailLayout: Bool
      
     var restart: (() -> Void)?
+
+    init(command: ClashCommandClient, usesRegularDetailLayout: Bool, restart: (() -> Void)? = nil) {
+        self.command = command
+        self.usesRegularDetailLayout = usesRegularDetailLayout
+        self.restart = restart
+        _memoryBytes = State(initialValue: command.memoryBytes)
+    }
 
     @State private var asksAboutRestart = false
     @State private var crashReportToShare: String?
@@ -103,6 +123,14 @@ struct RuntimeDetailView: View {
     }
 
     var body: some View {
+         
+         
+        content.onReceive(command.$memoryBytes) { bytes in
+            if bytes != memoryBytes { memoryBytes = bytes }
+        }
+    }
+
+    private var content: some View {
         Form {
             Section {
                 RuntimeMetricRow(
@@ -116,14 +144,14 @@ struct RuntimeDetailView: View {
                 memoryRow(RuntimeMemoryPresentation.headline(
                     footprintBytes: command.runtimeDiagnostics?
                         .extensionMemoryFootprintBytes,
-                    residentBytes: command.memoryBytes,
+                    residentBytes: memoryBytes,
                     isLive: command.isConnected
                 ))
                 let details = RuntimeMemoryPresentation.details(
                     footprintBytes: command.runtimeDiagnostics?
                         .extensionMemoryFootprintBytes,
                     goHeapBytes: command.runtimeDiagnostics?.goHeapInuseBytes,
-                    residentBytes: command.memoryBytes,
+                    residentBytes: memoryBytes,
                     isLive: command.isConnected
                 )
                 if !details.isEmpty {
@@ -187,7 +215,7 @@ struct RuntimeDetailView: View {
                         value: .verbatim("\(d.appleIPv4IncludedRouteCount) / \(d.appleIPv6IncludedRouteCount)"),
                         symbol: .arrowTriangleBranch)
                     RuntimeMetricRow(
-                        title: "Physical v4 / v6",
+                        title: RuntimePathPresentation.title,
                         value: RuntimePathPresentation.supports(v4: d.physicalPathSupportsIPv4, v6: d.physicalPathSupportsIPv6),
                         symbol: .network)
                     RuntimeMetricRow(

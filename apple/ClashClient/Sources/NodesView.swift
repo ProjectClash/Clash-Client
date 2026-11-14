@@ -161,7 +161,7 @@ struct NodesContent: View {
                 .accessibilityIdentifier("nodes.testAll")
             }
         }
-        .sheet(isPresented: $showsDisplaySettings) {
+        .clashSheet(isPresented: $showsDisplaySettings) {
             NodeDisplaySettingsView(presentation: $presentation, sort: $sort)
                 .clashModalPresentation(.form)
         }

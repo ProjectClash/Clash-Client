@@ -1,5 +1,6 @@
 #if os(iOS) || os(macOS)
 import Clash
+import ClashClientUI
 import Foundation
 
  
@@ -38,7 +39,16 @@ enum ModuleAppScriptCoreAccess {
                     .flatMap(ModuleScriptCoreReading.final(rulesPage:))
             },
             builtins: { ModuleScriptCoreReading.builtins },
-            groupTypes: { text(socketPath) { $0.getProxiesSummary($1) }.map(ModuleScriptCoreReading.groupTypes(summary:)) ?? [:] })
+            groupTypes: { text(socketPath) { $0.getProxiesSummary($1) }.map(ModuleScriptCoreReading.groupTypes(summary:)) ?? [:] },
+            globalRefusal: {
+                 
+                 
+                ClashTunnelOutboundMode.refusalKey(onto: ClashTunnelOutboundMode.readGlobalExit(
+                    summary: { text(socketPath) { $0.getProxiesSummary($1) } },
+                    members: { group in
+                        text(socketPath) { $0.getGroupMembers(group, offset: 0, limit: Int32(ClashTunnelOutboundMode.membersRead), error: $1) }
+                    }))
+            })
     }
 
      

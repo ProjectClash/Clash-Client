@@ -6,7 +6,7 @@ import SwiftUI
 struct RulePolicyOptions {
     let groups: [(name: String, type: String)]
     let proxies: [(name: String, type: String)]
-    let ruleSets: [String]
+    var ruleSets: [String]
      
      
     var hiddenGroups: Set<String> = []
@@ -17,6 +17,10 @@ struct RulePolicyOptions {
     var domainRuleSets: [String] = []
      
     var subRuleNames: [String]? = nil
+     
+     
+     
+    var ruleSetsAreKnown = false
 
     static let empty = RulePolicyOptions(
         groups: [],
@@ -44,7 +48,20 @@ struct RulePolicyOptions {
                 .filter { $0.behavior != "ipcidr" }
                 .map(\.name),
             subRuleNames: subRuleBranchNames(in: sourceYAML)
+             
+             
         )
+    }
+
+     
+     
+     
+    func adopting(published: ClashClientUI.ClashRulePolicyOptions?) -> RulePolicyOptions {
+        guard let published, published.ruleSetsAreKnown else { return self }
+        var options = self
+        options.ruleSets = published.ruleSets
+        options.ruleSetsAreKnown = true
+        return options
     }
 
      
@@ -65,7 +82,8 @@ struct RulePolicyOptions {
             ruleSets: ruleSets,
             hiddenGroups: hiddenGroups,
             domainRuleSets: domainRuleSets,
-            subRuleNames: subRuleNames
+            subRuleNames: subRuleNames,
+            ruleSetsAreKnown: ruleSetsAreKnown
         )
     }
 
@@ -100,7 +118,8 @@ struct RulePolicyOptions {
                 )
             },
             ruleSets: ruleSets,
-            subRuleNames: subRuleNames
+            subRuleNames: subRuleNames,
+            ruleSetsAreKnown: ruleSetsAreKnown
         )
     }
 }
@@ -117,7 +136,8 @@ extension RulePolicyOptions {
             proxies: shared.proxies.map { ($0.name, $0.type) },
             ruleSets: shared.ruleSets,
             hiddenGroups: Set(shared.groups.filter(\.isHidden).map(\.name)),
-            subRuleNames: shared.subRuleNames
+            subRuleNames: shared.subRuleNames,
+            ruleSetsAreKnown: shared.ruleSetsAreKnown
         )
     }
 }

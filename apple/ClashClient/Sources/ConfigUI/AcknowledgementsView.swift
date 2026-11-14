@@ -20,6 +20,8 @@ import AppKit
  
  
  
+ 
+ 
 private enum AckModalRoute: Identifiable {
     case license(ThirdPartyLicenseInventory.Module)
     case allModules
@@ -35,6 +37,7 @@ private enum AckModalRoute: Identifiable {
 struct AcknowledgementsView: View {
     private let inventory = ThirdPartyLicenseInventory.shared
     @State private var modalRoute: AckModalRoute?
+    @Environment(\.locale) private var locale
 #if os(macOS)
     @Environment(\.clashDoorMayPush) private var mayPush
 #endif
@@ -107,7 +110,7 @@ struct AcknowledgementsView: View {
                     .accessibilityIdentifier("acknowledgements.framework")
                 }
             } header: {
-                Text(clash: .verbatim("Framework"))
+                Text(clash: .copy("Framework"))
             } footer: {
                 Text(clash: .verbatim(
                     AcknowledgementsCatalog.sourceOfferStatement
@@ -128,9 +131,9 @@ struct AcknowledgementsView: View {
                     }
                 }
             } header: {
-                Text(clash: .verbatim("Inside Clash"))
+                Text(clash: .copy("Inside Clash"))
             } footer: {
-                Text(clash: .verbatim(
+                Text(clash: .copy(
                     "This app calls none of these directly. All of them are compiled into the binary it ships."
                 ))
             }
@@ -140,8 +143,8 @@ struct AcknowledgementsView: View {
                     LinkedModulesView(inventory: inventory)
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(clash: .verbatim("All linked modules"))
-                        Text(clash: .verbatim(summary))
+                        Text(clash: .copy("All linked modules"))
+                        Text(clash: summary)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -162,16 +165,16 @@ struct AcknowledgementsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(clash: .verbatim(framework.name))
                             .font(.subheadline.weight(.semibold))
-                        Text(clash: .verbatim(framework.usage))
+                        Text(clash: .copy(framework.usage))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
-                Text(clash: .verbatim("System frameworks"))
+                Text(clash: .copy("System frameworks"))
             } footer: {
-                Text(clash: .verbatim(
+                Text(clash: .copy(
                     "These ship with the operating system rather than with this app, and are named here to describe what it is built against."
                 ))
             }
@@ -184,7 +187,7 @@ struct AcknowledgementsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
-                Text(clash: .verbatim("Trademarks"))
+                Text(clash: .copy("Trademarks"))
             } footer: {
                 Text(clash: .verbatim(
                     AcknowledgementsCatalog.trademarkStatement
@@ -213,8 +216,9 @@ struct AcknowledgementsView: View {
                 }
                 .clashProductModalRoot(title: {
                     switch route {
-                    case .license(let module): module.module
-                    case .allModules: "Linked modules"
+                     
+                    case .license(let module): ClashDisplayText.verbatim(module.module)
+                    case .allModules: ClashDisplayText.copy("Linked modules")
                     }
                 }())
             }
@@ -222,9 +226,9 @@ struct AcknowledgementsView: View {
         }
 #endif
 #if os(macOS)
-        .clashPageTitle(.verbatim("Acknowledgements"), watchAs: "acknowledgements")
+        .clashPageTitle(.copy("Acknowledgements"), watchAs: "acknowledgements")
 #else
-        .clashPageTitle(.verbatim("Acknowledgements"), watchAs: "acknowledgements")
+        .clashPageTitle(.copy("Acknowledgements"), watchAs: "acknowledgements")
 #endif
          
          
@@ -236,12 +240,15 @@ struct AcknowledgementsView: View {
     }
 
      
-    private var summary: String {
+     
+     
+    private var summary: ClashDisplayText {
+        let chinese = ConfigurationFieldCopy.Language.shown(in: locale) != .en
         let families = inventory.licenseSummary
             .prefix(4)
-            .map { "\($0.license) \($0.count)" }
-            .joined(separator: ", ")
-        return "\(inventory.modules.count) modules · \(families)"
+            .map { #"\#($0.license) \#(ClashCopy.count($0.count, locale: locale))"# }
+            .joined(separator: chinese ? "\u{3001}" : #", "#)
+        return .format("%@ modules · %@", [ClashCopy.count(inventory.modules.count, locale: locale), families])
     }
 
     @ViewBuilder
@@ -251,7 +258,9 @@ struct AcknowledgementsView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(clash: .verbatim(module.shortName))
                 .font(.subheadline.weight(.semibold))
-            Text(clash: .verbatim(role))
+             
+             
+            Text(clash: .copy(role))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(clash: .verbatim(versionLine(module)))
@@ -266,7 +275,7 @@ struct AcknowledgementsView: View {
     ) -> String {
         module.version.isEmpty
             ? module.license
-            : "\(module.license) · \(module.version)"
+            : #"\#(module.license) · \#(module.version)"#
     }
 }
 
@@ -335,9 +344,9 @@ struct LinkedModulesView: View {
             .clashMacSettingsList(minRowHeight: 30)
             .clashDetailPageInsets()
 #if os(macOS)
-            .clashPageTitle(.verbatim("Linked modules"), watchAs: "linked-modules")
+            .clashPageTitle(.copy("Linked modules"), watchAs: "linked-modules")
 #else
-            .clashPageTitle(.verbatim("Linked modules"), watchAs: "linked-modules")
+            .clashPageTitle(.copy("Linked modules"), watchAs: "linked-modules")
 #endif
             .accessibilityIdentifier("acknowledgements.modules")
              
@@ -365,7 +374,7 @@ struct LinkedModulesView: View {
                      
                     LicenseTextView(module: module)
 #if os(macOS)
-                        .clashProductModalRoot(title: module.module)
+                        .clashProductModalRoot(title: .verbatim(module.module))
 #endif
                 }
                 .clashPageSizedSheet()
@@ -395,7 +404,9 @@ struct LinkedModulesView: View {
              
              
              
-            .clashPageTitle(.verbatim("Linked modules"), watchAs: "linked-modules")
+             
+             
+            .clashPageTitle(.copy("Linked modules"), watchAs: "linked-modules")
             .accessibilityIdentifier("acknowledgements.modules")
         }
     }
@@ -446,7 +457,7 @@ struct LinkedModulesView: View {
                  
                 AnyView(
                     LicenseTextView(module: module)
-                        .clashProductModalChild(title: module.module)
+                        .clashProductModalChild(title: .verbatim(module.module))
                 )
             }
             pushRoute(ClashViewRoute(id: routeToken))
@@ -466,7 +477,7 @@ struct LinkedModulesView: View {
             Text(clash: .verbatim(
                 module.version.isEmpty
                     ? module.license
-                    : "\(module.license) · \(module.version)"
+                    : #"\#(module.license) · \#(module.version)"#
             ))
             .font(.caption2)
             .foregroundStyle(.secondary)

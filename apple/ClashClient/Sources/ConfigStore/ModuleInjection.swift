@@ -689,6 +689,17 @@ enum ModuleInjection {
         let snifferInjected: Bool
          
          
+        var snifferAdded: [String] = []
+         
+         
+         
+        var snifferWrittenOff: [String] = []
+         
+         
+         
+        var snifferNotCompleted = false
+         
+         
          
         var rules: [String] = []
          
@@ -724,6 +735,9 @@ enum ModuleInjection {
      
      
      
+     
+     
+     
     static func snifferValue(skippingFakeIPRanges ranges: [String] = []) -> String {
          
          
@@ -735,7 +749,7 @@ enum ModuleInjection {
          
          
         let skip = safe.isEmpty ? "" : #", skip-dst-address: ["# + safe.map(ModuleYAMLText.doubleQuoted).joined(separator: ", ") + "]"
-        return #"{ enable: true, override-destination: false, force-dns-mapping: false, parse-pure-ip: true"# + skip
+        return #"{ enable: true, override-destination: false, force-dns-mapping: true, parse-pure-ip: true"# + skip
             + #", sniff: { TLS: { ports: [443] }, HTTP: { ports: [80] }, QUIC: { ports: [443] } } }"#
     }
 
@@ -768,10 +782,15 @@ enum ModuleInjection {
      
      
      
+     
+     
+     
+     
+     
     static func engineProxyEntry(name: String, port: UInt16, credentials: ModuleEngineProxyCredentials,
                                  listener: ModuleReinjectCredentials) throws -> String {
         guard credentials.isWellFormed, credentials != listener else { throw ModuleInjectionError.unusableCredentials }
-        return "{ name: \(name), type: http, server: 127.0.0.1, port: \(port), username: \(credentials.username), password: \(credentials.password), x-clash-internal: true }"
+        return "{ name: \(name), type: http, server: 127.0.0.1, port: \(port), username: \(credentials.username), password: \(credentials.password), x-clash-internal: true, x-clash-connect-sniffed-host: true }"
     }
 
      
@@ -926,7 +945,41 @@ enum ModuleInjection {
             try reinjectListenerEntry(name: plan.reinjectListenerName, port: plan.reinjectPort, credentials: plan.reinjectCredentials),
         ]))
          
-        if !keys.contains(where: { $0.key == "sniffer" }) {
+        var snifferAdded: [String] = []
+        var snifferWrittenOff: [String] = []
+        var snifferNotCompleted = false
+        var snifferReplacement: Edit?
+        if let line = keys.first(where: { $0.key == "sniffer" }) {
+             
+             
+            let end = keys.map(\.offset).filter { $0 > line.offset }.min() ?? bytes.count
+            let section = String(decoding: bytes[line.offset..<end], as: UTF8.self)
+             
+             
+             
+            let anchored = bytes[line.offset..<end].withUnsafeBufferPointer { TopLevelYAMLSections.mentionsAnchorOrAlias(inBytes: $0) }
+                || section.range(of: #"<<[ \t]*:"#, options: .regularExpression) != nil
+            if let json = try? ConfigTransforms.yamlToJSON(section, omitting: []),
+               let root = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
+               let own = root["sniffer"] as? [String: Any] {
+                let done = completedSniffer(own, fakeIPRanges: plan.fakeIPRanges)
+                snifferWrittenOff = done.writtenOff
+                if !done.added.isEmpty, anchored {
+                    snifferNotCompleted = true
+                } else if !done.added.isEmpty,
+                   let text = try? JSONSerialization.data(withJSONObject: done.value, options: [.sortedKeys, .withoutEscapingSlashes]) {
+                     
+                     
+                    snifferReplacement = Edit(start: line.offset, end: end,
+                                              replacement: Array((#"sniffer: "# + String(decoding: text, as: UTF8.self) + newline).utf8))
+                    snifferAdded = done.added
+                }
+            } else {
+                 
+                 
+                snifferNotCompleted = true
+            }
+        } else {
             let at = keys.first?.offset ?? bytes.count
             edits.append(Edit(start: at, end: at, replacement: Array((#"sniffer: "# + snifferValue(skippingFakeIPRanges: plan.fakeIPRanges) + newline).utf8)))
             snifferInjected = true
@@ -936,11 +989,90 @@ enum ModuleInjection {
             edits.append(alias)
         }
          
+         
+        if let snifferReplacement { edits.append(snifferReplacement) }
+         
         let block = rulesAndSets(plan)
         return Result(text: (hasMark ? mark : "") + apply(edits, to: bytes),
                       engineProxyName: plan.engineProxyName, reinjectListenerName: plan.reinjectListenerName,
                       reinjectCredentials: plan.reinjectCredentials, engineProxyCredentials: plan.engineProxyCredentials,
-                      snifferInjected: snifferInjected, rules: block.rules, leftOut: leftOut, hostSets: block.sets)
+                      snifferInjected: snifferInjected, snifferAdded: snifferAdded, snifferWrittenOff: snifferWrittenOff,
+                      snifferNotCompleted: snifferNotCompleted,
+                      rules: block.rules, leftOut: leftOut, hostSets: block.sets)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func completedSniffer(_ sniffer: [String: Any], fakeIPRanges: [String])
+        -> (value: [String: Any], added: [String], writtenOff: [String]) {
+        var writtenOff: [String] = []
+        for key in ["enable", "parse-pure-ip", "force-dns-mapping"] where (sniffer[key] as? Bool) == false {
+            writtenOff.append(key)
+        }
+         
+        if (sniffer["enable"] as? Bool) == false { return (sniffer, [], writtenOff) }
+        var value = sniffer
+        var added: [String] = []
+        if sniffer["enable"] == nil {
+            value["enable"] = true
+            added.append("enable")
+        }
+        var sniff = sniffer["sniff"] as? [String: Any] ?? [:]
+        if sniff.isEmpty, let older = sniffer["sniffing"] as? [Any], !older.isEmpty {
+            let whitelist = sniffer["port-whitelist"] as? [Any] ?? []
+            for case let name as String in older {
+                sniff[name.uppercased()] = whitelist.isEmpty ? [String: Any]() : ["ports": whitelist]
+            }
+            added.append(#"sniff (rewritten from sniffing)"#)
+        }
+        for (name, port) in [("TLS", 443), ("HTTP", 80), ("QUIC", 443)] {
+            guard let key = sniff.keys.first(where: { $0.uppercased() == name }) else {
+                sniff[name] = ["ports": [port], "override-destination": false] as [String: Any]
+                added.append("\(name) on \(port)")
+                continue
+            }
+            var entry = sniff[key] as? [String: Any] ?? [:]
+            let list = entry["ports"] as? [Any] ?? []
+            guard !list.isEmpty, !holds(list, port) else { continue }
+            entry["ports"] = list + [port]
+            sniff[key] = entry
+            added.append("\(name) on \(port)")
+        }
+        if !added.isEmpty || sniffer["sniff"] != nil { value["sniff"] = sniff }
+        let skip = fakeIPRanges.filter { !$0.isEmpty && $0.allSatisfy { ($0.isASCII && $0.isHexDigit) || $0 == ":" || $0 == "." || $0 == "/" } }
+        if sniffer["skip-dst-address"] == nil, !skip.isEmpty {
+            value["skip-dst-address"] = skip
+            added.append("skip-dst-address")
+        }
+        return (value, added, writtenOff)
+    }
+
+     
+     
+    private static func holds(_ list: [Any], _ port: Int) -> Bool {
+        list.contains { item in
+            if let number = item as? NSNumber { return number.intValue == port }
+            guard let text = item as? String else { return false }
+            let bounds = text.split(separator: "-", maxSplits: 1).map { Int($0.trimmingCharacters(in: .whitespaces)) }
+            guard let low = bounds.first ?? nil else { return false }
+            let high = bounds.count == 2 ? (bounds[1] ?? low) : low
+            return (low...max(low, high)).contains(port)
+        }
     }
 
      
@@ -1482,7 +1614,12 @@ extension ModuleInjection {
                 continue
             }
             let fields = text.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
-            let isRule = fields.count >= 3
+             
+             
+             
+             
+            let action = StructuredRule.coreTargetIndex(head: fields[0], fieldCount: fields.count).map { fields[$0] }
+            let isRule = action != nil
             if after == "rule" {
                 if isRule {
                     out.append(item)
@@ -1505,7 +1642,7 @@ extension ModuleInjection {
              
             let wanted = after == "whitelist" ? "fake-ip" : "real-ip"
             let name: String?
-            if fields.last?.lowercased() == wanted {
+            if action?.lowercased() == wanted {
                 switch fields[0].uppercased() {
                 case "DOMAIN": name = fields[1].lowercased()
                 case "DOMAIN-SUFFIX": name = "+." + fields[1].lowercased()

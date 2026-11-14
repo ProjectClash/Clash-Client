@@ -22,14 +22,7 @@ struct ClientSettingsView: View {
 
     private var udpFallbackDestination: some View {
         UDPFallbackSettingsView(
-            policy: Binding(
-                get: { udpFallback },
-                set: { newValue in
-                     
-                     
-                    if let newValue { udpFallback = newValue }
-                }
-            ),
+            policy: Self.udpFallbackChoice(shown: $udpFallback, restage: restageRuntime),
             offersInherit: false,
             overallPolicy: udpFallback,
              
@@ -39,13 +32,43 @@ struct ClientSettingsView: View {
             profileOverride: activeProfileUDPFallback,
             guardInput: activeProfileUDPFallbackGuardInput
         )
-        .onChange(of: udpFallback) {
-            UDPFallbackSettings.setPolicy($0)
-            restageRuntime()
-        }
     }
 
-    @ObservedObject var command: ClashCommandClient
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func udpFallbackChoice(
+        shown: Binding<UDPFallbackPolicy>,
+        in defaults: UserDefaults = UDPFallbackSettings.appGroupDefaults,
+        restage: @escaping () -> Void
+    ) -> Binding<UDPFallbackPolicy?> {
+        Binding(
+            get: { shown.wrappedValue },
+            set: { newValue in
+                 
+                 
+                guard let newValue else { return }
+                shown.wrappedValue = newValue
+                guard UDPFallbackSettings.policy(from: defaults) != newValue else { return }
+                UDPFallbackSettings.setPolicy(newValue, in: defaults)
+                restage()
+            }
+        )
+    }
+
+     
+     
+     
+     
+    let command: ClashCommandClient
      
      
      
@@ -79,7 +102,7 @@ struct ClientSettingsView: View {
      
      
      
-    @State private var certificateStore = UserDefaults(suiteName: ClashAppIdentifiers.appGroup)?
+    @State private var certificateStore = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)?
         .string(forKey: CertificateStorePolicy.defaultsKey) ?? CertificateStorePolicy.platform
     @AppStorage(
         TrafficStatisticsSettings.key,
@@ -98,14 +121,67 @@ struct ClientSettingsView: View {
         store: GlobalConfig.appGroupDefaults
     ) private var allowConstrainedUpdates = true
 
+    #if os(macOS)
+     
+     
+     
+    @State private var loginItem = ClashMacLoginItem.State.off
+    @Environment(\.locale) private var locale
+
+     
+     
+    private var launchesAtLogin: Binding<Bool> {
+        Binding(
+            get: { loginItem == .on },
+            set: { on in
+                ClashMacLoginItem.change(to: on) { error in
+                    ClashMacLoginItem.reportFailure(error, turningOn: on, on: NSApplication.shared.keyWindow, locale: locale)
+                }
+                loginItem = ClashMacLoginItem.state
+            }
+        )
+    }
+
+     
+     
+     
+     
+     
+    @ViewBuilder
+    private var generalSection: some View {
+        Section {
+            Toggle("Launch Clash at login", isOn: launchesAtLogin)
+                .accessibilityIdentifier("client.launch-at-login")
+            if loginItem == .needsApproval {
+                Button("Open System Settings") { ClashMacLoginItem.openSystemSettings() }
+                    .accessibilityIdentifier("client.launch-at-login.open-settings")
+            }
+        } header: {
+            Text("General")
+        } footer: {
+            if loginItem == .needsApproval {
+                Text("Clash will launch at login once it is allowed in System Settings › General › Login Items.")
+            }
+        }
+        .onAppear { loginItem = ClashMacLoginItem.state }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginItem = ClashMacLoginItem.state
+        }
+    }
+    #endif
+
     var body: some View {
         ClashMacSettingsFormContainer {
+            #if os(macOS)
+            generalSection
+            #endif
+
             Section {
-                Toggle("Close connections on node switch", isOn: $autoClose)
+                Toggle("Close connections on node or mode switch", isOn: $autoClose)
                     .accessibilityIdentifier("client.close-connections-on-switch")
                     .onChange(of: autoClose) { NodeSwitchSettings.setAutoCloseOnSwitch($0) }
             } footer: {
-                Text("Moves live traffic to the newly selected node immediately.")
+                Text("After you switch a node or the outbound mode, connections in use move to the new route immediately.")
             }
 
             Section {
@@ -225,7 +301,7 @@ struct ClientSettingsView: View {
                 }
                 .pickerStyle(.menu)
                 .onChange(of: certificateStore) {
-                    UserDefaults(suiteName: ClashAppIdentifiers.appGroup)?.set($0, forKey: CertificateStorePolicy.defaultsKey)
+                    UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)?.set($0, forKey: CertificateStorePolicy.defaultsKey)
                 }
                 .accessibilityIdentifier("client-settings.certificate-store")
             } header: {
@@ -279,13 +355,13 @@ struct ClientSettingsView: View {
         }
         .onAppear {
             externalControllerMode = ClashRemoteControlSettings.load(
-                from: UserDefaults(suiteName: ClashAppIdentifiers.appGroup)).mode
+                from: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)).mode
         }
         .task { moduleSets = await ModuleDeviceSettingNote.published() }
         .onChange(of: doorSelection) { door in
             guard door == nil else { return }
             externalControllerMode = ClashRemoteControlSettings.load(
-                from: UserDefaults(suiteName: ClashAppIdentifiers.appGroup)).mode
+                from: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)).mode
         }
         .clashPageTitle("Client Settings")
         .toolbar {

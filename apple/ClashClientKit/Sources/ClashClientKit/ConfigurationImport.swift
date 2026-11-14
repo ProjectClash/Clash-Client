@@ -212,7 +212,9 @@ extension ConfigurationLibraryStore {
             candidate.rules.removeAll { $0.id == ruleID }
             var scheme = ConfigurationRuleScheme(id: ruleID, label: source.record.label, kind: .supplied, sourceID: sourceID)
              
+             
             scheme.privateToConfigurationID = source.record.privateToConfigurationID
+            scheme.isRetainedSnapshot = source.record.isRetainedSnapshot
             candidate.rules.append(scheme)
         }
         let proposed = draft.label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -343,6 +345,47 @@ public extension ConfigurationLibraryStore {
 
      
      
+     
+     
+     
+     
+     
+     
+     
+    static func markingSchemePageViewsPrivate(in snapshot: ConfigurationLibrarySnapshot)
+        -> (snapshot: ConfigurationLibrarySnapshot, payloads: [ConfigurationSourcePayload])? {
+        var candidate = snapshot
+        var changed = false
+        for index in candidate.rules.indices {
+            let view = candidate.rules[index]
+            guard let baseID = view.rulesFromSchemeID, view.kind == .custom, view.privateToConfigurationID == nil,
+                  view.isRetainedSnapshot != true, view.collectionKey == nil else { continue }
+            let runners = snapshot.recipes.filter { $0.ruleSchemeID == view.id || $0.composedRuleSchemeID == view.id }
+            guard runners.count == 1, let owner = runners.first, owner.ruleSchemeID == view.id, owner.preservesOriginal != true,
+                  !snapshot.rules.contains(where: { $0.rulesFromSchemeID == view.id }),
+                  snapshot.selectedRuleSchemeID != view.id else { continue }
+             
+             
+             
+             
+             
+            guard let base = snapshot.rules.first(where: { $0.id == baseID }) ?? ConfigurationBuiltins.schemes.first(where: { $0.id == baseID })
+            else { continue }
+            let names = Set([base.label, base.displayLabel])
+            let generated = view.label.hasSuffix(" (\(owner.label))") || view.label.hasSuffix("\u{FF08}\(owner.label)\u{FF09}")
+                || names.contains { (view.label.hasPrefix($0 + " (") && view.label.hasSuffix(")"))
+                    || (view.label.hasPrefix($0 + "\u{FF08}") && view.label.hasSuffix("\u{FF09}")) }
+            guard generated else { continue }
+            candidate.rules[index].privateToConfigurationID = owner.id
+            candidate.rules[index].label = base.label
+            if base.baseSchemeID.map(ConfigurationBuiltins.isNative) == true { candidate.rules[index].ownViewOfCustomScheme = true }
+            changed = true
+        }
+        return changed ? (candidate, []) : nil
+    }
+
+     
+     
     func prepareWholeSourceEditing(_ profileID: String, replacement: ConfigurationSourcePayload,
         expectedGeneration: UInt64,
         resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput = {
@@ -460,9 +503,12 @@ public extension ConfigurationLibraryStore {
         guard existing.sources.count == 1, let reference = existing.sources.first else {
             throw ConfigurationLibraryError.invalidIdentifier.noted()
         }
-        guard !current.sources.contains(where: { $0.id == reference.id && $0.isRetainedSnapshot == true }) else {
-            throw ConfigurationLibraryError.retainedSnapshot
-        }
+         
+         
+         
+         
+         
+         
         guard uses else {
              
              

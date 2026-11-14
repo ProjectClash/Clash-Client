@@ -63,6 +63,20 @@ public struct ClashMacSourceImportActions {
      
      
      
+     
+    public var ruleSetAtLink: (@MainActor (String, Error) async -> (found: ClashRuleSetSniff.Found, link: String)?)?
+     
+     
+     
+    public var fetchRules: (@MainActor (String, String) async throws -> ConfigurationSourcePayload)?
+     
+     
+     
+    public var ruleSetIn: (@MainActor (Data) async -> ClashRuleSetSniff.Found?)?
+     
+     
+     
+     
     public var customNodesEditor: ((_ accept: @escaping (ConfigurationSourcePayload) async throws -> Void, _ close: @escaping () -> Void) -> AnyView)? = nil
 
     public init(
@@ -255,9 +269,12 @@ public struct ClashMacSourceImportSheet: View {
 
      
      
-    nonisolated static func pickedConfiguration(_ bytes: Data) throws -> PickedConfiguration {
+    nonisolated static func pickedConfiguration(_ bytes: Data, keepsBinaryRuleSet: Bool = false) throws -> PickedConfiguration {
         guard bytes.count <= textBytesAtMost else { return .large(LargeFile(bytes: bytes)) }
         guard let text = String(data: bytes, encoding: .utf8) else {
+             
+             
+            if keepsBinaryRuleSet, ClashRuleSetSniff.ruleSet(in: bytes)?.format == "mrs" { return .large(LargeFile(bytes: bytes)) }
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
         return .text(text)
@@ -294,6 +311,9 @@ public struct ClashMacSourceImportSheet: View {
     @State private var pendingTab: Tab?
     @State private var confirmsTabDiscard = false
     @State private var importingRuleSet = false
+     
+     
+    @State private var ruleSetDraft = ClashMacRuleSetImportDraft()
     @State private var reviewsText = false
 
     public init(
@@ -327,7 +347,7 @@ public struct ClashMacSourceImportSheet: View {
 
     private var subtitle: ClashDisplayText {
         switch tab {
-        case .link: .copy("Profile URL or Share Link")
+        case .link: purpose == .rules ? .copy("Profile URL or Rule Set Link") : .copy("Profile URL or Share Link")
         case .file: .copy("File")
         case .nodes: .copy("Custom Nodes")
         case .manual: .copy("Add Rule")
@@ -369,7 +389,8 @@ public struct ClashMacSourceImportSheet: View {
     public var body: some View {
         if importingRuleSet, let addRuleSet = actions.addRuleSet {
              
-            ClashMacRuleSetImportForm(add: addRuleSet, back: { importingRuleSet = false }, done: close)
+            ClashMacRuleSetImportForm(add: addRuleSet, back: { importingRuleSet = false }, done: close, initial: ruleSetDraft,
+                                      readRuleSet: actions.ruleSetIn)
         } else {
             importBody
         }
@@ -456,7 +477,7 @@ public struct ClashMacSourceImportSheet: View {
                         Section {
                              
                              
-                            Button { importingRuleSet = true } label: { Text(clash: .opens("Import Rule Set", locale: locale)) }
+                            Button { ruleSetDraft = ClashMacRuleSetImportDraft(); importingRuleSet = true } label: { Text(clash: .opens("Import Rule Set", locale: locale)) }
                                 .buttonStyle(.bordered).tint(.primary)
                                 .disabled(busy)
                                 .accessibilityIdentifier("configuration-center.import.rule-set")
@@ -734,7 +755,8 @@ public struct ClashMacSourceImportSheet: View {
     private func readPayload() async throws -> ConfigurationSourcePayload {
         switch tab {
         case .link:
-            return try await actions.fetch(url.trimmingCharacters(in: .whitespacesAndNewlines), label)
+            let fetch = purpose == .rules ? actions.fetchRules ?? actions.fetch : actions.fetch
+            return try await fetch(url.trimmingCharacters(in: .whitespacesAndNewlines), label)
         case .file:
             return try await Self.readFileTab(purpose: purpose, fileName: fileName, label: label, text: text,
                                               bytes: largeFile?.bytes, resources: resources, actions: actions)
@@ -754,9 +776,36 @@ public struct ClashMacSourceImportSheet: View {
         let input = currentInput
         Task { @MainActor in
             defer { busy = false }
+             
+             
+             
+            if preview == nil, purpose == .rules, tab == .file, actions.addRuleSet != nil {
+                let bytes = largeFile?.bytes ?? Data(text.utf8)
+                let found: ClashRuleSetSniff.Found?
+                if let read = actions.ruleSetIn { found = await read(bytes) }
+                else { found = await Task.detached(priority: .userInitiated) { ClashRuleSetSniff.ruleSet(in: bytes) }.value }
+                if let found, let draft = Self.ruleSetDraft(purpose: purpose, tab: tab, label: label, fileName: fileName,
+                                                            bytes: bytes, found: found, actions: actions) {
+                    openRuleSetImport(draft)
+                    return
+                }
+            }
             do {
                 let payload: ConfigurationSourcePayload
-                if let preview { payload = preview } else { payload = try await readPayload() }
+                if let preview { payload = preview } else {
+                    do {
+                        payload = try await readPayload()
+                    } catch {
+                         
+                        let link = url.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if purpose == .rules, tab == .link, actions.addRuleSet != nil,
+                           let read = await actions.ruleSetAtLink?(link, error) {
+                            openRuleSetImport(Self.linkRuleSetDraft(read.found, link: read.link, label: label))
+                            return
+                        }
+                        throw error
+                    }
+                }
                 preview = payload
                 try await operation(payload)
             } catch {
@@ -766,6 +815,40 @@ public struct ClashMacSourceImportSheet: View {
                 }
             }
         }
+    }
+
+    private func openRuleSetImport(_ draft: ClashMacRuleSetImportDraft) {
+        ruleSetDraft = draft
+        importingRuleSet = true
+    }
+
+     
+     
+     
+     
+    static func ruleSetDraft(purpose: ClashMacSourceImportPurpose, tab: Tab, label: String, fileName: String,
+                             bytes: Data, found: ClashRuleSetSniff.Found?,
+                             actions: ClashMacSourceImportActions) -> ClashMacRuleSetImportDraft? {
+        guard purpose == .rules, tab == .file, actions.addRuleSet != nil, let found else { return nil }
+        var draft = ClashMacRuleSetImportDraft()
+        draft.name = ClashRuleSetSniff.name(typed: label, fileName: fileName)
+        draft.fileName = ClashRuleSetSniff.fileName(fileName, found: found)
+        draft.fileData = bytes
+        draft.format = found.format
+         
+        if let behavior = found.behavior { draft.behavior = behavior }
+        return draft
+    }
+
+     
+    static func linkRuleSetDraft(_ found: ClashRuleSetSniff.Found, link: String, label: String) -> ClashMacRuleSetImportDraft {
+        var draft = ClashMacRuleSetImportDraft()
+        draft.link = link
+        let typed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.name = typed.isEmpty ? ClashRuleSetSniff.linkStem(link) : typed
+        draft.format = found.format
+        if let behavior = found.behavior { draft.behavior = behavior }
+        return draft
     }
 
      
@@ -811,7 +894,8 @@ public struct ClashMacSourceImportSheet: View {
      
     private func readPickedFiles(_ picked: [URL]) {
         do {
-            guard let read = try Self.readPicked(picked, fileBytes: actions.fileBytes) else { return }
+            guard let read = try Self.readPicked(picked, fileBytes: actions.fileBytes,
+                                                 keepsBinaryRuleSet: purpose == .rules && actions.addRuleSet != nil) else { return }
              
              
              
@@ -844,7 +928,10 @@ public struct ClashMacSourceImportSheet: View {
      
      
      
-    nonisolated static func readPicked(_ picked: [URL], fileBytes: (URL) throws -> Data) throws -> PickedFiles? {
+     
+     
+    nonisolated static func readPicked(_ picked: [URL], fileBytes: (URL) throws -> Data,
+                                       keepsBinaryRuleSet: Bool = false) throws -> PickedFiles? {
         let configuration = picked.first { ["yaml", "yml"].contains($0.pathExtension.lowercased()) } ?? picked.first
         guard let configuration else { return nil }
         var read = PickedFiles(fileName: configuration.lastPathComponent,
@@ -853,7 +940,7 @@ public struct ClashMacSourceImportSheet: View {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             if url == configuration {
-                switch try pickedConfiguration(fileBytes(url)) {
+                switch try pickedConfiguration(fileBytes(url), keepsBinaryRuleSet: keepsBinaryRuleSet) {
                 case .text(let text): read.text = text
                 case .large(let file): read.largeFile = file
                 }

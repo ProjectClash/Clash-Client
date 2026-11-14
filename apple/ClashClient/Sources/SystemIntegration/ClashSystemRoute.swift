@@ -89,7 +89,6 @@ extension Notification.Name {
  
  
 struct ClashSystemHandoff {
-    static let appGroupIdentifier = ClashAppIdentifiers.appGroup
     static let controlKind = "org.example.clash.vpn-control"
 
      
@@ -124,7 +123,7 @@ struct ClashSystemHandoff {
     private let notificationCenter: NotificationCenter
 
     init(
-        defaults: UserDefaults = UserDefaults(suiteName: appGroupIdentifier) ?? .standard,
+        defaults: UserDefaults = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard,
         notificationCenter: NotificationCenter = .default
     ) {
         self.defaults = defaults

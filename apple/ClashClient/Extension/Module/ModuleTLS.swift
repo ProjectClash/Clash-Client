@@ -1075,4 +1075,70 @@ enum ModuleLeafChoice {
         return .present(identity, lease)
     }
 }
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct ModuleSystemPinning: @unchecked Sendable {
+     
+     
+    let rules: [String: [NSRegularExpression]]
+
+    static let none = ModuleSystemPinning(rules: [:])
+
+     
+    static let system: ModuleSystemPinning = systemRulesURL.flatMap { try? Data(contentsOf: $0) }.map(parse) ?? .none
+
+     
+     
+     
+     
+    static var systemRulesURL: URL? {
+        Bundle(path: "/System/Library/Security/Certificates.bundle")?.url(forResource: "CertificatePinning", withExtension: "plist")
+    }
+
+     
+     
+     
+     
+    static func parse(_ data: Data) -> ModuleSystemPinning {
+        guard let items = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [Any] else { return .none }
+        var rules: [String: [NSRegularExpression]] = [:]
+        for case let item as [String: Any] in items {
+            for case let domain as [String: Any] in item["domains"] as? [Any] ?? [] {
+                guard let suffix = (domain["suffix"] as? String)?.lowercased(), !suffix.isEmpty,
+                      let pattern = domain["labelRegex"] as? String,
+                      let label = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+                rules[suffix, default: []].append(label)
+            }
+        }
+        return ModuleSystemPinning(rules: rules)
+    }
+
+    var ruleCount: Int { rules.values.reduce(0) { $0 + $1.count } }
+
+     
+     
+     
+    func pins(_ host: String) -> Bool {
+        var name = host.lowercased()
+        while name.hasSuffix("."), name.count > 1 { name.removeLast() }
+        guard let dot = name.firstIndex(of: ".") else { return false }
+        let label = String(name[..<dot])
+        guard !label.isEmpty, let patterns = rules[String(name[name.index(after: dot)...])] else { return false }
+        let range = NSRange(label.startIndex..., in: label)
+        return patterns.contains { $0.firstMatch(in: label, range: range) != nil }
+    }
+}
 #endif

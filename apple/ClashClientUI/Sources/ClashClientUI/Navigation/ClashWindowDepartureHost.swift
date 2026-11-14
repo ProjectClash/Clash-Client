@@ -46,12 +46,20 @@ public struct ClashWindowDepartureHost<Content: View, WindowGuard: View>: View {
                     set: { _ in }
                 )
             ) {
-                Button("Save") { departureGuard.saveAndLeave() }
+                 
+                if departureGuard.saveBlock == nil {
+                    Button("Save") { departureGuard.saveAndLeave() }
+                }
                 Button("Discard", role: .destructive) { departureGuard.discardAndLeave() }
                 Button("Keep Editing", role: .cancel) { departureGuard.keepEditing() }
             } message: {
-                Text("This page has changes that have not been saved.")
+                if let block = departureGuard.saveBlock {
+                    Text(clash: block)
+                } else {
+                    Text("This page has changes that have not been saved.")
+                }
             }
+            .background { ClashDepartureRefusalAlert(departureGuard: departureGuard) }
     }
 }
 

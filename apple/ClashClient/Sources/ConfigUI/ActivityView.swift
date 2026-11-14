@@ -25,7 +25,12 @@ struct ActivityView: View, Equatable {
     let command: ClashCommandClient
     let connections: ConnectionsModel
     @Binding var lens: ClashActivityLens
-    var loadsPersistedLogs = true
+    let loadsPersistedLogs: Bool
+     
+     
+     
+     
+    private let lensWhenMade: ClashActivityLens
     #if os(macOS)
      
      
@@ -35,10 +40,19 @@ struct ActivityView: View, Equatable {
     @Environment(\.locale) private var locale
     #endif
 
+    init(command: ClashCommandClient, connections: ConnectionsModel, lens: Binding<ClashActivityLens>,
+         loadsPersistedLogs: Bool) {
+        self.command = command
+        self.connections = connections
+        _lens = lens
+        self.loadsPersistedLogs = loadsPersistedLogs
+        lensWhenMade = lens.wrappedValue
+    }
+
     static func == (lhs: ActivityView, rhs: ActivityView) -> Bool {
         lhs.command === rhs.command
             && lhs.connections === rhs.connections
-            && lhs.lens == rhs.lens
+            && lhs.lensWhenMade == rhs.lensWhenMade
             && lhs.loadsPersistedLogs == rhs.loadsPersistedLogs
     }
 
@@ -72,6 +86,13 @@ struct ActivityView: View, Equatable {
         let _ = ClashActivityScrollProbe.installIfNeeded()
         #endif
         page
+            #if os(iOS)
+             
+             
+            .background {
+                if #available(iOS 26, *), Self.searchFieldStyle == .phoneBottomBar { ClashTabBarFollowsThePush() }
+            }
+            #endif
             #if os(macOS)
              
              
@@ -126,6 +147,48 @@ struct ActivityView: View, Equatable {
 }
 
 #if os(iOS)
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@available(iOS 26, *)
+struct ClashTabBarFollowsThePush: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Probe { Probe() }
+    func updateUIViewController(_ probe: Probe, context: Context) {}
+
+    final class Probe: UIViewController {
+        override func loadView() {
+            view = UIView()
+            view.isUserInteractionEnabled = false
+            view.isHidden = true
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            setTabBarHidden(true, animated: animated)
+        }
+
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            setTabBarHidden(false, animated: animated)
+        }
+
+        private func setTabBarHidden(_ hidden: Bool, animated: Bool) {
+            guard let tabs = tabBarController, tabs.isTabBarHidden != hidden else { return }
+            tabs.setTabBarHidden(hidden, animated: animated)
+        }
+    }
+}
+
  
  
  

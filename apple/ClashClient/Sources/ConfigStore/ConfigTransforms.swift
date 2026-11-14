@@ -810,7 +810,7 @@ enum ConfigTransforms {
     static func configDeviationsJSON(configContent: String, targetProfile: String,
                                      lanSharingOn: Bool? = nil) throws -> String {
         ClashSetAllowLanPermitted(lanSharingOn ?? LocalNetworkPermission.isPermitted(
-            UserDefaults(suiteName: ClashAppIdentifiers.appGroup)
+            UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
         ))
         var error: NSError?
         guard let box = AppCore.configDeviationsJSON(configContent, targetProfile, &error) else {
@@ -2319,7 +2319,33 @@ enum ConfigTransforms {
         if excludeAPNsRoute {
             appendAPNsFakeIPFilter(to: &root)
         }
+        #if os(iOS)
+        dropIPv6FakePoolBesideALoopbackAddress(&root)
+        #endif
         return root
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private static func dropIPv6FakePoolBesideALoopbackAddress(_ root: inout OrderedJSON) {
+        guard case let .array(addresses)? = root.topLevelValue("tun")?.topLevelValue("loopback-address"),
+              addresses.contains(where: { address in
+                  guard case let .string(text) = address else { return false }
+                  var parsed = in_addr()
+                  return inet_pton(AF_INET, String(text.split(separator: "/").first ?? ""), &parsed) == 1
+              }),
+              root.topLevelValue("dns")?.topLevelValue("fake-ip-range6") != nil else { return }
+        root = root.setting(path: ["dns", "fake-ip-range6"], to: nil)
     }
 
      

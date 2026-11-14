@@ -53,6 +53,16 @@ public enum ClashScriptHTML {
         var color: Color?
     }
 
+     
+     
+     
+     
+    public static func plainText(_ text: String) -> Rendered {
+        let source = text.count > maximumCharacters ? String(text.prefix(maximumCharacters)) : text
+        let lines = source.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        return Rendered(text: AttributedString(lines.trimmingCharacters(in: .newlines)), centered: false)
+    }
+
     public static func render(_ html: String) -> Rendered {
         let source = html.count > maximumCharacters ? String(html.prefix(maximumCharacters)) : html
          

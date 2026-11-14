@@ -13,6 +13,9 @@ import Foundation
  
  
  
+ 
+ 
+ 
 enum AcknowledgementsCatalog {
      
      
@@ -38,7 +41,7 @@ enum AcknowledgementsCatalog {
      
     static let framework = Highlight(
         module: "github.com/ProjectClash/Clash",
-        role: "The Apple framework this client links, and the only one it calls. Its licence covers this whole app."
+        role: "Clash's own framework for Apple platforms, and the only one this client calls. Its licence covers this whole app."
     )
 
      

@@ -74,7 +74,7 @@ final class ClashTVTunnelController: ObservableObject {
         return nil
 
     }
-    private static let messageTimeout: TimeInterval = 8
+    static let messageTimeout: TimeInterval = 8
      
     private static let reloadTimeout: TimeInterval = 30
 
@@ -164,6 +164,17 @@ final class ClashTVTunnelController: ObservableObject {
     private var observedIPCProfile: ObjectIdentifier?
     private var observedIPCSession: ObjectIdentifier?
     private var controlRevision: UInt64 = 0
+     
+     
+     
+    private var modeRequestRevision: UInt64 = 0
+     
+     
+     
+    private var askedGlobal: (revision: UInt64, generation: ClashTVIPCGeneration, profile: ClashTVSubscription.ID?)?
+     
+     
+    private var modeSendsInFlight = 0
     private var activeObservationGeneration: UInt64?
     private var ruleProbePointer: ActiveConfigurationPointer?
     private var ruleProbeGeneration: ClashTVIPCGeneration?
@@ -196,7 +207,7 @@ final class ClashTVTunnelController: ObservableObject {
         loadProfiles: @escaping ProfileLoader = { try await NETunnelProviderManager.loadAllFromPreferences() },
         makeProfile: @escaping ProfileMaker = { NETunnelProviderManager() },
         preferencesTimeout: TimeInterval = 15,
-        ipStackDefaults: UserDefaults = UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard,
+        ipStackDefaults: UserDefaults = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard,
         messageReader: MessageReader? = nil,
         observationClock: @escaping @MainActor () -> ClashTVObservation.Moment = { .init(date: Date()) },
         clock: @escaping @MainActor () -> Date = { Date() },
@@ -770,7 +781,7 @@ final class ClashTVTunnelController: ObservableObject {
      
     private func pendingCompileIsDue(at now: Date) -> Bool {
         guard pendingCompileTask == nil else { return false }
-        if let due = pendingCompileDue, now >= due { return true }
+        if let due = pendingCompileDue, now.timeIntervalSince(due) >= 0 { return true }
         guard now.timeIntervalSince(lastPendingCompile) >= Self.pendingCompileInterval else { return false }
         readProviderRefresh()
         if ClashTVPendingSeeds.waitsForTheApp(state.providerRefresh) { return true }
@@ -1225,6 +1236,8 @@ final class ClashTVTunnelController: ObservableObject {
         let revision = controlRevision
         do {
             state.observations.mode.waitForUpdate()
+            modeSendsInFlight += 1
+            defer { modeSendsInFlight -= 1 }
             let reply = try await send(["cmd": "setMode", "mode": mode.kernelToken], expectedGeneration: generation)
             guard generation.isValid, revision == controlRevision else { return }
             guard Self.isOK(reply) else { throw Self.replyError(reply) }
@@ -1237,9 +1250,188 @@ final class ClashTVTunnelController: ObservableObject {
              
              
              
-            state.post(ClashTVFeedback.couldNotChangeMode(reason: error.localizedDescription), for: .mode)
+             
+             
+             
+             
+            if case ControllerError.kernelRefused = error {
+                state.post(ClashTVFeedback.modeRefused, for: .mode)
+            } else {
+                state.post(ClashTVFeedback.couldNotChangeMode(reason: error.localizedDescription), for: .mode)
+            }
         }
     }
+
+     
+     
+    enum ModeRequestOutcome: Equatable {
+         
+         
+        case switched
+         
+         
+        case ask(ClashTunnelOutboundMode.GlobalExit)
+         
+         
+         
+        case refused(String)
+         
+         
+        case notConfirmed
+         
+         
+        case superseded
+         
+         
+        case unchanged
+    }
+
+     
+     
+     
+     
+     
+    func requestMode(_ mode: ClashTVOutboundMode) async -> ModeRequestOutcome {
+         
+         
+        modeRequestRevision &+= 1
+        let revision = modeRequestRevision
+        askedGlobal = nil
+        guard mode == .global, state.isConnected else {
+            await setMode(mode)
+            return .switched
+        }
+         
+         
+         
+        if state.outboundMode == .global, state.observations.mode.hasValue, modeSendsInFlight == 0 {
+            state.settle(.mode)
+            return .unchanged
+        }
+        state.beginOperation()
+        let generation = ipcGeneration
+        var step = ClashTunnelOutboundMode.GlobalSwitchStep.notKnown
+        do {
+            let reply = try await send(["cmd": "proxiesSummary"], expectedGeneration: generation)
+             
+             
+             
+             
+             
+            step = await ClashTunnelOutboundMode.readGlobalStep(
+                summaryJSON: String(decoding: reply, as: UTF8.self),
+                members: { [self] group in
+                    (try? await send(["cmd": "groupMembers", "group": group, "offset": 0,
+                                      "limit": ClashTunnelOutboundMode.membersRead],
+                                     expectedGeneration: generation)).map { String(decoding: $0, as: UTF8.self) }
+                },
+                isCurrent: { [self] in generation.isValid && revision == modeRequestRevision }
+            ) ?? .notKnown
+        } catch {
+            ClashLogStore.shared.append("tv setMode global  check=unread reason=\(error.localizedDescription)", stream: .app, level: .warning)
+        }
+         
+        guard revision == modeRequestRevision else { return .superseded }
+         
+         
+         
+        guard generation.isValid else {
+            ClashLogStore.shared.append("tv setMode global  check=unconfirmed reason=tunnel changed", stream: .app, level: .warning)
+            state.post(ClashTVFeedback.globalNotConfirmed, for: .mode)
+            return .notConfirmed
+        }
+        switch step {
+        case .switchNow:
+            await setMode(.global)
+            return .switched
+        case .ask(let exit):
+            ClashLogStore.shared.append("tv setMode global  check=\(exit.rawValue) asked", stream: .app, level: .info)
+            askedGlobal = (revision, generation, currentProfileID)
+            return .ask(exit)
+        case .refuse(let key):
+            ClashLogStore.shared.append("tv setMode global  check=refused reason=\(key)", stream: .app, level: .info)
+            state.post(ClashTVFeedback.globalRefused(key), for: .mode)
+            return .refused(key)
+        case .notKnown:
+            ClashLogStore.shared.append("tv setMode global  check=unconfirmed", stream: .app, level: .warning)
+            state.post(ClashTVFeedback.globalNotConfirmed, for: .mode)
+            return .notConfirmed
+        }
+    }
+
+     
+     
+    struct GlobalQuestionTicket {
+        fileprivate let revision: UInt64
+        fileprivate let generation: ClashTVIPCGeneration
+        fileprivate let profile: ClashTVSubscription.ID?
+    }
+
+    func globalQuestionTicket() -> GlobalQuestionTicket? {
+        askedGlobal.map { GlobalQuestionTicket(revision: $0.revision, generation: $0.generation, profile: $0.profile) }
+    }
+
+     
+     
+     
+     
+     
+    @discardableResult
+    func switchGlobalAnyway(_ ticket: GlobalQuestionTicket?) async -> Bool {
+        askedGlobal = nil
+        guard let asked = ticket else {
+             
+             
+            ClashLogStore.shared.append("tv setMode global  anyway=no-question", stream: .app, level: .info)
+            return false
+        }
+        guard asked.revision == modeRequestRevision, asked.generation.isValid,
+              asked.generation === ipcGeneration, asked.profile == currentProfileID else {
+            ClashLogStore.shared.append("tv setMode global  anyway=stale", stream: .app, level: .info)
+            state.post(ClashTVFeedback.globalNotConfirmed, for: .mode)
+            return false
+        }
+        await setMode(.global)
+        return true
+    }
+
+     
+     
+    func dropGlobalQuestion() { askedGlobal = nil }
+
+     
+     
+     
+    @discardableResult
+    func readGroupsUntilListed(_ name: String) async -> Bool {
+         
+         
+         
+         
+        for attempt in 0..<Self.groupReadAttempts {
+            if groupIsRead(name) { return true }
+            if attempt > 0 { try? await Task.sleep(for: .seconds(1)) }
+             
+            guard !Task.isCancelled else { return false }
+            if await refreshProxies() != nil, !groupIsRead(name) {
+                 
+                return false
+            }
+        }
+        return groupIsRead(name)
+    }
+
+    private func groupIsRead(_ name: String) -> Bool {
+        state.proxyGroups.contains { $0.name == name } || state.hiddenProxyGroups.contains { $0.name == name }
+    }
+
+    static let groupReadAttempts = 3
+
+     
+    private var currentProfileID: ClashTVSubscription.ID? {
+        (preparedSubscription ?? connectedSubscription)?.id
+    }
+
 
     func pin(member: String, group: String) async {
         state.beginOperation()
@@ -1351,8 +1543,15 @@ final class ClashTVTunnelController: ObservableObject {
     }
 
      
-    private static let lostReplyReadBackWindow: Duration = .seconds(16)
+    static let lostReplyReadBackWindow: Duration = .seconds(16)
 
+     
+     
+     
+     
+     
+     
+     
      
      
      
@@ -1397,6 +1596,9 @@ final class ClashTVTunnelController: ObservableObject {
         let generation = ipcGeneration
          
          
+        sweepEnded = false
+         
+         
         if !group.hasEveryMember, let total = lastSummary?.groups[group.name]?.total {
              
              
@@ -1417,7 +1619,7 @@ final class ClashTVTunnelController: ObservableObject {
                 state.post(ClashTVFeedback.testStopped(reason: error.localizedDescription), for: .test)
                 return
             }
-            guard generation.isValid, sweepingMembers.isEmpty, let latest = lastSummary else { return }
+            guard generation.isValid, sweepingMembers.isEmpty, !sweepEnded, let latest = lastSummary else { return }
             showNodes(latest)
             group = ClashTVNodesScreen.group(named: group.name, state: state) ?? group
             if !group.hasEveryMember {
@@ -1459,30 +1661,228 @@ final class ClashTVTunnelController: ObservableObject {
          
          
         var measured = 0
-        for probe in probes {
+        var inHand: ClashTVNodesScreen.Probe?
+        do {
+            let width = LatencyProbePolicy.tvOS.concurrentProbeCount(for: probes.count)
+            var rest = probes[...]
+            while !rest.isEmpty {
+                 
+                try Task.checkCancellation()
+                guard !sweepEnded else { return }
+                let batch = Self.sweepBatch(of: rest)
+                rest = rest.dropFirst(batch.count)
+                switch try await sweepInTunnel(batch, width: width, generation: generation) {
+                case .measured(let count):
+                    measured += count
+                case .ended:
+                    return
+                case .unknownToTunnel:
+                     
+                     
+                     
+                    ClashLogStore.shared.append("url test sweep: the tunnel predates the sweep; one node at a time",
+                                                stream: .app)
+                    for probe in batch + rest {
+                        guard generation.isValid, !sweepEnded else { return }
+                        try Task.checkCancellation()
+                        inHand = probe
+                        let reply = try await send(Self.urlTestRequest(probe), expectedGeneration: generation)
+                        guard generation.isValid else { return }
+                        inHand = nil
+                        let delay = (try? ClashTVKernelSnapshots.urlTestDelay(from: reply)) ?? -1
+                        if delay > 0 { measured += 1 }
+                        ClashTVNodesScreen.record(delay: delay, for: probe, state: &state)
+                        noteMeasured(probe)
+                    }
+                    rest = []
+                }
+            }
+        } catch {
+            ClashLogStore.shared.append("tv url test sweep ended  reason=\(error.localizedDescription)", stream: .app, level: .warning)
+             
+             
+            if error is CancellationError { return }
             guard generation.isValid else { return }
-            do {
-                let reply = try await send(Self.urlTestRequest(probe), expectedGeneration: generation)
-                guard generation.isValid else { return }
-                let delay = (try? ClashTVKernelSnapshots.urlTestDelay(from: reply)) ?? -1
-                if delay > 0 { measured += 1 }
-                ClashTVNodesScreen.record(delay: delay, for: probe, state: &state)
-                noteMeasured(probe)
-            } catch {
-                ClashLogStore.shared.append("tv url test sweep ended  reason=\(error.localizedDescription)", stream: .app, level: .warning)
-                guard generation.isValid else { return }
+            if let probe = inHand {
                 state.latency[probe.name] = .failed
                 state.latency[probe.key] = .failed
                 noteMeasured(probe)
-                state.post(ClashTVFeedback.testStopped(reason: error.localizedDescription), for: .test)
-                return
             }
+            state.post(ClashTVFeedback.testStopped(reason: error.localizedDescription), for: .test)
+            return
         }
         ClashLogStore.shared.append(
             "url test sweep done  group=\(group.name) measured=\(measured) of \(probes.count)",
             stream: .app
         )
     }
+
+     
+     
+     
+     
+    static let sweepBatchProbes = 500
+    static let sweepBatchBytes = 64 * 1024
+
+     
+    static func sweepBatch(of rest: ArraySlice<ClashTVNodesScreen.Probe>) -> [ClashTVNodesScreen.Probe] {
+        var bytes = 0
+        var batch: [ClashTVNodesScreen.Probe] = []
+        for probe in rest.prefix(sweepBatchProbes) {
+             
+            let cost = 32 + 2 * (probe.name.utf8.count + (probe.url?.utf8.count ?? 0))
+            if !batch.isEmpty, bytes + cost > sweepBatchBytes { break }
+            bytes += cost
+            batch.append(probe)
+        }
+        return batch
+    }
+     
+    static let sweepReadInterval: Duration = .milliseconds(300)
+
+    private enum TunnelSweep {
+        case measured(Int)
+         
+        case ended
+         
+        case unknownToTunnel
+    }
+
+     
+     
+    private func sweepInTunnel(_ batch: [ClashTVNodesScreen.Probe], width: Int,
+                               generation: ClashTVIPCGeneration) async throws -> TunnelSweep {
+        let request: [String: Any] = [
+            "cmd": "urltestSweep",
+            "probes": batch.map { probe -> [String: Any] in
+                var entry: [String: Any] = ["name": probe.name]
+                if let url = probe.url { entry["url"] = url }
+                return entry
+            },
+            "width": width,
+            "failureFloorMilliseconds": LatencyProbePolicy.tvOS.probeFailureFloorNanoseconds / 1_000_000,
+        ]
+        let started = try await send(request, expectedGeneration: generation)
+        guard generation.isValid else { return .ended }
+        let root = try? JSONSerialization.jsonObject(with: started) as? [String: Any]
+        guard let id = (root?["sweep"] as? NSNumber)?.uint64Value else {
+            if (root?["error"] as? String)?.hasPrefix("unknown cmd") == true { return .unknownToTunnel }
+            throw Self.replyError(started)
+        }
+        tunnelSweep = (id, generation)
+         
+         
+         
+         
+         
+        defer { if tunnelSweep?.id == id { tunnelSweep = nil } }
+        do {
+            let outcome = try await readTunnelSweep(id, batch, generation: generation)
+            await stopTunnelSweep(id)
+            return outcome
+        } catch {
+            await stopTunnelSweep(id)
+            throw error
+        }
+    }
+
+     
+     
+     
+    private var tunnelSweep: (id: UInt64, generation: ClashTVIPCGeneration)?
+
+     
+     
+     
+     
+     
+     
+     
+     
+    private func stopTunnelSweep(_ id: UInt64) async {
+        guard let running = tunnelSweep, running.id == id, running.generation.isValid else { return }
+        do {
+            _ = try await send(["cmd": "urltestSweepStop", "sweep": id], expectedGeneration: running.generation)
+            if tunnelSweep?.id == id { tunnelSweep = nil }
+        } catch {
+            ClashLogStore.shared.append("url test sweep: the stop did not go  reason=\(error.localizedDescription)",
+                                        stream: .app, level: .warning)
+        }
+    }
+
+     
+     
+     
+    private func readTunnelSweep(_ id: UInt64, _ batch: [ClashTVNodesScreen.Probe],
+                                 generation: ClashTVIPCGeneration) async throws -> TunnelSweep {
+        var landed = Set<Int>()
+        var measured = 0
+        while true {
+            if sweepEnded { return .ended }
+            let reply: Data
+            do {
+                reply = try await readSweep(id, generation: generation)
+            } catch _ where sweepEnded {
+                 
+                 
+                return .ended
+            }
+            guard generation.isValid else { return .ended }
+            let reading = try? JSONSerialization.jsonObject(with: reply) as? [String: Any]
+            guard let delays = reading?["delays"] as? [Any], let done = reading?["done"] as? Bool else {
+                throw Self.replyError(reply)
+            }
+            if done, tunnelSweep?.id == id { tunnelSweep = nil }
+            for (index, value) in zip(batch.indices, delays) where !landed.contains(index) {
+                guard let delay = (value as? NSNumber)?.intValue else { continue }
+                landed.insert(index)
+                if delay > 0 { measured += 1 }
+                ClashTVNodesScreen.record(delay: delay, for: batch[index], state: &state)
+                noteMeasured(batch[index])
+            }
+            if reading?["stopped"] as? Bool == true {
+                 
+                 
+                 
+                ClashLogStore.shared.append("url test sweep: the tunnel ended it  landed=\(landed.count) of \(batch.count)",
+                                            stream: .app, level: .warning)
+                return .ended
+            }
+            if done { return .measured(measured) }
+            try await Task.sleep(for: Self.sweepReadInterval)
+            guard generation.isValid else { return .ended }
+        }
+    }
+
+     
+     
+     
+     
+    private func readSweep(_ id: UInt64, generation: ClashTVIPCGeneration) async throws -> Data {
+        let deadline = ContinuousClock.now + Self.lostReplyReadBackWindow
+        while true {
+            do {
+                return try await send(["cmd": "urltestSweepRead", "sweep": id], expectedGeneration: generation)
+            } catch ControllerError.ipcNotSent(.unresolved) where ContinuousClock.now < deadline && !sweepEnded {
+                try await Task.sleep(for: .milliseconds(250))
+            }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+    func endSweep() async {
+        guard !sweepingMembers.isEmpty || sweepReserved else { return }
+        sweepEnded = true
+        if let running = tunnelSweep { await stopTunnelSweep(running.id) }
+    }
+
+     
+    private var sweepEnded = false
 
      
      
@@ -2849,7 +3249,7 @@ final class ClashTVTunnelController: ObservableObject {
         let newIdentity = ruleProbePointer != expected || ruleProbeGeneration !== ipcGeneration
         let pending = ruleRecoveryPending || state.providers.contains { $0.kind == "rule" && $0.pending }
         let visible = presentation.active && presentation.page == .providers
-        guard force || newIdentity || ((pending || visible) && now >= nextRuleProbeAt) else { return }
+        guard force || newIdentity || ((pending || visible) && now.timeIntervalSince(nextRuleProbeAt) >= 0) else { return }
         if newIdentity { ruleProbeBackoff = 3 }
         ruleProbePointer = expected
         ruleProbeGeneration = ipcGeneration
@@ -3284,7 +3684,7 @@ actor ClashTVIPCChannel {
         if object["error"] is String { return true }
         if object["accepted"] as? Bool == true { return false }
         switch command {
-        case "reload", "setMode", "select", "unfix", "closeAll", "recordMemoryPressureEvidence":
+        case "reload", "setMode", "select", "unfix", "closeAll", "recordMemoryPressureEvidence", "urltestSweepStop":
             return object["ok"] as? Bool == true
         case "hello":
             return object["schemaVersion"] is NSNumber && object["coreVersion"] is String
@@ -3319,6 +3719,9 @@ actor ClashTVIPCChannel {
          
         case "ruleProviders": return object["providers"] is [String: Any]
         case "urltest": return object["delay"] is NSNumber
+         
+        case "urltestSweep": return object["sweep"] is NSNumber && object["count"] is NSNumber
+        case "urltestSweepRead": return object["delays"] is [Any] && object["done"] as? Bool != nil
         case "dnsQuery": return object["Status"] is NSNumber
         case "close": return object["closed"] is NSNumber
         case "proxyShareStart", "proxyShareStop", "proxyShareStatus":

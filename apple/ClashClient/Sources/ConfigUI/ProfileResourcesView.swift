@@ -7,7 +7,11 @@ struct ProfileResourcesView: View {
     let profile: Profile
     let canManageProviders: Bool
     @ObservedObject private var vpn: VPNController
-    @ObservedObject private var command: ClashCommandClient
+     
+     
+     
+     
+    private let command: ClashCommandClient
 
      
      
@@ -26,7 +30,7 @@ struct ProfileResourcesView: View {
         self.profile = profile
         self.canManageProviders = canManageProviders
         _vpn = ObservedObject(wrappedValue: vpn)
-        _command = ObservedObject(wrappedValue: command)
+        self.command = command
         guard let sourceYAML else {
             summary = nil
             summaryError = .sourceUnavailable
@@ -344,8 +348,9 @@ struct ProfileProviderDefinitionsView: View {
              
             isDirty: draft?.hasUnsavedChanges == true,
             isBusy: isSaving,
-            save: { completion in
-                completion(commit())
+             
+            saveAnswering: { answer in
+                answer(commit() ? .saved : .refused(nil))
             },
              
              
@@ -640,7 +645,8 @@ struct ProfileProviderDefinitionEditorView: View {
             if let catalog = syntaxCatalog?.fieldCatalog {
                 let layout = ProviderFieldCatalog.layout(
                     of: ProxyNodeCatalog.json(draft.mapping), base: base, in: catalog,
-                    drawnElsewhere: drawnElsewhere, unsupported: unsupported).splittingOffThePlatformsRows()
+                    drawnElsewhere: drawnElsewhere, unsupported: unsupported)
+                    .splittingOffThePlatformsRows(in: ProxyNodeCatalog.json(draft.mapping))
                  
                  
                 let sections = ProxyNodeCatalogSections.sections(of: layout, layoutPath: base, catalog: catalog,
@@ -756,7 +762,7 @@ struct ProfileProviderDefinitionEditorView: View {
             },
             discard: {}
         )
-        .clashProductModalRoot(title: editorTitle)
+        .clashProductModalRoot(title: .copy(editorTitle))
     }
 
      
@@ -1014,6 +1020,8 @@ private struct ProviderHeadersEditorView: View {
      
     @State private var openedWith: [ProviderHeaderDraft] = []
     @State private var errorMessage = ""
+     
+    @State private var asksBeforeLeaving = false
 
     init(draft: ProfileProviderDefinitionEditorDraft) {
         self.draft = draft
@@ -1092,7 +1100,13 @@ private struct ProviderHeadersEditorView: View {
         } message: {
             Text(clash: .copy(errorMessage))
         }
-        .clashProductModalChild(title: "Request Headers")
+         
+         
+         
+        .clashProductModalChild(title: "Request Headers", backAction: {
+            if rows == openedWith { closeAfterCommit() } else { asksBeforeLeaving = true }
+        })
+        .asksBeforeDroppingUntaken($asksBeforeLeaving, save: persist, discard: closeAfterCommit)
              
              
              
@@ -1328,6 +1342,8 @@ private struct ProviderInlineRulePayloadView: View {
      
      
     @State private var openedWith: [ProviderInlineRuleRow] = []
+     
+    @State private var asksBeforeLeaving = false
 
     init(draft: ProfileProviderDefinitionEditorDraft) {
         self.draft = draft
@@ -1401,7 +1417,11 @@ private struct ProviderInlineRulePayloadView: View {
             }
         }
         .accessibilityIdentifier("provider-definition.inline.rule-payload")
-        .clashProductModalChild(title: "Inline Rules")
+         
+        .clashProductModalChild(title: "Inline Rules", backAction: {
+            if rows == openedWith { closeAfterCommit() } else { asksBeforeLeaving = true }
+        })
+        .asksBeforeDroppingUntaken($asksBeforeLeaving, save: persist, discard: closeAfterCommit)
              
              
              

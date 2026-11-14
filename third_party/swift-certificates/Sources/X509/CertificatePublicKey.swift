@@ -1,0 +1,385 @@
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+import SwiftASN1
+@preconcurrency import Crypto
+import _CryptoExtras
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
+import Foundation
+#endif
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate {
+     
+     
+     
+     
+     
+    public struct PublicKey {
+        @usableFromInline
+        var backing: BackingPublicKey
+
+        @inlinable
+        internal init(spki: SubjectPublicKeyInfo) throws {
+            switch spki.algorithmIdentifier {
+            case .p256PublicKey:
+                let key = try P256.Signing.PublicKey(x963Representation: spki.key.bytes)
+                self.backing = .p256(key)
+            case .p384PublicKey:
+                let key = try P384.Signing.PublicKey(x963Representation: spki.key.bytes)
+                self.backing = .p384(key)
+            case .p521PublicKey:
+                let key = try P521.Signing.PublicKey(x963Representation: spki.key.bytes)
+                self.backing = .p521(key)
+            case .rsaKey:
+                 
+                 
+                 
+                _ = try RSAPKCS1PublicKey(derEncoded: spki.key.bytes)
+                let key = try _RSA.Signing.PublicKey(derRepresentation: spki.key.bytes)
+                self.backing = .rsa(key)
+            case .ed25519:
+                let key = try Curve25519.Signing.PublicKey(rawRepresentation: spki.key.bytes)
+                self.backing = .ed25519(key)
+            default:
+                throw CertificateError.unsupportedPublicKeyAlgorithm(reason: "\(spki.algorithmIdentifier)")
+            }
+        }
+
+        @inlinable
+        internal init(backing: BackingPublicKey) {
+            self.backing = backing
+        }
+
+         
+         
+        @inlinable
+        public init(_ p256: P256.Signing.PublicKey) {
+            self.backing = .p256(p256)
+        }
+
+         
+         
+        @inlinable
+        public init(_ p384: P384.Signing.PublicKey) {
+            self.backing = .p384(p384)
+        }
+
+         
+         
+        @inlinable
+        public init(_ p521: P521.Signing.PublicKey) {
+            self.backing = .p521(p521)
+        }
+
+         
+         
+        @inlinable
+        public init(_ rsa: _RSA.Signing.PublicKey) {
+            self.backing = .rsa(rsa)
+        }
+
+         
+         
+        @inlinable
+        public init(_ ed25519: Curve25519.Signing.PublicKey) {
+            self.backing = .ed25519(ed25519)
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.PublicKey {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @inlinable
+    public func isValidSignature(_ signature: Certificate.Signature, for certificate: Certificate) -> Bool {
+        return self.isValidSignature(
+            signature,
+            for: certificate.tbsCertificateBytes,
+            signatureAlgorithm: certificate.signatureAlgorithm
+        )
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @inlinable
+    public func isValidSignature(_ signature: Certificate.Signature, for csr: CertificateSigningRequest) -> Bool {
+        return self.isValidSignature(signature, for: csr.infoBytes, signatureAlgorithm: csr.signatureAlgorithm)
+    }
+
+    @inlinable
+    internal func isValidSignature<Bytes: DataProtocol>(
+        _ signature: Certificate.Signature,
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) -> Bool {
+        switch self.backing {
+        case .p256(let p256):
+            return p256.isValidSignature(signature, for: bytes, signatureAlgorithm: signatureAlgorithm)
+        case .p384(let p384):
+            return p384.isValidSignature(signature, for: bytes, signatureAlgorithm: signatureAlgorithm)
+        case .p521(let p521):
+            return p521.isValidSignature(signature, for: bytes, signatureAlgorithm: signatureAlgorithm)
+        case .rsa(let rsa):
+            return rsa.isValidSignature(signature, for: bytes, signatureAlgorithm: signatureAlgorithm)
+        case .ed25519(let ed25519):
+            return ed25519.isValidSignature(signature, for: bytes, signatureAlgorithm: signatureAlgorithm)
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.PublicKey: Hashable {}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.PublicKey: Sendable {}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.PublicKey: CustomStringConvertible {
+    public var description: String {
+        switch self.backing {
+        case .p256:
+            return "P256.PublicKey"
+        case .p384:
+            return "P384.PublicKey"
+        case .p521:
+            return "P521.PublicKey"
+        case .rsa(let publicKey):
+            return "RSA\(publicKey.keySizeInBits).PublicKey"
+        case .ed25519:
+            return "Ed25519.PublicKey"
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.PublicKey {
+    @usableFromInline
+    enum BackingPublicKey: Hashable, Sendable {
+        case p256(Crypto.P256.Signing.PublicKey)
+        case p384(Crypto.P384.Signing.PublicKey)
+        case p521(Crypto.P521.Signing.PublicKey)
+        case rsa(_CryptoExtras._RSA.Signing.PublicKey)
+        case ed25519(Curve25519.Signing.PublicKey)
+
+        @inlinable
+        static func == (lhs: BackingPublicKey, rhs: BackingPublicKey) -> Bool {
+            switch (lhs, rhs) {
+            case (.p256(let l), .p256(let r)):
+                return l.rawRepresentation == r.rawRepresentation
+            case (.p384(let l), .p384(let r)):
+                return l.rawRepresentation == r.rawRepresentation
+            case (.p521(let l), .p521(let r)):
+                return l.rawRepresentation == r.rawRepresentation
+            case (.rsa(let l), .rsa(let r)):
+                return l.derRepresentation == r.derRepresentation
+            case (.ed25519(let l), .ed25519(let r)):
+                return l.rawRepresentation == r.rawRepresentation
+            default:
+                return false
+            }
+        }
+
+        @inlinable
+        func hash(into hasher: inout Hasher) {
+            switch self {
+            case .p256(let digest):
+                hasher.combine(0)
+                hasher.combine(digest.rawRepresentation)
+            case .p384(let digest):
+                hasher.combine(1)
+                hasher.combine(digest.rawRepresentation)
+            case .p521(let digest):
+                hasher.combine(2)
+                hasher.combine(digest.rawRepresentation)
+            case .rsa(let digest):
+                hasher.combine(3)
+                hasher.combine(digest.derRepresentation)
+            case .ed25519(let digest):
+                hasher.combine(4)
+                hasher.combine(digest.rawRepresentation)
+            }
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension SubjectPublicKeyInfo {
+    @inlinable
+    init(_ publicKey: Certificate.PublicKey) {
+        let algorithmIdentifier: AlgorithmIdentifier
+        let key: ASN1BitString
+
+        switch publicKey.backing {
+        case .p256(let p256):
+            algorithmIdentifier = .p256PublicKey
+            key = .init(bytes: ArraySlice(p256.x963Representation))
+        case .p384(let p384):
+            algorithmIdentifier = .p384PublicKey
+            key = .init(bytes: ArraySlice(p384.x963Representation))
+        case .p521(let p521):
+            algorithmIdentifier = .p521PublicKey
+            key = .init(bytes: ArraySlice(p521.x963Representation))
+        case .rsa(let rsa):
+            algorithmIdentifier = .rsaKey
+            key = .init(bytes: ArraySlice(rsa.pkcs1DERRepresentation))
+        case .ed25519(let ed25519):
+            algorithmIdentifier = .ed25519
+            key = .init(bytes: ArraySlice(ed25519.rawRepresentation))
+        }
+
+        self.algorithmIdentifier = algorithmIdentifier
+        self.key = key
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.PublicKey {
+     
+     
+     
+    @inlinable
+    public var subjectPublicKeyInfoBytes: ArraySlice<UInt8> {
+        SubjectPublicKeyInfo(self).key.bytes
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P256.Signing.PublicKey {
+     
+     
+     
+     
+     
+     
+    public init?(_ key: Certificate.PublicKey) {
+        guard case .p256(let inner) = key.backing else {
+            return nil
+        }
+        self = inner
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P384.Signing.PublicKey {
+     
+     
+     
+     
+     
+     
+    public init?(_ key: Certificate.PublicKey) {
+        guard case .p384(let inner) = key.backing else {
+            return nil
+        }
+        self = inner
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P521.Signing.PublicKey {
+     
+     
+     
+     
+     
+     
+    public init?(_ key: Certificate.PublicKey) {
+        guard case .p521(let inner) = key.backing else {
+            return nil
+        }
+        self = inner
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension _RSA.Signing.PublicKey {
+     
+     
+     
+     
+     
+     
+    public init?(_ key: Certificate.PublicKey) {
+        guard case .rsa(let inner) = key.backing else {
+            return nil
+        }
+        self = inner
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Curve25519.Signing.PublicKey {
+     
+     
+     
+     
+     
+     
+    public init?(_ key: Certificate.PublicKey) {
+        guard case .ed25519(let inner) = key.backing else {
+            return nil
+        }
+        self = inner
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.PublicKey: PEMParseable, PEMSerializable {
+    @inlinable
+    public static var defaultPEMDiscriminator: String {
+        return "PUBLIC KEY"
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.PublicKey: DERImplicitlyTaggable {
+    @inlinable
+    public static var defaultIdentifier: SwiftASN1.ASN1Identifier {
+        SubjectPublicKeyInfo.defaultIdentifier
+    }
+
+    @inlinable
+    public init(derEncoded: SwiftASN1.ASN1Node, withIdentifier identifier: SwiftASN1.ASN1Identifier) throws {
+        try self.init(spki: try SubjectPublicKeyInfo(derEncoded: derEncoded, withIdentifier: identifier))
+    }
+
+    @inlinable
+    public func serialize(
+        into coder: inout SwiftASN1.DER.Serializer,
+        withIdentifier identifier: SwiftASN1.ASN1Identifier
+    ) throws {
+        let spki = SubjectPublicKeyInfo(self)
+        try spki.serialize(into: &coder, withIdentifier: identifier)
+    }
+}

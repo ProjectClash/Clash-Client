@@ -151,6 +151,25 @@ final class ProfilesViewModel: ObservableObject {
     private var editableSourceCache: [String: Bool] = [:]
     private(set) var editableSourceStatsForTesting = 0
     @PublishedWhenChanged private(set) var savedConfigurationGeneration: UInt64 = 0
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private(set) var publishedGenerations: [String: UInt64] = [:]
+    func publishedGeneration(of profileID: String) -> UInt64 { publishedGenerations[profileID] ?? 0 }
+     
+     
+    private func notePublished<IDs: Sequence>(_ ids: IDs) where IDs.Element == String {
+        let next = savedConfigurationGeneration &+ 1
+        for id in ids { publishedGenerations[id] = next }
+        savedConfigurationGeneration = next
+    }
     @PublishedWhenChanged private(set) var activeProfileID: String? = nil
     @PublishedWhenChanged private(set) var busyProfileID: String? = nil {
         didSet {
@@ -367,7 +386,7 @@ final class ProfilesViewModel: ObservableObject {
                             self.nodeLibraryUpdate?.progress = ClashCopy.string(key, locale: locale)
                                 + " \(index) / \(total) · " + name
                         }
-                    }, describe: { Self.failureLine($0, $1, locale: locale) })
+                    }, naming: { $0.displayLabel(locale: locale) }, describe: { Self.failureLine($0, $1, locale: locale) })
                 failures = result.failures
                  
                  
@@ -380,7 +399,8 @@ final class ProfilesViewModel: ObservableObject {
                  
                  
                 let take = await self.takeUpdatedCollections(
-                    result.updatedEntries, failed: result.failedEntries, coreOwned: result.coreOwned, locale: locale)
+                    result.updatedEntries, failed: result.failedEntries, coreOwned: result.coreOwned, scripts: .silent,
+                    locale: locale)
                 failures = Self.joiningReasons(failures, take.failures)
                 (updated, total) = NodeLibraryUpdateRun.outcome(result, sources: sourceTotal, take: take)
                 unconfirmed = CollectionUpdateRun.unconfirmed(
@@ -502,8 +522,15 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+     
+     
+     
+     
+     
+     
     @discardableResult
-    func updateRuleCollections(_ entries: [ConfigurationCollectionEntry], locale: Locale = .current) -> Task<Void, Never> {
+    func updateRuleCollections(_ entries: [ConfigurationCollectionEntry], scripts: ScriptEngine.Caller = .surfaced,
+                               locale: Locale = .current) -> Task<Void, Never> {
         if let running = ruleCollectionUpdateTask { return running }
         let targets = entries.filter {
             $0.id.kind == .rules && $0.collection.type == "http" && $0.source.isRetainedSnapshot != true
@@ -549,7 +576,7 @@ final class ProfilesViewModel: ObservableObject {
                     self.landedRuleCollections = []
                     run.progress = Self.ruleSetProgress(done, total, name, locale: locale)
                     self.ruleCollectionUpdate = run
-                }, describe: { Self.failureLine($0, $1, locale: locale) })
+                }, naming: { $0.displayLabel(locale: locale) }, describe: { Self.failureLine($0, $1, locale: locale) })
                  
                  
                  
@@ -571,7 +598,8 @@ final class ProfilesViewModel: ObservableObject {
                  
                  
                 let take = await self.takeUpdatedCollections(
-                    result.updatedEntries, failed: result.failedEntries, coreOwned: result.coreOwned, locale: locale, step: { step in
+                    result.updatedEntries, failed: result.failedEntries, coreOwned: result.coreOwned, scripts: scripts,
+                    locale: locale, step: { step in
                         guard self.ruleCollectionUpdate?.id == runID else { return }
                         self.ruleCollectionUpdate?.progress = Self.takeProgress(step, locale: locale)
                     })
@@ -644,7 +672,10 @@ final class ProfilesViewModel: ObservableObject {
      
     nonisolated static func cutShortReasons(_ result: ConfigurationCollectionContentBridge.BatchResult, locale: Locale) -> [String] {
         result.failedEntries.compactMap { entry in
-            let subject = entry.source.label + " / " + entry.collection.name
+             
+             
+             
+            let subject = entry.source.displayLabel(locale: locale) + " / " + entry.collection.name
             let prefix = labelled(subject, "", locale: locale)
             return result.failures.contains { $0.hasPrefix(prefix) } ? nil
                 : labelled(subject, ClashCopy.string("cancelled", locale: locale), locale: locale)
@@ -711,8 +742,9 @@ final class ProfilesViewModel: ObservableObject {
     func applyUpdatedCollectionsToConfigurationInUse(_ updated: [ConfigurationCollectionEntry],
                                                      failed: [ConfigurationCollectionEntry] = [],
                                                      coreOwned: [ConfigurationCollectionEntry] = [],
+                                                     scripts: ScriptEngine.Caller,
                                                      locale: Locale = .current) async -> [String] {
-        await takeUpdatedCollections(updated, failed: failed, coreOwned: coreOwned, locale: locale).failures
+        await takeUpdatedCollections(updated, failed: failed, coreOwned: coreOwned, scripts: scripts, locale: locale).failures
     }
 
      
@@ -938,9 +970,15 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+     
+     
+     
+     
+     
     func takeUpdatedCollections(_ updated: [ConfigurationCollectionEntry],
                                 failed: [ConfigurationCollectionEntry] = [],
                                 coreOwned: [ConfigurationCollectionEntry] = [],
+                                scripts: ScriptEngine.Caller = .surfaced,
                                 locale: Locale = .current,
                                 step: (CollectionTakeStep) -> Void = { _ in }) async -> CollectionTake {
         var take = CollectionTake()
@@ -1020,7 +1058,7 @@ final class ProfilesViewModel: ObservableObject {
                 let many = try await ProviderRefreshService.publishMany(
                     names: running.forced.sorted(), republishingAnyway: !running.fromLibrary.isEmpty,
                     profile: profile, store: store, container: container, vpn: vpn, expectedActive: active,
-                    downloadRound: round)
+                    downloadRound: round, scripts: scripts)
                 for failure in many.failed {
                     failures.append(Self.failureLine(configurationName + " / " + failure.name, failure.error, locale: locale))
                     missed.insert(failure.name)
@@ -1045,7 +1083,7 @@ final class ProfilesViewModel: ObservableObject {
                     if !notTaken.isEmpty {
                         let again = try await ProviderRefreshService.publishMany(
                             names: notTaken, profile: profile, store: store, container: container, vpn: vpn,
-                            expectedActive: pointer, downloadRound: round)
+                            expectedActive: pointer, downloadRound: round, scripts: scripts)
                         for failure in again.failed {
                             failures.append(Self.failureLine(configurationName + " / " + failure.name, failure.error, locale: locale))
                             missed.insert(failure.name)
@@ -1151,7 +1189,7 @@ final class ProfilesViewModel: ObservableObject {
              
              
             let report = await ProviderUpdater.update(targets, in: .live(
-                profile: profile, store: store, container: container, vpn: vpn,
+                profile: profile, store: store, container: container, vpn: vpn, scripts: scripts,
                 stillInUse: { !CollectionTake.movedOn(store.activeIdentityOrNil(), from: active) }))
             Self.logTakeStep("core", since: coreUpdating, "sets=\(targets.count) tunnel=\(tunnelIsRunning)")
             for name in targets {
@@ -1290,6 +1328,10 @@ final class ProfilesViewModel: ObservableObject {
          
          
         var fetchesRuleSets = false
+         
+         
+         
+        var fetchesFresh = false
     }
 
      
@@ -1414,12 +1456,19 @@ final class ProfilesViewModel: ObservableObject {
         let label = active?.label
          
          
+         
+         
+        let storedGlobal = active.map { ClashTunnelOutboundMode.StoredGlobalChoice(
+            selectedMap: $0.selectedMap, currentGroupName: $0.currentGroupName,
+            globalPickedByReader: $0.globalPickedByReader ?? false) }
+         
+         
         widgetFactsPublication?.cancel()
         widgetFactsPublication = Task { [weak self] in
             guard let self else { return }
             let document = await self.widgetFactsDocument(for: active)
             guard !Task.isCancelled else { return }
-            ClashWidgetFactsPublisher.publish(activeLabel: label, mode: mode, effectiveYAML: document)
+            ClashWidgetFactsPublisher.publish(activeLabel: label, mode: mode, storedGlobal: storedGlobal, effectiveYAML: document)
         }
     }
 
@@ -1962,6 +2011,13 @@ final class ProfilesViewModel: ObservableObject {
                 }
                 catch { self?.recordFailure(error,context:.localImport,operation:nil,preservesLastKnownGood:true) }
             }
+             
+             
+            Task { [weak self] in
+                await self?.launchHousekeeping?.value
+                await self?.linkWrittenSetsPastTheLimit()
+                await self?.relinkSetsReadAsClassicalAtLaunch()
+            }
         }
          
          
@@ -2249,6 +2305,12 @@ final class ProfilesViewModel: ObservableObject {
              
              
              
+            do {
+                try await register { current in ConfigurationLibraryStore.markingSchemePageViewsPrivate(in: current) }
+            } catch { failures.append(error.localizedDescription) }
+             
+             
+             
              
             do { try await upgradeBuiltinSchemes() }
             catch { failures.append(error.localizedDescription) }
@@ -2386,6 +2448,183 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+     
+     
+     
+     
+     
+    func linkWrittenSetsPastTheLimit() async {
+        #if os(iOS)
+        guard !Self.linkedWrittenSetsThisProcess, !appIsInBackground(), let library = configurationLibraryStore else { return }
+        Self.linkedWrittenSetsThisProcess = true
+        guard let toRead = try? await Task.detached(priority: .utility, operation: { try library.localRuleSetsToLink() }).value
+        else { return }
+        var judged = UserDefaults.standard.dictionary(forKey: Self.judgedWithoutLinkKey) as? [String: String] ?? [:]
+        var read: [ConfigurationLocalRuleSet] = []
+        for set in toRead where judged[set.id] != Self.fingerprint(set) {
+            guard let content = try? await ConfigurationTowerRuleReader.ruleSet(set.input) else { continue }
+            guard let link = content.link else { judged[set.id] = Self.fingerprint(set); continue }
+            var found = set
+            found.link = link
+            read.append(found)
+        }
+        UserDefaults.standard.set(judged, forKey: Self.judgedWithoutLinkKey)
+        guard !toRead.isEmpty else { return }
+        ClashLogStore.shared.append(#"rule sets past the written-in limit: \#(toRead.count), links read: \#(read.count)"#, stream: .app)
+        guard !read.isEmpty else { return }
+        await settleLibraryHousekeeping()
+        guard !changingConfigurationLibrary else { return }
+        changingConfigurationLibrary = true
+        defer { changingConfigurationLibrary = false }
+        do {
+            let current = try await Task.detached { try library.snapshot() }.value
+            guard let prepared = try await Task.detached(priority: .utility, operation: {
+                try library.prepareLinkingWrittenSets(read, expectedGeneration: current.generation,
+                    resolveInput: ConfigurationCenterSourceBridge.boundInput)
+            }).value else { return }
+            try await saveConfigurationPlan(candidate: prepared.candidate, payloads: prepared.payloads,
+                compositions: prepared.compositions, generation: current.generation)
+        } catch {
+            ClashLogStore.shared.append(#"rule sets past the written-in limit: not linked: \#(error.localizedDescription)"#, stream: .app)
+        }
+        #endif
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func relinkSetsReadAsClassicalAtLaunch() async {
+        guard !Self.relinkedClassicalThisProcess, !appIsInBackground() else { return }
+        Self.relinkedClassicalThisProcess = true
+        let relinked = await relinkSetsReadAsClassical(judged: .standard)
+        if relinked > 0 {
+            ClashLogStore.shared.append(#"rule sets saved as classical rules and read again as domains or address ranges: \#(relinked)"#, stream: .app)
+        }
+    }
+
+     
+     
+     
+    @discardableResult
+    func relinkSetsReadAsClassical(judged defaults: UserDefaults,
+                                   read: @escaping (String) async throws -> ConfigurationRuleSetContent = {
+                                       try await ConfigurationTowerRuleReader.ruleSet($0)
+                                   }) async -> Int {
+        guard let library = configurationLibraryStore,
+              let found = try? await Task.detached(priority: .utility, operation: { () -> [(set: ConfigurationLocalRuleSet, behavior: String)] in
+                  Self.setsReadAsClassicalThatAreNot(try library.snapshot().localRuleSets ?? [])
+              }).value, !found.isEmpty else { return 0 }
+        var judged = defaults.dictionary(forKey: Self.judgedAsClassicalKey) as? [String: String] ?? [:]
+        var relinked = 0
+        for (set, lines) in found where judged[set.id] != Self.fingerprint(set) {
+            let content = try? await read(set.input)
+            var saved = set
+            if let content, let link = content.link, link.behavior != "classical" {
+                saved.rules = content.rules
+                saved.link = link
+                saved.behavior = content.behavior
+            } else if set.link == nil {
+                 
+                 
+                 
+                 
+                 
+                saved.behavior = lines
+            } else if content == nil {
+                continue
+            } else {
+                judged[set.id] = Self.fingerprint(set)
+                continue
+            }
+            let outcome = saved.link.map { $0.behavior } ?? #"written in as \#(lines)"#
+            do {
+                 
+                 
+                 
+                let generation = try await Task.detached { () -> UInt64? in
+                    let now = try library.snapshot()
+                    return now.localRuleSets?.first(where: { $0.id == set.id }) == set ? now.generation : nil
+                }.value
+                guard let generation else { continue }
+                _ = try await saveConfigurationLocalRuleSet(saved, generation: generation)
+                relinked += 1
+            } catch {
+                ClashLogStore.shared.append(#"rule set \#(set.id) read again as \#(outcome): not saved: \#(error.localizedDescription)"#, stream: .app)
+            }
+        }
+        defaults.set(judged, forKey: Self.judgedAsClassicalKey)
+        return relinked
+    }
+
+     
+     
+     
+     
+    nonisolated static func setsReadAsClassicalThatAreNot(_ sets: [ConfigurationLocalRuleSet])
+        -> [(set: ConfigurationLocalRuleSet, behavior: String)] {
+        sets.compactMap { set in
+            guard !set.rules.isEmpty else { return nil }
+            if let link = set.link {
+                guard link.behavior == "classical", link.format != "mrs" else { return nil }
+            } else {
+                let input = set.input.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard set.behavior == nil, !input.contains("\n"),
+                      input.hasPrefix("http://") || input.hasPrefix("https://") else { return nil }
+            }
+            guard let behavior = ClashRuleSetSniff.ruleSet(in: Data(set.rules.joined(separator: "\n").utf8))?.behavior,
+                  behavior == "domain" || behavior == "ipcidr" else { return nil }
+            return (set, behavior)
+        }
+    }
+
+    nonisolated(unsafe) private static var relinkedClassicalThisProcess = false
+    private static let judgedAsClassicalKey = "clash.rules.linkedAsClassicalJudged"
+
+    #if os(iOS)
+    nonisolated(unsafe) private static var linkedWrittenSetsThisProcess = false
+    private static let judgedWithoutLinkKey = "clash.rules.writtenInJudgedWithoutLink"
+    #endif
+     
+     
+    private static func fingerprint(_ set: ConfigurationLocalRuleSet) -> String {
+        [set.input, String(set.rules.count), set.rules.first ?? "", set.rules.last ?? ""].joined(separator: "\n")
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     func upgradeBuiltinSchemes() async throws {
         guard let library = configurationLibraryStore else { return }
         let current = try await Task.detached { try library.snapshot() }.value
@@ -2473,10 +2712,11 @@ final class ProfilesViewModel: ObservableObject {
          
          
          
+         
+         
+         
         let takes: [String: String] = appLayerMoved ? [:] : Dictionary(uniqueKeysWithValues: installed.map { profile in
-            var patch = moving.patch
-            if moving.dnsGated, composed.contains(profile.id), !scripted(profile) { patch.clearDNS() }
-            return (profile.id, patch.patchJSON)
+            (profile.id, moving.patch.patchJSON)
         })
          
          
@@ -2498,7 +2738,7 @@ final class ProfilesViewModel: ObservableObject {
             var result: [String: (applied: String, output: String)] = [:]
             for profile in installed where compared.contains(profile.id) {
                 let stages = captured[profile.id].flatMap {
-                    try? ProfileRuntimeConfigBuilder.buildProductionStages(raw: $0, profile: profile, runtimeOverride: runtime)
+                    try? ProfileRuntimeConfigBuilder.buildProductionStages(raw: $0, profile: profile, runtimeOverride: runtime, scripts: .silent)
                 }
                 result[profile.id] = (takes[profile.id] ?? "", stages?.beforeClientRuntimePolicy ?? "")
             }
@@ -2549,7 +2789,7 @@ final class ProfilesViewModel: ObservableObject {
                     }
                     guard let old = before[id]?.output,
                           let new = try? ProfileRuntimeConfigBuilder.buildProductionStages(raw: replacement.yaml,
-                              profile: profile, runtimeOverride: after).beforeClientRuntimePolicy,
+                              profile: profile, runtimeOverride: after, scripts: .silent).beforeClientRuntimePolicy,
                           Self.sameRuntimeDocument(old, new) else { return id }
                     return nil
                 }
@@ -2665,7 +2905,7 @@ final class ProfilesViewModel: ObservableObject {
             for profile in installed {
                 guard let raw = captured[profile.id],
                       let built = try? ProfileRuntimeConfigBuilder.buildProductionStages(
-                          raw: raw, profile: profile, runtimeOverride: runtime).beforeClientRuntimePolicy else { continue }
+                          raw: raw, profile: profile, runtimeOverride: runtime, scripts: .silent).beforeClientRuntimePolicy else { continue }
                 result[profile.id] = built
             }
             return result
@@ -2673,7 +2913,6 @@ final class ProfilesViewModel: ObservableObject {
          
          
         var onPage: Set<String> = []
-        let label = Self.ownSchemeLabel()
         for profile in installed where before[profile.id] != nil && !onPage.contains(profile.id) {
             let snapshot = try await Task.detached(priority: .utility) { try library.snapshot() }.value
             guard try Self.settingsPage(of: profile, in: snapshot, scripted: isScripted(profile)) != nil else { continue }
@@ -2691,7 +2930,7 @@ final class ProfilesViewModel: ObservableObject {
             let prepared: PreparedConfigurationSourceUpdate
             do {
                 prepared = try await Task.detached(priority: .utility) {
-                    try library.prepareSchemePageEdit(profileID: profile.id, expectedGeneration: snapshot.generation, label: label,
+                    try library.prepareSchemePageEdit(profileID: profile.id, expectedGeneration: snapshot.generation,
                                                       resolveInput: ConfigurationCenterSourceBridge.BoundInputs().resolve) { page in
                         for key in edits.keys.sorted() { page = page.setting(path: [key], to: edits[key]) }
                     }
@@ -2716,7 +2955,7 @@ final class ProfilesViewModel: ObservableObject {
                 replacements.allSatisfy { replacement in
                     guard let old = before[replacement.profile.id] else { return true }
                     guard let new = try? ProfileRuntimeConfigBuilder.buildProductionStages(raw: replacement.yaml,
-                              profile: replacement.profile, runtimeOverride: after).beforeClientRuntimePolicy else { return false }
+                              profile: replacement.profile, runtimeOverride: after, scripts: .silent).beforeClientRuntimePolicy else { return false }
                     return Self.sameRuntimeDocument(old, new)
                 }
             }.value
@@ -2841,8 +3080,41 @@ final class ProfilesViewModel: ObservableObject {
      
      
     func fetchConfigurationSource(url: String, label: String, nodesOnly: Bool = false) async throws -> ConfigurationSourcePayload {
+        try await fetchConfigurationSource(url: url, label: label, nodesOnly: nodesOnly, unreadBody: nil)
+    }
+
+     
+     
+     
+     
+    func fetchRuleLibrarySource(url: String, label: String) async throws -> ConfigurationSourcePayload {
+         
+         
+        var url = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = ConfigurationTowerRuleReader.normalizedURL(url)
+        if raw != url {
+            let held = try? await Task.detached(priority: .userInitiated) { [configurationLibraryStore, url] in
+                try configurationLibraryStore?.snapshot().availableSources.contains { $0.origin == .subscription(url) }
+            }.value
+            if held != true { url = raw }
+        }
+        let body = UnreadBody()
+        do {
+            return try await fetchConfigurationSource(url: url, label: label, nodesOnly: false,
+                                                      unreadBody: { body.data = $0 })
+        } catch {
+            guard let data = body.data, let found = await ConfigurationTowerRuleReader.ruleSet(in: data) else { throw error }
+            throw ConfigurationLinkIsARuleSet(found: found, link: url, underlying: error)
+        }
+    }
+
+    private final class UnreadBody: @unchecked Sendable { var data: Data? }
+
+    private func fetchConfigurationSource(url: String, label: String, nodesOnly: Bool,
+                                          unreadBody: ((Data) -> Void)?) async throws -> ConfigurationSourcePayload {
         let fetched = try await ConfigurationCenterSourceBridge.fetch(url: url, label: label, credentials: credentials,
-                                                                      downloader: downloader, nodesOnly: nodesOnly)
+                                                                      downloader: downloader, nodesOnly: nodesOnly,
+                                                                      unreadBody: unreadBody)
         guard let library = configurationLibraryStore,
               let existing = try await Task.detached(priority: .userInitiated, operation: {
                   try library.snapshot().availableSources.first { $0.origin == .subscription(url) }
@@ -2860,9 +3132,9 @@ final class ProfilesViewModel: ObservableObject {
         }
         let payload: ConfigurationSourcePayload
         switch input {
-        case .link(let url):
+        case .link(let url, _):
             payload = try await fetchConfigurationSource(url: url, label: "", nodesOnly: nodesOnly)
-        case let .document(fileName, data):
+        case let .document(fileName, data, _):
             payload = try await Task.detached {
                  
                  
@@ -2883,7 +3155,7 @@ final class ProfilesViewModel: ObservableObject {
                 let names = ((ConfigTransforms.parsedRoot(forYAML: yaml)?.root["proxies"] as? [[String: Any]]) ?? [])
                     .compactMap { $0["name"] as? String }
                 return try ConfigurationCenterSourceBridge.payload(
-                    label: names.count == 1 ? names[0] : "Custom Nodes",
+                    label: names.count == 1 ? names[0] : ConfigurationBuiltins.customNodesName,
                     origin: .customNodes, original: Data(yaml.utf8), yaml: yaml
                 )
             }.value
@@ -2914,9 +3186,27 @@ final class ProfilesViewModel: ObservableObject {
         }
         let payload: ConfigurationSourcePayload
         switch input {
-        case .link(let url):
-            payload = try await fetchConfigurationSource(url: url, label: "")
-        case let .document(fileName, data):
+        case .link(let url, _):
+            do {
+                payload = try await fetchRuleLibrarySource(url: url, label: "")
+            } catch let set as ConfigurationLinkIsARuleSet {
+                 
+                 
+                 
+                guard let behavior = set.found.behavior else { throw set.underlying }
+                let stem = ClashRuleSetSniff.linkStem(set.link)
+                return try await addRuleSetSource(name: stem.isEmpty ? (URL(string: set.link)?.host ?? "") : stem,
+                                                  behavior: behavior, format: set.found.format, link: set.link)
+            }
+        case let .document(fileName, data, _):
+            if let found = await ConfigurationTowerRuleReader.ruleSet(in: data), let behavior = found.behavior {
+                 
+                 
+                let pasted = fileName == ProfileQuickAddInput.pastedDocumentName
+                return try await addRuleSetSource(name: pasted ? "" : (fileName as NSString).deletingPathExtension,
+                                                  behavior: behavior, format: found.format,
+                                                  fileData: data)
+            }
             payload = try await Task.detached {
                 try ConfigurationCenterSourceBridge.payload(label: fileName, origin: .file(fileName), original: data)
             }.value
@@ -2938,6 +3228,70 @@ final class ProfilesViewModel: ObservableObject {
             throw ConfigurationLibraryError.missingRules
         }
         return try await addConfigurationSource(value, generation: current.generation)
+    }
+
+     
+     
+     
+     
+    nonisolated static func ruleSetSourcePayload(name: String, behavior: String, format: String, link: String? = nil,
+                                                 file: (name: String, data: Data)? = nil) throws -> ConfigurationSourcePayload {
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, !title.contains(",") else { throw ConfigurationLibraryError.emptyName }
+        var definition = OrderedJSON.object([("type", .string(file == nil ? "http" : "file")), ("behavior", .string(behavior)),
+                                             ("format", .string(format))])
+        if let file { definition = definition.settingTopLevel("path", to: .string(file.name)) }
+        else {
+            guard let link, let url = URL(string: link), ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil
+            else { throw ConfigurationLibraryError.unreadable }
+            definition = definition.settingTopLevel("url", to: .string(link)).settingTopLevel("interval", to: .scalar("86400"))
+        }
+        let document = OrderedJSON.object([("rule-providers", .object([(title, definition)]))])
+        let serialized = document.serialized()
+        try ConfigTransforms.validateSource(serialized)
+        var record = ConfigurationSourceRecord(label: title, origin: .file(title + ".yaml"), suppliesNodes: false)
+        record.registersSuppliedRules = false; record.ruleProviderCount = 1
+        return ConfigurationSourcePayload(record: record, original: Data(serialized.utf8), documentJSON: serialized,
+                                          resourceFiles: file.map { [$0.name: $0.data] })
+    }
+
+     
+     
+     
+    private func addRuleSetSource(name: String, behavior: String, format: String, link: String? = nil,
+                                  fileData: Data? = nil) async throws -> ConfigurationLibrarySnapshot {
+        guard let library = configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
+        let current = try await Task.detached { try library.snapshot() }.value
+         
+         
+        if let link {
+            let held = try await Task.detached(priority: .userInitiated) {
+                current.availableSources.contains { record in
+                    guard !record.suppliesNodes, record.ruleProviderCount == 1,
+                          let payload = try? library.payload(ConfigurationSourceVersion(record)),
+                          case .object(let providers)? = (try? OrderedJSON.parse(payload.documentJSON))?.topLevelValue("rule-providers")
+                    else { return false }
+                    return providers.contains { $0.value.topLevelValue("url") == .string(link) }
+                }
+            }.value
+            if held { return current }
+        }
+        let taken = Set(current.availableSources.map(\.label))
+        let base = name.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: " ")
+         
+        let language = Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en")
+        let stem = base.isEmpty ? ClashCopy.string("Rule Set", locale: language) : base
+        var title = stem
+        var number = 2
+        while taken.contains(title) { title = "\(stem) \(number)"; number += 1 }
+        let found = ClashRuleSetSniff.Found(format: format, behavior: behavior)
+         
+         
+        let named: (name: String, data: Data)? = fileData.map { (name: ClashRuleSetSniff.fileName("", found: found), data: $0) }
+        let built = try await Task.detached(priority: .userInitiated) { [title] in
+            try Self.ruleSetSourcePayload(name: title, behavior: behavior, format: format, link: link, file: named)
+        }.value
+        return try await addConfigurationSource(built, generation: current.generation)
     }
 
      
@@ -3052,6 +3406,12 @@ final class ProfilesViewModel: ObservableObject {
         if !created.hadUserProfile, let profile = profiles.first(where: { $0.id == created.id }) {
             _ = await selectAndWait(profile)
         }
+        if created.originalHadNoRules {
+             
+             
+             
+            statusMessage = .copy("This link asked to run as the original configuration, but its content has no rules of its own. Default Rules are used instead.")
+        }
         return ProfileQuickAddOutcome(id: created.id, isFirstUserProfile: !created.hadUserProfile,
                                       runsAsOriginal: created.runsAsOriginal)
     }
@@ -3061,6 +3421,9 @@ final class ProfilesViewModel: ObservableObject {
         let id: String
         let runsAsOriginal: Bool
         let hadUserProfile: Bool
+         
+         
+        let originalHadNoRules: Bool
     }
 
      
@@ -3070,8 +3433,10 @@ final class ProfilesViewModel: ObservableObject {
         }
         let payload: ConfigurationSourcePayload
         var buildsOn: String?
+        let rules: InstallLinkRuleScheme?
         switch input {
-        case .link(let url):
+        case let .link(url, named):
+            rules = named
             payload = try await fetchConfigurationSource(url: url, label: "", nodesOnly: nodesOnly)
              
              
@@ -3081,7 +3446,8 @@ final class ProfilesViewModel: ObservableObject {
                 try await refreshLibrarySource(payload, replacing: existing)
                 buildsOn = existing.id
             }
-        case let .document(fileName, data):
+        case let .document(fileName, data, named):
+            rules = named
             payload = try await Task.detached {
                 try ConfigurationCenterSourceBridge.payload(label: fileName, origin: .file(fileName), original: data,
                                                             nodesOnly: nodesOnly)
@@ -3094,21 +3460,44 @@ final class ProfilesViewModel: ObservableObject {
         let (suppliesOwnRouting, resolvesItsNodesItself) = await Task.detached(priority: .userInitiated) {
             payload.routing
         }.value
-        let routed = ConfigurationCreationDraft.runsAsWritten(payload, suppliesOwnRouting: suppliesOwnRouting,
+         
+         
+         
+         
+         
+         
+        let routed: Bool
+        switch rules {
+        case nil:
+            routed = ConfigurationCreationDraft.runsAsWritten(payload, suppliesOwnRouting: suppliesOwnRouting,
                                                               resolvesItsNodesItself: resolvesItsNodesItself)
+        case .original?:
+            routed = suppliesOwnRouting
+        case .defaultRules?, .lazyRules?:
+            routed = false
+        }
+        let ruleID = rules == .lazyRules ? ConfigurationBuiltins.lazyRuleID : ConfigurationBuiltins.basicRuleID
         var draft = ConfigurationCreationDraft()
         if !routed, let buildsOn {
              
              
             draft.selectedSourceIDs = [buildsOn]
-            draft.selectedRuleID = ConfigurationBuiltins.basicRuleID
+            draft.selectedRuleID = ruleID
             draft.connectAfterCreation = false
             draft.step = .rules
-        } else {
+        } else if rules == nil {
              
              
             try draft.acceptNewImport(payload, suppliesOwnRouting: suppliesOwnRouting,
                                       resolvesItsNodesItself: resolvesItsNodesItself)
+        } else {
+             
+             
+             
+             
+            draft.selectedRuleID = ruleID
+            try draft.acceptInitialNodeImport(payload)
+            if routed { draft.useOriginal(payload) }
         }
          
          
@@ -3116,7 +3505,8 @@ final class ProfilesViewModel: ObservableObject {
         let generation = try await Task.detached { try library.snapshot().generation }.value
         let id = UUID().uuidString.lowercased()
         _ = try await createConfiguration(draft, generation: generation, id: id)
-        return QuickCreated(id: id, runsAsOriginal: draft.originalSourceID != nil, hadUserProfile: hadUserProfile)
+        return QuickCreated(id: id, runsAsOriginal: draft.originalSourceID != nil, hadUserProfile: hadUserProfile,
+                            originalHadNoRules: rules == .original && !routed)
     }
 
     func createConfiguration(_ draft: ConfigurationCreationDraft, generation: UInt64,
@@ -3569,6 +3959,8 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+     
+     
     func restoreConfigurationLibraryRemoval(_ removal: ConfigurationLibraryRemoval,
                                             expectedGeneration: UInt64) async throws -> ConfigurationLibrarySnapshot {
         await settleLibraryHousekeeping()
@@ -3576,9 +3968,22 @@ final class ProfilesViewModel: ObservableObject {
         guard let library = configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
         changingConfigurationLibrary = true
         defer { changingConfigurationLibrary = false }
-        return try await Task.detached(priority: .userInitiated) {
-            try library.restore(removal, expectedGeneration: expectedGeneration)
-        }.value
+         
+         
+         
+        var attempt = 0
+        while true {
+            let prepared = try await Task.detached(priority: .userInitiated) {
+                try library.prepareRestore(removal, resolveInput: ConfigurationCenterSourceBridge.boundInput)
+            }.value
+            do {
+                try await saveConfigurationPlan(candidate: prepared.candidate, payloads: prepared.payloads,
+                    compositions: prepared.compositions, generation: prepared.candidate.generation)
+                return try await Task.detached { try library.snapshot() }.value
+            } catch ConfigurationLibraryError.staleGeneration where attempt < 3 {
+                attempt += 1
+            }
+        }
     }
 
     func addConfigurationSource(_ source: ConfigurationSourcePayload, generation: UInt64) async throws -> ConfigurationLibrarySnapshot {
@@ -4112,7 +4517,7 @@ final class ProfilesViewModel: ObservableObject {
         noteLibraryFetchability(candidate)
         load()
         laps.mark("save.load")
-        savedConfigurationGeneration &+= 1
+        notePublished(compositions.keys)
          
          
          
@@ -4394,29 +4799,20 @@ final class ProfilesViewModel: ObservableObject {
          
          
          
+        func stands(_ selected: Bool) -> Bool {
+            selected
+                && activeProfileID == profile.id
+                && busyProfileID == nil && pendingActivation == nil && !isActivating
+                && !Task.isCancelled
+                && activationCancellationGeneration == cancellationGeneration
+                 
+                 
+                && stillWanted()
+        }
 #if os(macOS)
         let republishes = forceReactivation ? !(await largePublicationIsCurrent(profile)) : false
         let selected = await selectAndWait(profile, force: republishes, fetchesRuleSets: true)
-#else
-         
-         
-         
-        let ticket = verified.map { vpn.startTicket(continuing: $0) } ?? vpn.startTicket(asReader: asReader)
-        let selected = await vpn.preparingToStart {
-            let republishes = forceReactivation ? !(await self.largePublicationIsCurrent(profile)) : false
-            return await self.selectAndWait(profile, force: republishes, fetchesRuleSets: true)
-        }
-#endif
-        guard selected,
-              activeProfileID == profile.id,
-              busyProfileID == nil, pendingActivation == nil, !isActivating,
-              !Task.isCancelled,
-              activationCancellationGeneration == cancellationGeneration,
-               
-               
-              stillWanted()
-        else { return false }
-#if os(macOS)
+        guard stands(selected) else { return false }
          
          
          
@@ -4437,7 +4833,22 @@ final class ProfilesViewModel: ObservableObject {
         }
         return await vpn.start()
 #else
-        return await vpn.start(ticket: ticket)
+         
+         
+         
+        let ticket = verified.map { vpn.startTicket(continuing: $0) } ?? vpn.startTicket(asReader: asReader)
+         
+         
+         
+         
+         
+         
+        return await vpn.preparingToStart {
+            let republishes = forceReactivation ? !(await self.largePublicationIsCurrent(profile)) : false
+            let selected = await self.selectAndWait(profile, force: republishes, fetchesRuleSets: true)
+            guard stands(selected) else { return false }
+            return await self.vpn.start(ticket: ticket)
+        }
 #endif
     }
 
@@ -4528,7 +4939,7 @@ final class ProfilesViewModel: ObservableObject {
             statusMessage = .format("%@ saved", [updated.label])
             clearFailure()
             load()
-            savedConfigurationGeneration &+= 1
+            notePublished([updated.id])
 
         } catch {
             recordFailure(
@@ -4601,6 +5012,7 @@ final class ProfilesViewModel: ObservableObject {
                 selectedMap: profile.selectedMap,
                 currentGroupName: profile.currentGroupName,
                 unfoldedGroups: profile.unfoldedGroups,
+                globalPickedByReader: profile.globalPickedByReader,
                 override: profile.override,
                 activeRevision: nil,
                 order: profile.order + 1,
@@ -4685,10 +5097,10 @@ final class ProfilesViewModel: ObservableObject {
      
     func consume(_ request: ProfileImportRequest) {
         switch request {
-        case .subscription(let subscription):
-            installSubscription(subscription)
-        case let .configuration(fileName, yaml):
-            importSharedDocument(fileName: fileName, yaml: yaml)
+        case let .subscription(subscription, rules):
+            installSubscription(subscription, rules: rules)
+        case let .configuration(fileName, yaml, rules):
+            importSharedDocument(fileName: fileName, yaml: yaml, rules: rules)
         }
 #if os(tvOS)
         selectSoleProfileIfNeeded()
@@ -4699,7 +5111,11 @@ final class ProfilesViewModel: ObservableObject {
          
     }
 
-    func installSubscription(_ rawURL: String) {
+     
+     
+     
+     
+    func installSubscription(_ rawURL: String, rules: InstallLinkRuleScheme? = nil) {
         if let existing = profiles.first(where: {
             if case let .url(url) = $0.source { return url == rawURL }
             return false
@@ -4724,7 +5140,7 @@ final class ProfilesViewModel: ObservableObject {
         enqueueImport { [weak self] in
             guard let self else { return }
             do {
-                _ = try await self.quickCreate(.link(rawURL))
+                _ = try await self.quickCreate(.link(rawURL, rules: rules))
             } catch {
                 self.recordFailure(error, context: .subscription, operation: nil)
             }
@@ -4760,7 +5176,7 @@ final class ProfilesViewModel: ObservableObject {
         return try? Data(contentsOf: url, options: [.alwaysMapped])
     }
 
-    func importSharedDocument(fileName: String, yaml: String) {
+    func importSharedDocument(fileName: String, yaml: String, rules: InstallLinkRuleScheme? = nil) {
 #if os(tvOS)
         let label = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
         add(label: label.isEmpty ? "Imported Profile" : label, source: .file(fileName), rawYAML: yaml)
@@ -4774,7 +5190,7 @@ final class ProfilesViewModel: ObservableObject {
             guard let self else { return }
             let data = await Task.detached(priority: .userInitiated) { handed.takeBytes() }.value
             do {
-                _ = try await self.quickCreate(.document(fileName: fileName, data: data))
+                _ = try await self.quickCreate(.document(fileName: fileName, data: data, rules: rules))
             } catch {
                 self.recordFailure(error, context: .localImport, operation: nil)
             }
@@ -5214,11 +5630,10 @@ final class ProfilesViewModel: ObservableObject {
                 let nodes = Dictionary(uniqueKeysWithValues: moved.map { key in
                     (key, candidate.topLevelNode(key).map { Self.pageNode($0, for: key, replacing: page.topLevelNode(key)) })
                 })
-                let label = Self.ownSchemeLabel()
                 do {
                     let prepared = try await Task.detached(priority: .userInitiated) {
                         try library.prepareSchemePageEdit(profileID: profileID, expectedGeneration: snapshot.generation,
-                                                          label: label, resolveInput: ConfigurationCenterSourceBridge.BoundInputs().resolve) { page in
+                                                          resolveInput: ConfigurationCenterSourceBridge.BoundInputs().resolve) { page in
                             for key in nodes.keys.sorted() { page = page.setting(path: [key], to: nodes[key] ?? nil) }
                         }
                     }.value
@@ -5399,7 +5814,10 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
-    func updateOwnSettings(profileID: String, edits: [ConfigurationPageEdit], fileRunsOwnDNS: Bool = false) throws {
+     
+     
+     
+    func updateOwnSettings(profileID: String, edits: [ConfigurationPageEdit]) throws {
         try withProfileLock {
             guard let profileStore,
                   let latest = profileStore.load().first(where: { $0.id == profileID }) else {
@@ -5408,11 +5826,16 @@ final class ProfilesViewModel: ObservableObject {
             var override = latest.override.patchJSON.isEmpty ? .object([]) : try OrderedJSON.parse(latest.override.patchJSON)
             let layerJSON = latest.legacyRuntimePatchJSON ?? ""
             var layer = layerJSON.isEmpty ? .object([]) : try OrderedJSON.parse(layerJSON)
-            let editsDNS = edits.contains { Self.topLevelKey(of: $0) == "dns" }
-            if editsDNS, latest.legacyRuntimeDNSGated == true, fileRunsOwnDNS {
-                layer = layer.setting(path: ["dns"], to: nil)
+             
+             
+             
+            func holdsDNS() -> Bool {
+                if case .object(let entries)? = layer.node(at: ["dns"]) { return !entries.isEmpty }
+                return false
             }
+            var dnsRanOut = !holdsDNS()
             for edit in edits {
+                defer { if !holdsDNS() { dnsRanOut = true } }
                 guard let key = Self.topLevelKey(of: edit) else {
                     override = try override.applying(edit)
                     continue
@@ -5435,7 +5858,11 @@ final class ProfilesViewModel: ObservableObject {
             candidate.override.patchJSON = OverridePatch(patchJSON: override.serialized()).patchJSON
             let written = OverridePatch(patchJSON: layer.serialized())
             candidate.legacyRuntimePatchJSON = written.topLevelKeys.isEmpty ? nil : written.patchJSON
-            if editsDNS { candidate.legacyRuntimeDNSGated = nil }
+             
+             
+             
+             
+            if dnsRanOut || !written.hasDNSOverride { candidate.legacyRuntimeDNSGated = nil }
             guard candidate != latest else { return }
             try updateConfiguration(candidate)
         }
@@ -5678,8 +6105,7 @@ final class ProfilesViewModel: ObservableObject {
         if outboundModeSetOnHome() != nil { held.insert("mode") }
         if let profile = profiles.first(where: { $0.id == profileID }) {
             if profile.outboundMode != nil { held.insert("mode") }
-            held.formUnion(OverridePatch(patchJSON: profile.override.patchJSON)
-                .retainingTopLevelKeys(OverridePatch.listenerKeys).topLevelKeys)
+            held.formUnion(ProfileRuntimeConfigBuilder.lanSharingListener(of: profile).topLevelKeys)
         }
         return held
     }
@@ -5803,7 +6229,7 @@ final class ProfilesViewModel: ObservableObject {
         let vpn = self.vpn
         pendingPublication = Task { @MainActor [weak self] in
             let report = await ProviderUpdater.update(names, in: .live(
-                profile: profile, store: store, container: container, vpn: vpn,
+                profile: profile, store: store, container: container, vpn: vpn, scripts: .silent,
                 stillInUse: { store.activeIdentityOrNil()?.profileID == id }))
             for item in held {
                 let outcome = report.outcomes[item.name] ?? .skipped
@@ -5931,8 +6357,7 @@ final class ProfilesViewModel: ObservableObject {
          
          
         guard let updated = try profileStore.updateIfPresent(id: profileID, {
-            $0.selectedMap[group] = member
-            $0.currentGroupName = group
+            $0.noteReaderPick(group: group, member: member)
         }) else {
             throw PipelineError.sourceUnavailable("the profile is no longer available")
         }
@@ -6154,7 +6579,7 @@ final class ProfilesViewModel: ObservableObject {
         guard let stages = try? ProfileRuntimeConfigBuilder.buildProductionStages(
                 raw: raw,
                 profile: profile,
-                runtimeOverride: runtime
+                runtimeOverride: runtime, scripts: .silent
               ),
               let json = try? stages.beforeClientRuntimePolicyJSON
                 ?? ConfigTransforms.yamlToJSON(stages.beforeClientRuntimePolicy),
@@ -6211,9 +6636,11 @@ final class ProfilesViewModel: ObservableObject {
                  
                 try await Task.detached(priority: .userInitiated) {
                     do {
+                         
+                         
                         _ = try ProfileRuntimeConfigBuilder.runtimePreview(
                             raw: rawYAML,
-                            profile: updated
+                            profile: updated, scripts: .surfaced
                         )
                     } catch let error as LegacyRelayMigrationError {
                          
@@ -6264,9 +6691,11 @@ final class ProfilesViewModel: ObservableObject {
         }
     }
 
+     
+     
     nonisolated(unsafe) var runtimePreviewValidator: @Sendable (String, Profile) throws -> Void = {
         raw, profile in
-        _ = try ProfileRuntimeConfigBuilder.runtimePreview(raw: raw, profile: profile)
+        _ = try ProfileRuntimeConfigBuilder.runtimePreview(raw: raw, profile: profile, scripts: .surfaced)
     }
 
      
@@ -6276,7 +6705,7 @@ final class ProfilesViewModel: ObservableObject {
     nonisolated(unsafe) var nodeOverrideBaseBuilder: @Sendable (String, Profile) throws -> String = {
         raw, profile in
         try ProfileRuntimeConfigBuilder.buildProductionStages(
-            raw: raw, profile: profile, applyProxyChain: false, applyLegacyRelayMigration: false
+            raw: raw, profile: profile, applyProxyChain: false, applyLegacyRelayMigration: false, scripts: .silent
         ).afterClientTransforms
     }
 
@@ -6630,11 +7059,12 @@ final class ProfilesViewModel: ObservableObject {
                 let runtime = FlClashRuntimeConfig.load(from: self.runtimeDefaults)
                 do {
                      
+                     
                     _ = try await Task.detached(priority: .userInitiated) {
                         try ProfileRuntimeConfigBuilder.runtimePreview(
                             raw: rawYAML,
                             profile: profileOwned,
-                            runtimeOverride: runtime
+                            runtimeOverride: runtime, scripts: .surfaced
                         )
                     }.value
                 } catch {
@@ -6746,7 +7176,7 @@ final class ProfilesViewModel: ObservableObject {
                         let baseline = try ProfileRuntimeConfigBuilder.buildProduction(
                             raw: raw,
                             profile: latest,
-                            applyProviderDefinitions: false
+                            applyProviderDefinitions: false, scripts: .silent
                         )
                         return .success(
                             try ProfileProviderDefinitionsDraft(
@@ -6878,10 +7308,11 @@ final class ProfilesViewModel: ObservableObject {
             let root: [String: Any]
             do {
                  
+                 
                 let building = updated
                 let json = try await Task.detached(priority: .userInitiated) {
                     try ConfigTransforms.yamlToJSON(
-                        try ProfileRuntimeConfigBuilder.buildProduction(raw: raw, profile: building)
+                        try ProfileRuntimeConfigBuilder.buildProduction(raw: raw, profile: building, scripts: .surfaced)
                     )
                 }.value
                 guard let object = try JSONSerialization.jsonObject(with: Data(json.utf8))
@@ -7017,12 +7448,14 @@ final class ProfilesViewModel: ObservableObject {
         return try Self.providerDefinitionsBaseline(raw: raw, profile: profile)
     }
 
+     
+     
     nonisolated private static func providerDefinitionsBaseline(raw: String, profile: Profile) throws -> String {
         do {
             return try ProfileRuntimeConfigBuilder.buildProduction(
                 raw: raw,
                 profile: profile,
-                applyProviderDefinitions: false
+                applyProviderDefinitions: false, scripts: .surfaced
             )
         } catch {
              
@@ -7242,7 +7675,7 @@ final class ProfilesViewModel: ObservableObject {
         afterTheHold { [weak self] in
             guard let self else { return }
             self.load()
-            self.savedConfigurationGeneration &+= 1
+            self.notePublished([profile.id])
              
              
              
@@ -7393,7 +7826,7 @@ final class ProfilesViewModel: ObservableObject {
                 }
             }
             load()
-            savedConfigurationGeneration &+= 1
+            notePublished([profile.id])
             return
         }
          
@@ -7428,9 +7861,10 @@ final class ProfilesViewModel: ObservableObject {
                      
                      
                      
+                     
                     _ = try ProfileRuntimeConfigBuilder.runtimePreview(
                         raw: prepared.yaml,
-                        profile: latest
+                        profile: latest, scripts: .surfaced
                     )
                     return prepared
                 }.value
@@ -7484,7 +7918,7 @@ final class ProfilesViewModel: ObservableObject {
             }
             if wrote {
                 load()
-                savedConfigurationGeneration &+= 1
+                notePublished([profile.id])
                  
                  
                  
@@ -8209,7 +8643,13 @@ final class ProfilesViewModel: ObservableObject {
              
              
              
-            startActivation(profile, applyToTunnel: tunnelIsRunning, because: ClashPerf.Reason.profileSync)
+             
+             
+             
+             
+             
+            startActivation(profile, applyToTunnel: tunnelIsRunning, fetchesFresh: true,
+                            because: ClashPerf.Reason.profileSync)
             return
         }
         guard case .url = profile.source else { return }
@@ -8231,7 +8671,13 @@ final class ProfilesViewModel: ObservableObject {
                     manager: subscriptions,
                     profileStore: profileStore,
                     credentials: self.credentials,
-                    workingDirectory: workingDir
+                    workingDirectory: workingDir,
+                     
+                     
+                    conditional: false,
+                     
+                     
+                    scripts: .surfaced
                 )
                 self.load()
                 let heldBack = self.profiles.first(where: { $0.id == profile.id })?.suppressedUpdates?.count ?? 0
@@ -8322,7 +8768,9 @@ final class ProfilesViewModel: ObservableObject {
                     let state = try await withThrowingTaskGroup(
                         of: BatchUpdateState.self
                     ) { group in
-                        group.addTask { try await self.performBatchSync(profile) }
+                         
+                         
+                        group.addTask { try await self.performBatchSync(profile, scripts: .silent) }
                         group.addTask {
                             try await Task.sleep(
                                 nanoseconds: UInt64(Self.batchItemLimit * 1_000_000_000)
@@ -8367,7 +8815,7 @@ final class ProfilesViewModel: ObservableObject {
                 for source in plan.sources {
                     guard self.batchRunID == runID else { return }
                     if Task.isCancelled { self.markBatchCancelled(); cancelled = true; break }
-                    self.statusMessage = .format("Syncing %@…", [source.label])
+                    self.statusMessage = ClashConfigurationSourceCopy.sentence("Syncing %@…", naming: source)
                     do {
                         try await withThrowingTaskGroup(of: Void.self) { group in
                             group.addTask { _ = try await self.refreshConfigurationSource(source.id) }
@@ -8443,7 +8891,7 @@ final class ProfilesViewModel: ObservableObject {
         busyProfileID = profile.id
         defer { busyProfileID = nil; load() }
         return try await withThrowingTaskGroup(of: BatchUpdateState.self) { group in
-            group.addTask { try await self.performBatchSync(profile) }
+            group.addTask { try await self.performBatchSync(profile, scripts: .silent) }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(Self.batchItemLimit * 1_000_000_000))
                 throw URLError(.timedOut)
@@ -8493,7 +8941,9 @@ final class ProfilesViewModel: ObservableObject {
             guard let self else { return }
             self.busyProfileID = profile.id
             do {
-                let state = try await self.performBatchSync(profile)
+                 
+                 
+                let state = try await self.performBatchSync(profile, scripts: .surfaced)
                 guard self.batchRunID == runID else { return }
                 self.recordBatchItem(
                     id: profile.id,
@@ -8530,7 +8980,10 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
-    private func performBatchSync(_ profile: Profile) async throws -> BatchUpdateState {
+     
+     
+     
+    private func performBatchSync(_ profile: Profile, scripts: ScriptEngine.Caller) async throws -> BatchUpdateState {
         try Task.checkCancellation()
 
          
@@ -8564,7 +9017,10 @@ final class ProfilesViewModel: ObservableObject {
             manager: subscriptions,
             profileStore: profileStore,
             credentials: credentials,
-            workingDirectory: workingDir
+            workingDirectory: workingDir,
+             
+            conditional: false,
+            scripts: scripts
         )
         let state: BatchUpdateState = result == .unchanged ? .unchanged : .updated
 
@@ -8642,7 +9098,9 @@ final class ProfilesViewModel: ObservableObject {
             id: profile.id,
             label: profile.label,
             state: .failed,
-            message: failure.message,
+             
+             
+            message: nil,
             failure: failure
         )
     }
@@ -8697,13 +9155,13 @@ final class ProfilesViewModel: ObservableObject {
                 }
                 if !ConfigTransforms.hasLargeRuleSection(fileAt: large),
                    let workingDir, let source = Self.sidecarYAML(for: profile, workingDir: workingDir) {
-                    return try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile)
+                    return try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile, scripts: .silent)
                 }
                 return LargeConfigurationDisplay.text(ofFileAt: large, containerPath: container?.path,
                                                       telling: { LargeConfigurationDisplay.phrase($0) })
             }
             guard let workingDir, let source = Self.sidecarYAML(for: profile, workingDir: workingDir) else { return nil }
-            return try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile)
+            return try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile, scripts: .silent)
         }.value
     }
 
@@ -8738,6 +9196,40 @@ final class ProfilesViewModel: ObservableObject {
      
     private func publishedPreview(for profile: Profile) -> String? {
         Self.publishedPreviewText(for: profile, container: container)
+    }
+
+     
+     
+     
+     
+    func publishedRuleSetsAndSubRules(for profile: Profile) async -> (ruleSets: Set<String>?, subRules: Set<String>?)? {
+        let container = container
+        return await Task.detached(priority: .userInitiated) {
+            Self.publishedRuleSetsAndSubRules(for: profile, container: container)
+        }.value
+    }
+
+     
+     
+    nonisolated static func publishedRuleSetsAndSubRules(
+        for profile: Profile, container: URL? = ClashAppIdentifiers.appGroupContainer
+    ) -> (ruleSets: Set<String>?, subRules: Set<String>?)? {
+         
+         
+         
+         
+        guard let container, let store = try? ConfigResourceStore(containerURL: container),
+              let pointer = store.activeIdentityOrNil(), pointer.profileID == profile.id else { return nil }
+        let revision = pointer.revision
+         
+         
+        if let url = store.publishedConfigurationURL(profileID: profile.id, revision: revision),
+           let data = try? Data(contentsOf: url, options: .alwaysMapped),
+           let declared = ProfileRuntimeConfigBuilder.declaredRuleSetsAndSubRules(inBytes: data, readersOwn: true) {
+            return declared
+        }
+        guard let text = (try? store.loadConfiguration(profileID: profile.id, revision: revision))?.text else { return nil }
+        return ProfileRuntimeConfigBuilder.declaredRuleSetsAndSubRules(in: text, readersOwn: true)
     }
 
      
@@ -8785,16 +9277,18 @@ final class ProfilesViewModel: ObservableObject {
          
          
          
-        return try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile)
+        return try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile, scripts: .silent)
     }
 
+     
+     
      
      
      
     func loadSavedConfigurationPreview(
         for profileID: String,
         build: @escaping (String, Profile) throws -> String = {
-            try ProfileRuntimeConfigBuilder.buildProduction(raw: $0, profile: $1)
+            try ProfileRuntimeConfigBuilder.buildProduction(raw: $0, profile: $1, scripts: .surfaced)
         }
     ) async throws -> String {
         guard let profile = profiles.first(where: { $0.id == profileID }),
@@ -8895,7 +9389,7 @@ final class ProfilesViewModel: ObservableObject {
          
         if Self.namesStorageInPlaceOfContent(text) {
             guard let source = try? hydratedSourceYAML(for: profile),
-                  let built = try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile)
+                  let built = try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile, scripts: .silent)
             else { return nil }
             return ("\(name).yaml", built)
         }
@@ -9225,6 +9719,7 @@ final class ProfilesViewModel: ObservableObject {
         onlyIfActive: ActiveConfigurationPointer? = nil,
         inBackground: Bool = false,
         fetchesRuleSets: Bool = false,
+        fetchesFresh: Bool = false,
         because reason: String = "unspecified"
     ) {
          
@@ -9253,6 +9748,8 @@ final class ProfilesViewModel: ObservableObject {
         if let pending = pendingActivation, !pending.inBackground { request.inBackground = false }
          
         request.fetchesRuleSets = fetchesRuleSets || pendingActivation?.fetchesRuleSets == true
+         
+        request.fetchesFresh = fetchesFresh || pendingActivation?.fetchesFresh == true
         clearFailure()
         guard activationTask == nil else {
              
@@ -9301,7 +9798,8 @@ final class ProfilesViewModel: ObservableObject {
                                                 runtimeCarriesChange: queued.runtimeCarriesChange,
                                                 onlyIfActive: queued.onlyIfActive,
                                                 inBackground: queued.inBackground,
-                                                fetchesRuleSets: queued.fetchesRuleSets)
+                                                fetchesRuleSets: queued.fetchesRuleSets,
+                                                fetchesFresh: queued.fetchesFresh)
                 self.activationInFlight = request
                 await self.activate(
                     request.profile,
@@ -9310,7 +9808,8 @@ final class ProfilesViewModel: ObservableObject {
                     requestedWhileTunnelUp: request.requestedWhileTunnelUp,
                     runtimeCarriesChange: request.runtimeCarriesChange,
                     onlyIfActive: request.onlyIfActive,
-                    fetchesRuleSets: request.fetchesRuleSets
+                    fetchesRuleSets: request.fetchesRuleSets,
+                    fetchesFresh: request.fetchesFresh
                 )
             }
             self.activationInFlight = nil
@@ -9399,7 +9898,8 @@ final class ProfilesViewModel: ObservableObject {
         requestedWhileTunnelUp: Bool = false,
         runtimeCarriesChange: Bool = false,
         onlyIfActive: ActiveConfigurationPointer? = nil,
-        fetchesRuleSets: Bool = false
+        fetchesRuleSets: Bool = false,
+        fetchesFresh: Bool = false
     ) async {
         guard let container, busyProfileID == nil else { return }
         busyProfileID = profile.id
@@ -9446,7 +9946,8 @@ final class ProfilesViewModel: ObservableObject {
                     for: profile, preferCachedSource: prefersStoredSource, workingDir: workingDirectory))
                 let fromStoredSource = handed.holdsText
                 let pointer = try await coordinator.activate(
-                    profile: profile, handedSource: handed, onlyIfActive: onlyIfActive
+                    profile: profile, handedSource: handed, onlyIfActive: onlyIfActive,
+                    forceFreshFetch: fetchesFresh
                 )
                 return (pointer,
                         coordinator.lastPublicationPreflight.flatMap { $0.pointer == pointer ? $0.outcome : nil },
@@ -9656,8 +10157,7 @@ struct ProfileBaseDocumentHost<Content: View>: View {
             } else if let loaded, loaded.profile == profile {
                 content(loaded.value)
             } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ClashOpeningProgress()
             }
         }
         .task(id: profile) {

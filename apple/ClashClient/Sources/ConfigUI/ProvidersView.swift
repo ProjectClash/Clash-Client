@@ -236,6 +236,76 @@ final class ProviderRefreshStateWatcher {
     deinit { stop() }
 }
 
+extension ProviderRefreshStateWatcher {
+     
+     
+     
+     
+    static func changes(in directory: URL? = stateDirectory) -> AnyPublisher<Void, Never> {
+        Deferred { () -> AnyPublisher<Void, Never> in
+            let subject = PassthroughSubject<Void, Never>()
+            let watcher = ProviderRefreshStateWatcher()
+            watcher.start(directory: directory) { subject.send(()) }
+             
+            return subject.handleEvents(receiveCancel: { watcher.stop() }).eraseToAnyPublisher()
+        }
+        .eraseToAnyPublisher()
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@MainActor
+final class RunningProvidersReader: ObservableObject {
+    typealias Running = ConfigurationCollectionContentBridge.RunningProviders
+
+    @Published private(set) var current: Running?
+    private let container: @MainActor () -> URL?
+    private let read: @Sendable (URL?) async -> Running?
+    private var generation: UInt64 = 0
+    private let watcher = ProviderRefreshStateWatcher()
+
+    init(container: @escaping @MainActor () -> URL?,
+         read: @escaping @Sendable (URL?) async -> Running? = { container in
+             await Task.detached { Running.load(container: container) }.value
+         }) {
+        self.container = container
+        self.read = read
+    }
+
+     
+    func reload() async {
+        generation &+= 1
+        let token = generation
+        let next = await read(container())
+        guard token == generation else { return }
+        current = next
+    }
+
+     
+     
+    func follow(_ onScreen: Bool) {
+        guard onScreen else {
+            watcher.stop()
+            return
+        }
+        let directory = container()?
+            .appendingPathComponent("working", isDirectory: true)
+            .appendingPathComponent(ProviderRefreshState.directoryName, isDirectory: true)
+        watcher.start(directory: directory) { [weak self] in
+            Task { await self?.reload() }
+        }
+        Task { await reload() }
+    }
+}
+
  
  
  
@@ -263,7 +333,37 @@ final class ProvidersModel: ObservableObject {
          
          
         var stateCheckedAt: Date? = nil
+         
+         
+         
+         
+        var stateCount: Int? = nil
+        var stateSubscriptionInfo: SubscriptionInfo? = nil
         var id: String { name }
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        var shownUpdatedAt: Date? { runtime?.updatedAt ?? stateCheckedAt ?? updatedAt }
+        var shownCount: Int? { runtime?.entryCount ?? stateCount ?? count }
+        var shownSubscriptionInfo: SubscriptionInfo? {
+            if runtime?.updatedAt != nil, let live = runtime?.subscriptionInfo { return live }
+            return stateSubscriptionInfo ?? subscriptionInfo
+        }
     }
 
     @Published private(set) var rows: [Row] = []
@@ -425,14 +525,15 @@ final class ProvidersModel: ObservableObject {
                     let attributes = try? FileManager.default.attributesOfItem(
                         atPath: providersDir.appendingPathComponent(entry.path).path)
                     let updatedAt = entry.lastUpdatedAt ?? attributes?[.modificationDate] as? Date
-                     
-                     
-                    let checked = state?.entry(kind: entry.kind, name: entry.name, url: entry.url)?.checkedAt
                     let note = catalog.note(of: entry, state: state, written: written,
                                             copiedAt: entry.acquiredAt ?? updatedAt)
                      
                      
                     let owed = note == .notDownloadedYet
+                     
+                     
+                     
+                    let newer = owed ? nil : state?.newerEntry(of: entry, than: updatedAt)
                     return Row(name: entry.name, kind: entry.kind,
                                sizeBytes: owed ? nil : (attributes?[.size] as? NSNumber)?.intValue,
                                updatedAt: owed ? nil : updatedAt,
@@ -440,9 +541,9 @@ final class ProvidersModel: ObservableObject {
                                subscriptionInfo: entry.subscriptionInfo,
                                canRefresh: true,
                                note: note,
-                               stateCheckedAt: owed ? nil : checked.flatMap { checked in
-                                   updatedAt.map { checked > $0 } ?? true ? checked : nil
-                               })
+                               stateCheckedAt: newer?.checkedAt,
+                               stateCount: newer?.countOfCheckedContent,
+                               stateSubscriptionInfo: newer?.usage)
                 }
         }
          
@@ -601,9 +702,16 @@ final class ProvidersModel: ObservableObject {
              
              
             self.syncingProviders = Set(names)
+             
+             
             let report = await ProviderUpdater.update(names, in: .live(
-                profile: profile, store: store, container: container, vpn: self.vpn,
-                stillInUse: { store.activeIdentityOrNil()?.profileID == profileID }))
+                profile: profile, store: store, container: container, vpn: self.vpn, scripts: .silent,
+                stillInUse: { store.activeIdentityOrNil()?.profileID == profileID }),
+                progress: { [weak self] name, outcome in
+                    guard let self else { return }
+                    self.syncingProviders.remove(name)
+                    if let item = Self.batchItem(name, outcome, locale: self.locale) { self.recordBatchItems([item]) }
+                })
             self.syncingProviders = []
             self.recordBatchItems(names.compactMap { Self.batchItem($0, report.outcomes[$0], locale: self.locale) })
              
@@ -641,7 +749,7 @@ final class ProvidersModel: ObservableObject {
              
              
             let report = await ProviderUpdater.update([name], in: .live(
-                profile: profile, store: store, container: container, vpn: self.vpn,
+                profile: profile, store: store, container: container, vpn: self.vpn, scripts: .surfaced,
                 stillInUse: { store.activeIdentityOrNil()?.profileID == profileID }))
              
              
@@ -744,7 +852,7 @@ final class ProvidersModel: ObservableObject {
              
              
             let report = await ProviderUpdater.update([id], in: .live(
-                profile: profile, store: store, container: container, vpn: self.vpn,
+                profile: profile, store: store, container: container, vpn: self.vpn, scripts: .surfaced,
                 stillInUse: { store.activeIdentityOrNil()?.profileID == profileID }))
             if let item = Self.batchItem(id, report.outcomes[id], locale: self.locale) {
                 self.recordBatchItems([item])
@@ -1069,7 +1177,13 @@ struct ProvidersView: View {
     @Environment(\.clashProvidersRefreshRequests) private var refreshRequests
     @Environment(\.locale) private var locale
     @StateObject private var model: ProvidersModel
-    @ObservedObject private var command: ClashCommandClient
+     
+     
+     
+     
+    private let command: ClashCommandClient
+     
+    @State private var isConnected = false
     private let scope: ProviderDisplayScope
     @State private var stateWatcher = ProviderRefreshStateWatcher()
     @State private var importProvider: ProvidersModel.Row?
@@ -1089,7 +1203,8 @@ struct ProvidersView: View {
         command: ClashCommandClient,
         scope: ProviderDisplayScope = .all
     ) {
-        _command = ObservedObject(wrappedValue: command)
+        self.command = command
+        _isConnected = State(initialValue: command.isConnected)
         self.scope = scope
         self.vpn = vpn
         _model = StateObject(
@@ -1227,8 +1342,17 @@ struct ProvidersView: View {
              
             model.honorRefreshRequest(token)
         }
-        .onChange(of: command.isConnected) { _ in
-            model.refreshRuntimeCatalog()
+         
+         
+         
+         
+         
+         
+         
+        .onReceive(command.$isConnected) { connected in
+            guard connected != isConnected else { return }
+            isConnected = connected
+            Task { @MainActor [weak held = model] in held?.refreshRuntimeCatalog() }
         }
          
          
@@ -1243,19 +1367,19 @@ struct ProvidersView: View {
             }
         }
         .onDisappear { stateWatcher.stop() }
-        .sheet(item: $overridingProfile) { profile in
+        .clashSheet(item: $overridingProfile) { profile in
             ProfileOverrideView(profile: profile, rawYAML: nil) {
                 try model.updateActiveProfile($0)
             }
             .clashModalPresentation(.page)
         }
 #if os(iOS)
-        .sheet(item: $editedConfiguration) { edited in
+        .clashSheet(item: $editedConfiguration) { edited in
             ConfigurationEditorHost(vpn: vpn, profileID: edited.id, selections: command)
                 .clashModalPresentation(.page)
         }
 #endif
-        .sheet(isPresented: Binding(
+        .clashSheet(isPresented: Binding(
             get: { model.batchReport != nil },
             set: { if !$0 { model.dismissBatchReport() } }
         )) {
@@ -1336,7 +1460,7 @@ struct ProvidersView: View {
                         isBusy: model.busyProvider == row.name
                             || model.syncingProviders.contains(row.name)
                             || model.healthCheckingProvider == row.name,
-                        canCheckHealth: command.isConnected
+                        canCheckHealth: isConnected
                             && row.runtime?.healthCheckAvailable == true,
                         canConfigure: true,
                         checkHealth: { model.checkHealth(provider: row.name) },
@@ -1371,13 +1495,14 @@ enum ProviderRowSummary {
     static func text(for row: ProvidersModel.Row, locale: Locale, now: Date) -> String {
         var parts: [String] = []
         let isRule = row.kind?.lowercased() == "rule"
-        if let count = row.runtime?.entryCount ?? row.count {
+        if let count = row.shownCount {
             parts.append(ClashCopy.format(isRule ? "%@ rules" : "%@ proxies", locale: locale, String(count)))
         }
         if let size = row.sizeBytes { parts.append(ByteCountFormatter.string(Int64(size))) }
          
          
-        if let updatedAt = row.runtime?.updatedAt ?? row.stateCheckedAt ?? row.updatedAt {
+         
+        if let updatedAt = row.shownUpdatedAt {
             let formatter = RelativeDateTimeFormatter()
             formatter.unitsStyle = .abbreviated
             formatter.locale = locale
@@ -1500,7 +1625,7 @@ struct ProviderRow: View {
                         .foregroundStyle(healthColor(runtime))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if let info = row.subscriptionInfo {
+                if let info = row.shownSubscriptionInfo {
                     SubscriptionInfoView(info: info)
                 }
                  
@@ -1663,6 +1788,10 @@ enum ProviderRefreshService {
      
      
      
+     
+     
+     
+     
     @MainActor
     static func publishMany(
         names: [String],
@@ -1672,12 +1801,13 @@ enum ProviderRefreshService {
         container: URL,
         vpn: VPNController,
         expectedActive: ActiveConfigurationPointer?,
-        downloadRound: ProviderDownloadRound = ProviderDownloadRound()
+        downloadRound: ProviderDownloadRound = ProviderDownloadRound(),
+        scripts: ScriptEngine.Caller = .surfaced
     ) async throws -> ManyResult {
         try await publishMany(
             names: names, republishingAnyway: republishingAnyway, profile: profile, store: store,
             coordinator: try vpn.activationCoordinator(store: store, container: container),
-            expectedActive: expectedActive, downloadRound: downloadRound)
+            expectedActive: expectedActive, downloadRound: downloadRound, scripts: scripts)
     }
 
      
@@ -1689,7 +1819,8 @@ enum ProviderRefreshService {
         store: ConfigResourceStore,
         coordinator: ProfileActivationCoordinator,
         expectedActive: ActiveConfigurationPointer?,
-        downloadRound: ProviderDownloadRound = ProviderDownloadRound()
+        downloadRound: ProviderDownloadRound = ProviderDownloadRound(),
+        scripts: ScriptEngine.Caller = .surfaced
     ) async throws -> ManyResult {
         var expected = expectedActive
         for attempt in 0..<3 {
@@ -1697,7 +1828,7 @@ enum ProviderRefreshService {
                 return try await publishMany(names: names, republishingAnyway: republishingAnyway) { remaining in
                     try await coordinator.refreshProviders(
                         named: remaining, profile: profile, expectedActive: expected,
-                        downloadRound: downloadRound).pointer
+                        downloadRound: downloadRound, scripts: scripts).pointer
                 }
             } catch where ProfileActivationCoordinator.lostToASwitch(error) {
                 var result = ManyResult()
@@ -1920,6 +2051,45 @@ enum PublishedRuntimeHandover {
             continuation?.resume(returning: wait)
             continuation = nil
             return true
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func readsNodesAgain(after note: Notification, isConnected: Bool) -> Bool {
+        isConnected && note.userInfo?["profileID"] == nil
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+@MainActor
+final class NodeListRereads {
+    private var running = false
+    private var owed: (@MainActor () async -> Void)?
+
+    func ask(_ read: @escaping @MainActor () async -> Void) {
+        guard !running else {
+            owed = read
+            return
+        }
+        running = true
+        Task { @MainActor in
+            var next: (@MainActor () async -> Void)? = read
+            while let current = next {
+                await current()
+                next = owed
+                owed = nil
+            }
+            running = false
         }
     }
 }

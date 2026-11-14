@@ -34,7 +34,14 @@ final class ProxiesProjectionMemo {
         let runtimeCatalog: [ProxyGroup]
         let nowByGroup: [String: String]
         let resolvedNowByGroup: [String: String]
+         
+         
+         
+        var groupsAreTheCores = false
         let isConnected: Bool
+         
+         
+        var opening: ProxyBrowsingVisibility.Opening = .browsing
     }
 
     struct UngroupedKey: Equatable {
@@ -45,6 +52,8 @@ final class ProxiesProjectionMemo {
         let runtimeGroups: [ProxyGroup]
         let isConnected: Bool
         let runtimeIsAuthoritative: Bool
+         
+        var opening: ProxyBrowsingVisibility.Opening = .browsing
     }
 
     private var groupsKey: GroupsKey?
@@ -115,6 +124,7 @@ final class ProxiesProjectionMemo {
         if old.resolvedNowByGroup != new.resolvedNowByGroup {
             return "resolvedNowByGroup"
         }
+        if old.groupsAreTheCores != new.groupsAreTheCores { return "groupsAreTheCores" }
         if old.isConnected != new.isConnected { return "isConnected" }
          
          

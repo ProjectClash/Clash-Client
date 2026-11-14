@@ -42,6 +42,7 @@ struct ClashTVProbeSpec: Equatable {
  
  
  
+ 
 struct ClashTVMatrixDiagnostics {
      
      
@@ -54,8 +55,7 @@ struct ClashTVMatrixDiagnostics {
 
     let raw: [String: Any]
     let counters: [String: Int64]
-    let gvisorKeysPresent: Bool
-    let gvisorTCPConnections: Int64?
+    let tunStack: String?
     let availableMemoryBytes: Int64?
     let physicalMemoryBytes: Int64?
 
@@ -67,9 +67,7 @@ struct ClashTVMatrixDiagnostics {
             if let value = root[key] as? NSNumber { counters[key] = value.int64Value }
         }
         self.counters = counters
-        let gvisorKeys = root.keys.filter { $0.hasPrefix("gvisorTCPWindow") }
-        gvisorKeysPresent = !gvisorKeys.isEmpty
-        gvisorTCPConnections = (root["gvisorTCPWindowConnections"] as? NSNumber)?.int64Value
+        tunStack = root["tunStack"] as? String
         availableMemoryBytes = (root["availableMemoryBytes"] as? NSNumber)?.int64Value
         physicalMemoryBytes = (root["physicalMemoryBytes"] as? NSNumber)?.int64Value
     }

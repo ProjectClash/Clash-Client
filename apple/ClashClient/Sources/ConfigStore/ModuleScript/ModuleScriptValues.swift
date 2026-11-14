@@ -26,6 +26,18 @@ enum ModuleScriptValues {
         return nil
     }
 
+     
+     
+     
+     
+     
+     
+     
+     
+    static func function(_ block: Any, in context: JSContext) -> JSValue {
+        JSValue(object: block, in: context)
+    }
+
     static func isFunction(_ value: JSValue?) -> Bool {
         guard let value, value.isObject, let context = value.context,
               let object = JSValueToObject(context.jsGlobalContextRef, value.jsValueRef, nil) else { return false }

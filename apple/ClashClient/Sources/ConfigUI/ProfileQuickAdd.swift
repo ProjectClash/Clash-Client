@@ -18,10 +18,14 @@ struct ProfileQuickAddOutcome: Equatable {
 enum ProfileQuickAddInput: Equatable {
      
      
-    case link(String)
      
      
-    case document(fileName: String, data: Data)
+    case link(String, rules: InstallLinkRuleScheme? = nil)
+     
+     
+     
+     
+    case document(fileName: String, data: Data, rules: InstallLinkRuleScheme? = nil)
      
     case nodeShareLink
      
@@ -38,8 +42,8 @@ enum ProfileQuickAddInput: Equatable {
         switch PastedContentClassifier.classify(raw) {
         case .empty:
             return .nothing
-        case .link(let url, _):
-            return .link(url)
+        case .link(let url, _, let rules):
+            return .link(url, rules: rules)
         case .configText(let body):
             return .document(fileName: pastedDocumentName, data: Data(body.utf8))
         case .nodeShareLinks:

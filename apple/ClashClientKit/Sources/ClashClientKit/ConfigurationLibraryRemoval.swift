@@ -11,6 +11,7 @@ import Foundation
  
  
  
+ 
 public struct ConfigurationLibraryRemoval: Equatable, Sendable {
     public struct PlacedSource: Equatable, Sendable {
         public let index: Int
@@ -27,12 +28,15 @@ public struct ConfigurationLibraryRemoval: Equatable, Sendable {
     public let rules: [PlacedRuleScheme]
     public let updateIssues: [ConfigurationUpdateIssue]
      
-    public let payloads: [ConfigurationSourcePayload]
+    public internal(set) var payloads: [ConfigurationSourcePayload]
      
      
      
     public let leftSources: [String: Trace]
     public let leftRules: [String: Trace]
+     
+    public internal(set) var recipes: [ConfigurationRecipe] = []
+    var leftRecipes: [String: ConfigurationRecipe] = [:]
 
      
      
@@ -46,7 +50,7 @@ public struct ConfigurationLibraryRemoval: Equatable, Sendable {
         init(_ scheme: ConfigurationRuleScheme) { source = nil; self.scheme = scheme }
     }
 
-    public var isEmpty: Bool { sources.isEmpty && rules.isEmpty && updateIssues.isEmpty }
+    public var isEmpty: Bool { sources.isEmpty && rules.isEmpty && updateIssues.isEmpty && recipes.isEmpty }
 
      
      
@@ -63,7 +67,35 @@ public struct ConfigurationLibraryRemoval: Equatable, Sendable {
             guard let now else { return left.retained }
             return Trace(now) == left
         }
-        return sourcesOK && rulesOK
+         
+         
+        let recipesOK = recipes.allSatisfy { placed in
+            guard let now = library.recipes.first(where: { $0.id == placed.id }) else { return true }
+            guard let left = leftRecipes[placed.id] else { return false }
+            return Self.sameChoices(now, as: left)
+        }
+        return sourcesOK && rulesOK && recipesOK
+    }
+
+     
+     
+     
+     
+     
+    static func sameChoices(_ now: ConfigurationRecipe, as left: ConfigurationRecipe) -> Bool {
+        now.sources.map(\.id) == left.sources.map(\.id) && now.nodeScopes == left.nodeScopes
+            && now.ruleSchemeID == left.ruleSchemeID && now.preservesOriginal == left.preservesOriginal
+    }
+
+     
+     
+     
+    static func restoring(_ before: ConfigurationRecipe, onto now: ConfigurationRecipe) -> ConfigurationRecipe {
+        let current = Dictionary(now.sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var restored = now
+        restored.sources = before.sources.map { current[$0.id] ?? $0 }
+        restored.nodeScopes = before.nodeScopes
+        return restored
     }
 }
 
@@ -84,7 +116,7 @@ extension ConfigurationLibraryStore {
             candidate.rules.contains(scheme) ? nil : ConfigurationLibraryRemoval.PlacedRuleScheme(index: index, scheme: scheme)
         }
         let issues = (before.updateIssues ?? []).filter { !(candidate.updateIssues ?? []).contains($0) }
-        let payloads = try sources.map { try payload(ConfigurationSourceVersion($0.record)) }
+        var payloads = try sources.map { try payload(ConfigurationSourceVersion($0.record)) }
         var leftSources: [String: ConfigurationLibraryRemoval.Trace] = [:]
         for placed in sources {
             if let kept = candidate.sources.first(where: { $0.id == placed.record.id }) { leftSources[placed.record.id] = .init(kept) }
@@ -93,8 +125,40 @@ extension ConfigurationLibraryStore {
         for placed in rules {
             if let kept = candidate.rules.first(where: { $0.id == placed.scheme.id }) { leftRules[placed.scheme.id] = .init(kept) }
         }
-        return ConfigurationLibraryRemoval(sources: sources, rules: rules, updateIssues: issues, payloads: payloads,
-                                           leftSources: leftSources, leftRules: leftRules)
+        var removal = ConfigurationLibraryRemoval(sources: sources, rules: rules, updateIssues: issues, payloads: payloads,
+                                                  leftSources: leftSources, leftRules: leftRules)
+        let after = Dictionary(candidate.recipes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for recipe in before.recipes {
+            guard let left = after[recipe.id], left != recipe else { continue }
+            removal.recipes.append(recipe)
+            removal.leftRecipes[recipe.id] = left
+        }
+         
+         
+         
+         
+        let surviving = Self.referencedVersions(of: candidate)
+        var held = Set(payloads.map { ConfigurationSourceVersion($0.record) })
+        for recipe in removal.recipes {
+            for reference in recipe.dependencies where !surviving.contains(reference) && !held.contains(reference) {
+                guard let copy = try? payload(reference) else { continue }
+                removal.payloads.append(copy)
+                held.insert(reference)
+            }
+        }
+        return removal
+    }
+
+     
+     
+     
+    func restore(_ removal: ConfigurationLibraryRemoval) throws -> ConfigurationLibrarySnapshot {
+        let prepared = try prepareRestore(removal)
+         
+        guard prepared.compositions.isEmpty else {
+            throw ConfigurationLibraryError.invalidIdentifier.noted("a removal that changed configurations is restored with prepareRestore")
+        }
+        return try commit(prepared.candidate, payloads: prepared.payloads, expectedGeneration: prepared.candidate.generation)
     }
 
      
@@ -103,17 +167,18 @@ extension ConfigurationLibraryStore {
      
      
      
-    public func restore(_ removal: ConfigurationLibraryRemoval,
-                        expectedGeneration: UInt64) throws -> ConfigurationLibrarySnapshot {
+     
+     
+    public func prepareRestore(_ removal: ConfigurationLibraryRemoval,
+                               resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput = {
+                                   .init(id: $0.record.id, document: try OrderedJSON.parse($0.documentJSON))
+                               }) throws -> PreparedConfigurationSourceUpdate {
         var candidate = try snapshot()
          
-         
-         
-        _ = expectedGeneration
+        if !removal.recipes.isEmpty, !(candidate.pendingPublications?.isEmpty ?? true) { throw ConfigurationLibraryError.busy }
         guard removal.untouched(in: candidate) else {
             throw ConfigurationLibraryError.staleGeneration
         }
-        let generation = candidate.generation
         for placed in removal.sources.sorted(by: { $0.index < $1.index }) {
             if let index = candidate.sources.firstIndex(where: { $0.id == placed.record.id }) {
                 candidate.sources[index] = placed.record
@@ -133,6 +198,19 @@ extension ConfigurationLibraryStore {
             for issue in removal.updateIssues where !issues.contains(issue) { issues.append(issue) }
             candidate.updateIssues = issues
         }
-        return try commit(candidate, payloads: removal.payloads, expectedGeneration: generation)
+         
+         
+         
+        var compositions: [String: ConfigurationComposition] = [:]
+        for recipe in removal.recipes {
+            guard let index = candidate.recipes.firstIndex(where: { $0.id == recipe.id }) else { continue }
+            var restored = ConfigurationLibraryRemoval.restoring(recipe, onto: candidate.recipes[index])
+            guard let composition = try? composition(of: restored, in: candidate, held: removal.payloads,
+                                                     resolveInput: resolveInput) else { continue }
+            restored.droppedRules = composition.droppedRules.isEmpty ? nil : composition.droppedRules
+            compositions[restored.id] = composition
+            candidate.recipes[index] = restored
+        }
+        return .init(candidate: candidate, payloads: removal.payloads, compositions: compositions)
     }
 }

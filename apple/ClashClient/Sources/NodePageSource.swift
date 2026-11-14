@@ -179,12 +179,19 @@ enum CompactProxiesDocument {
         while true {
             attempt += 1
             let summary = try await source.summary()
+             
+             
+             
+             
+             
+            async let tail = readGlobalTail(of: summary, from: source, firstMembers: firstMembers)
             let pages = try await firstPages(of: summary, from: source, limit: firstMembers)
-            let consistent = pages.values.allSatisfy { page in
+            let globalTail = await tail
+            let consistent = (Array(pages.values) + [globalTail].compactMap { $0 }).allSatisfy { page in
                 page.revision == nil || summary.revision == nil || page.revision == summary.revision
             }
             if consistent {
-                return Built(data: try document(summary: summary, pages: pages), summary: summary)
+                return Built(data: try document(summary: summary, pages: pages, globalTail: globalTail), summary: summary)
             }
              
              
@@ -192,6 +199,30 @@ enum CompactProxiesDocument {
                 throw NodePageRefusal(message: Self.changedWhileRead)
             }
         }
+    }
+
+     
+     
+     
+     
+     
+     
+    private static func readGlobalTail(
+        of summary: NodeSummary,
+        from source: NodePageSource,
+        firstMembers: Int
+    ) async -> GroupMembersPage? {
+        guard let span = summary.globalTailToRead(after: firstMembers) else { return nil }
+        for attempt in 0..<2 {
+            do {
+                return try await source.groupMembers(NodeSummary.kernelGlobalName, offset: span.offset, limit: span.limit)
+            } catch is NodePageRefusal {
+                if attempt == 0 { try? await Task.sleep(nanoseconds: 300_000_000) }
+            } catch {
+                return nil
+            }
+        }
+        return nil
     }
 
     private static func firstPages(
@@ -233,7 +264,12 @@ enum CompactProxiesDocument {
     }
 
      
-    static func document(summary: NodeSummary, pages: [String: GroupMembersPage]) throws -> Data {
+     
+     
+     
+     
+    static func document(summary: NodeSummary, pages: [String: GroupMembersPage],
+                         globalTail: GroupMembersPage? = nil) throws -> Data {
         var proxies: [String: Any] = [:]
         func addMember(_ member: NodeMember) {
             guard summary.groups[member.name] == nil, proxies[member.name] == nil else { return }
@@ -246,10 +282,16 @@ enum CompactProxiesDocument {
              
              
              
+             
+             
+             
+             
+            var carried: String?
             if let now = group.now, !members.contains(where: { $0.name == now }) {
                 let selected = group.nowMember
                     ?? NodeMember(name: now, type: summary.groups[now]?.type ?? "", inline: true)
-                members.insert(selected, at: 0)
+                members.append(selected)
+                carried = selected.name
             }
             members.forEach(addMember)
             var entry: [String: Any] = [
@@ -260,6 +302,14 @@ enum CompactProxiesDocument {
                 "hidden": group.hidden,
             ]
             if let now = group.now { entry["now"] = now }
+            if let carried { entry["outOfPlace"] = [carried] }
+             
+             
+             
+             
+            if name == NodeSummary.kernelGlobalName, summary.globalListsEveryGroup(tail: globalTail) {
+                entry["listsEveryGroup"] = true
+            }
             if let fixed = group.fixed { entry["fixed"] = fixed }
             if let icon = group.icon { entry["icon"] = icon }
             if let url = group.testURL { entry["testUrl"] = url }
@@ -287,7 +337,14 @@ extension CompactProxiesDocument {
             }
             if let page = try? data.decoded(GroupMembersPage.self) { pages[name] = page }
         }
-        let proxies = try document(summary: summary, pages: pages)
+        var globalTail: GroupMembersPage?
+        if let span = summary.globalTailToRead(after: firstMembers) {
+            globalTail = try? catalog.withCatalog {
+                Data($0.groupMembersJSON(NodeSummary.kernelGlobalName, offset: Int32(clamping: span.offset),
+                                         limit: Int32(clamping: span.limit)).utf8)
+            }.decoded(GroupMembersPage.self)
+        }
+        let proxies = try document(summary: summary, pages: pages, globalTail: globalTail)
         guard var root = try JSONSerialization.jsonObject(with: proxies) as? [String: Any] else {
             throw NodePageSourceError.unavailable
         }

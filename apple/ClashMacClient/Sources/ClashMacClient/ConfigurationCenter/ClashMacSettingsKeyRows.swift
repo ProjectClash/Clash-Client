@@ -9,9 +9,11 @@ import SwiftUI
  
  
  
- 
 public struct ClashMacSettingsKeyRows: View {
     let keys: [String]
+     
+     
+    let saysScope: Bool
     let actions: ClashMacSettingsSectionActions
     @State private var document: ClashMacSettingsSectionDocument?
      
@@ -26,7 +28,6 @@ public struct ClashMacSettingsKeyRows: View {
      
     @State private var writes = ClashMacSectionWrites()
     @State private var editing: ClashMacKeyEdit?
-    @State private var pending: [ConfigurationPageEdit]?
      
      
     @State private var runsOver: ClashMacRunsOver?
@@ -34,8 +35,9 @@ public struct ClashMacSettingsKeyRows: View {
     @Environment(\.configurationFieldCopy) private var copy
     @Environment(\.locale) private var locale
 
-    public init(keys: [String], actions: ClashMacSettingsSectionActions) {
+    public init(keys: [String], saysScope: Bool = false, actions: ClashMacSettingsSectionActions) {
         self.keys = keys
+        self.saysScope = saysScope
         self.actions = actions
     }
 
@@ -48,6 +50,12 @@ public struct ClashMacSettingsKeyRows: View {
                 ForEach(keys, id: \.self) { key in
                     row(key, in: document)
                     if let reason = writeFailures[key] { ClashMacRowFailure(message: reason) }
+                }
+                 
+                 
+                 
+                if saysScope, let scope = document.scope {
+                    Text(clash: scope).font(.footnote).foregroundStyle(.secondary)
                 }
             } else if loadFailure == nil {
                 ProgressView().controlSize(.small)
@@ -62,18 +70,6 @@ public struct ClashMacSettingsKeyRows: View {
             ClashMacValueEditSheet(edit: edit, save: { value in
                 request([.set(path: edit.path, to: value)])
             }, useDefault: edit.removable ? { request([.remove(path: edit.path)]) } : nil, geoValues: actions.geoValues)
-        }
-        .alert(Text(clash: .copy("Save as your own rule scheme?")), isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
-            Button(role: .cancel) { pending = nil } label: { Text(clash: .copy("Cancel")) }
-            Button {
-                let edits = pending ?? []
-                pending = nil
-                if !edits.isEmpty { perform(edits) }
-            } label: { Text(clash: .copy("Save")) }
-        } message: {
-            if let copies = document?.copies {
-                Text(clash: .format("Only “%@” will use it; rule scheme “%@” stays as it is.", [copies.configuration, copies.scheme]))
-            }
         }
     }
 
@@ -137,13 +133,9 @@ public struct ClashMacSettingsKeyRows: View {
         }
     }
 
+     
     private func request(_ edits: [ConfigurationPageEdit]) {
         guard !edits.isEmpty else { return }
-         
-        if !writes.busy, document?.copies != nil {
-            pending = edits
-            return
-        }
         perform(edits)
     }
 

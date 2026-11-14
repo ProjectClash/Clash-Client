@@ -53,7 +53,7 @@ struct ProxyProviderCatalogRow: View {
                 isDefault: row.value == nil, defaultText: field.defaultText,
                 useDefault: row.value == nil ? nil : { Task { await useDefault() } }, field: field)
         } else if Self.opensNodeList(row.path) {
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationPayloadNodesPage(session: session, providerPath: providerPath, title: title)
                     .configurationPushedAlertHost(session)
             } label: {
@@ -64,14 +64,14 @@ struct ProxyProviderCatalogRow: View {
              
              
              
-            NavigationLink {
+            ClashNativeNavigationLink {
                 entryPage(field)
                     .configurationPushedAlertHost(session)
             } label: {
                 valueLabel
             }
         } else {
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationOriginalValueView(session: session, title: title,
                                                value: row.value ?? startingValue, choices: nil, field: row.field) { json in
                     await write(json)
@@ -125,29 +125,33 @@ struct ProxyProviderCatalogRow: View {
         }
     }
 
-    private func steps(_ path: [String]) -> [ConfigurationTextPathStep] {
-        (providerPath + path).map(ConfigurationTextPathStep.key)
-    }
-
+     
+     
+     
+     
      
      
     private func write(_ json: String) async {
-        let parent = Array(row.path.dropLast())
-        if !parent.isEmpty, session.value(at: providerPath + parent) == nil,
-           let value = try? OrderedJSON.parse(json) {
-            _ = await session.editOriginal(steps(parent),
-                                           .insert(json: OrderedJSON.object([(key: row.key, value: value)]).serialized()))
-        } else if session.value(at: providerPath + row.path) != nil {
-             
-             
-            _ = await session.editOriginal(steps(row.path), .set(json: json))
-        } else {
-            _ = await session.editOriginal(steps(row.path), .insert(json: json))
+        let base = providerPath, path = row.path, key = row.key
+        _ = await session.queueOriginal { document in
+            let steps = { (path: [String]) in (base + path).map(ConfigurationTextPathStep.key) }
+            guard document.node(at: base) != nil else { return .cannot }
+            let parent = Array(path.dropLast())
+            if !parent.isEmpty, document.node(at: base + parent) == nil, let value = try? OrderedJSON.parse(json) {
+                return .write([ConfigurationTextStep(path: steps(parent),
+                                                     edit: .insert(json: OrderedJSON.object([(key: key, value: value)]).serialized()))])
+            }
+            let written = document.node(at: base + path)
+            if let written, let value = try? OrderedJSON.parse(json), value == written { return .write([]) }
+            return .write([ConfigurationTextStep(path: steps(path), edit: written != nil ? .set(json: json) : .insert(json: json))])
         }
     }
 
     private func useDefault() async {
-        _ = await session.editOriginal(steps(row.path), .delete)
+        let base = providerPath, path = row.path
+        _ = await session.queueOriginal { document in
+            .write(document.node(at: base + path) == nil ? [] : [ConfigurationTextStep(path: (base + path).map(ConfigurationTextPathStep.key), edit: .delete)])
+        }
     }
 }
 #endif

@@ -252,8 +252,11 @@ struct ClashTVProductState {
     mutating func pin(member: String, in groupName: String) {
         guard let index = proxyGroups.firstIndex(where: { $0.name == groupName }) else { return }
         let group = proxyGroups[index]
+         
+         
+         
         guard group.allowsMemberChoice,
-              group.members.contains(where: { $0.name == member })
+              group.membership(of: member) == .member
         else { return }
         proxyGroups[index] = ClashProxyGroupSnapshot(
             name: group.name,

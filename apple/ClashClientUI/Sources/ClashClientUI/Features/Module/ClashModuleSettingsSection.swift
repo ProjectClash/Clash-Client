@@ -118,6 +118,9 @@ struct ClashModuleInformationSection: View {
 struct ClashModuleSettingsSection: View {
     let moduleID: String
     let settings: ClashModuleDetailSnapshot.Settings
+     
+     
+    let values: ClashStoredValues<String, String?>
     let perform: (ClashModulesAction) -> Void
     @State private var confirmsReset = false
 
@@ -126,7 +129,8 @@ struct ClashModuleSettingsSection: View {
              
              
             ForEach(settings.items) { setting in
-                ClashModuleSettingRow(setting: setting) { value in
+                ClashModuleSettingRow(setting: setting, values: values,
+                                      key: ClashModulesWrites.setting(module: moduleID, name: setting.id)) { value in
                     perform(.setArgument(module: moduleID, name: setting.id, value: value))
                 }
             }
@@ -185,7 +189,21 @@ struct ClashModuleSettingsSection: View {
  
 struct ClashModuleSettingRow: View {
     let setting: ClashModuleDetailSnapshot.Setting
+     
+     
+    let values: ClashStoredValues<String, String?>
+    @ObservedObject private var cell: ClashStoredValues<String, String?>.Cell
+    let key: String
     let commit: (String?) -> Void
+
+    init(setting: ClashModuleDetailSnapshot.Setting, values: ClashStoredValues<String, String?>, key: String,
+         commit: @escaping (String?) -> Void) {
+        self.setting = setting
+        self.values = values
+        cell = values.cell(key)
+        self.key = key
+        self.commit = commit
+    }
     @State private var draft = ""
      
     @State private var sent: String??
@@ -195,14 +213,17 @@ struct ClashModuleSettingRow: View {
         VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
             switch setting.control {
             case .toggle(let isOn):
-                Toggle(isOn: Binding(get: { isOn }, set: { commit($0 ? "true" : "false") })) {
+                 
+                let shown = values.pressedValue(key).flatMap { $0.map { $0 == "true" } } ?? isOn
+                Toggle(isOn: Binding(get: { shown }, set: { commit($0 ? "true" : "false") })) {
                     Text(verbatim: setting.title)
                 }
                 .modifier(ClashModulesSwitchStyle())
                 .accessibilityIdentifier("modules.detail.setting.\(setting.id)")
                 notes
             case .menu(let options, let selected):
-                Picker(selection: Binding(get: { selected }, set: { commit($0) })) {
+                let shown = values.pressedValue(key).flatMap { $0 } ?? selected
+                Picker(selection: Binding(get: { shown }, set: { commit($0) })) {
                     ForEach(Array(options.enumerated()), id: \.offset) { _, option in
                         Text(verbatim: option).tag(option)
                     }

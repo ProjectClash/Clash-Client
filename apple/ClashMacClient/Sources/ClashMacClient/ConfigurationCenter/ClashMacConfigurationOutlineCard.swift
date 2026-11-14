@@ -28,6 +28,49 @@ public struct ClashMacOutlineScheme: Equatable {
     public let label: String
     public let kind: Kind
     public init(id: String, label: String, kind: Kind) { self.id = id; self.label = label; self.kind = kind }
+
+     
+     
+     
+     
+     
+     
+    public static func usage(_ snapshot: ConfigurationLibrarySnapshot) -> [String: Int] {
+        var views: [String: (base: String, plain: Bool)] = [:]
+        for scheme in snapshot.rules {
+            if let base = scheme.ownViewBaseID { views[scheme.id] = (base, scheme.plainViewBaseID != nil) }
+        }
+        return snapshot.recipes.filter { $0.preservesOriginal != true }.reduce(into: [:]) { counts, recipe in
+            guard let view = views[recipe.ruleSchemeID] else {
+                counts[recipe.ruleSchemeID, default: 0] += 1
+                return
+            }
+            counts[view.base, default: 0] += 1
+            if !view.plain { counts[recipe.ruleSchemeID, default: 0] += 1 }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+    public static func of(_ snapshot: ConfigurationLibrarySnapshot, profileID: String) -> ClashMacOutlineScheme? {
+        switch snapshot.schemePageOwnership(profileID: profileID) {
+        case .original:
+            return nil
+        case .own(let schemeID, let label, let configurations):
+            if let base = snapshot.rules.first(where: { $0.id == schemeID })?.plainViewBaseID {
+                return ClashMacOutlineScheme(id: schemeID, label: label,
+                                             kind: ConfigurationBuiltins.isNative(base) ? .builtIn : .shared)
+            }
+            return ClashMacOutlineScheme(id: schemeID, label: label, kind: .own(configurations: configurations))
+        case .shared(let schemeID, let label):
+            return ClashMacOutlineScheme(id: schemeID, label: label,
+                                         kind: ConfigurationBuiltins.isNative(schemeID) ? .builtIn : .shared)
+        }
+    }
 }
 
  
@@ -161,14 +204,26 @@ struct ClashMacConfigurationOutlineCard: View {
      
      
      
-    private var schemeReach: ClashDisplayText? {
-        switch scheme?.kind {
-        case .own(let count)? where count > 1:
-            return .format("Changes here apply to all %@ configurations on rule scheme “%@”.", [String(count), scheme?.label ?? ""])
-        case .builtIn?, .shared?:
-            return .format("Saving here copies rule scheme “%@” for this configuration only.", [scheme?.label ?? ""])
-        default:
-            return nil
+     
+    private var schemeReach: ClashDisplayText? { Self.reach(scheme, runsOriginal: original?.isChosen == true) }
+
+     
+     
+    static func reach(_ scheme: ClashMacOutlineScheme?, runsOriginal: Bool) -> ClashDisplayText? {
+        if let scheme { return reach(scheme) }
+        return runsOriginal ? ClashMacSettingsSectionDocument.thisConfigurationOnly : nil
+    }
+
+     
+     
+     
+     
+    static func reach(_ scheme: ClashMacOutlineScheme) -> ClashDisplayText {
+        switch scheme.kind {
+        case .own(let count) where count > 1:
+            return ClashMacSettingsSectionDocument.all(count, on: scheme.label)
+        case .own, .builtIn, .shared:
+            return ClashMacSettingsSectionDocument.thisConfigurationOnly
         }
     }
 
@@ -225,9 +280,11 @@ struct ClashMacConfigurationOutlineCard: View {
 
      
      
+     
     static func builtInFirst(_ schemes: [ConfigurationRuleScheme]) -> (builtIn: [ConfigurationRuleScheme], others: [ConfigurationRuleScheme]) {
         let ids = Set(ConfigurationBuiltins.schemes.map(\.id))
-        return (schemes.filter { ids.contains($0.id) }, schemes.filter { !ids.contains($0.id) })
+        let isBuiltIn = { (scheme: ConfigurationRuleScheme) in ids.contains(scheme.plainViewBaseID ?? scheme.id) }
+        return (schemes.filter(isBuiltIn), schemes.filter { !isBuiltIn($0) })
     }
 
      
@@ -236,14 +293,20 @@ struct ClashMacConfigurationOutlineCard: View {
     }
 
      
+     
+     
+     
+     
     static func menuLine(_ scheme: ConfigurationRuleScheme, usage: [String: Int], followedLink: String?, locale: Locale) -> String {
         let kind: ClashDisplayText
-        if ConfigurationBuiltins.isNative(scheme.id) {
+        let base = scheme.plainViewBaseID
+        if ConfigurationBuiltins.isNative(base ?? scheme.id) {
             kind = .copy("Built-in")
         } else if let followedLink {
             kind = .format("Follows the “%@” link", [followedLink])
         } else {
-            kind = .count(usage[scheme.id] ?? 0, one: "Used by %@ configuration", other: "Used by %@ configurations")
+            let count = usage[base ?? scheme.id] ?? 0
+            kind = .count(count, one: "Used by %@ configuration", other: "Used by %@ configurations")
         }
         return scheme.displayLabel + " · " + ClashCopy.string(for: kind, locale: locale)
     }

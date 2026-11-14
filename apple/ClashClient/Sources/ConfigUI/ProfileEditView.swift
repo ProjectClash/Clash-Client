@@ -295,7 +295,9 @@ struct ProfileEditView: View {
     @State private var importedResourceFiles: [ExternalResourceImportFile] = []
     @State private var showsFileImporter = false
     @State private var errorMessage = ""
-    @State private var diagnosticLine: Int?
+    @State private var diagnostic: CodeEditorDiagnostic?
+     
+    @State private var errorWords: String?
     @State private var asksAboutAutoUpdate = false
     @State private var asksAboutUnsaved = false
      
@@ -400,7 +402,7 @@ struct ProfileEditView: View {
             text: $rawText,
             language: .yaml,
             minHeight: 200,
-            diagnosticLine: diagnosticLine,
+            diagnostic: diagnostic,
             expandsVertically: true,
              
              
@@ -501,7 +503,7 @@ struct ProfileEditView: View {
              
              
              
-            .clashPageTitle(.copy(editorTitle == "Edit Source" ? original.label : editorTitle), watchAs: "Edit Source")
+            .clashPageTitle(editorTitle == "Edit Source" ? .verbatim(original.label) : .copy(editorTitle), watchAs: "Edit Source")
              
              
             .modifier(ClashBarFadesWhileTyping(typing: $typing))
@@ -539,7 +541,7 @@ struct ProfileEditView: View {
                 }
             }
             .clashProductModalRoot(
-                title: editorTitle,
+                title: .copy(editorTitle),
                  
                  
                  
@@ -588,7 +590,8 @@ struct ProfileEditView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if !errorMessage.isEmpty {
-                    ClashStatusMessage(text: .copy(errorMessage), kind: .error)
+                    ClashStatusMessage(text: errorWords.map { .format(errorMessage, [$0]) } ?? .copy(errorMessage),
+                                       kind: .error)
                         .padding(.horizontal, ClashTheme.Spacing.standard)
                         .padding(.bottom, ClashTheme.Spacing.compact)
                 }
@@ -617,7 +620,11 @@ struct ProfileEditView: View {
                 original: originalRawText,
                 current: rawText
             ) == .offerToSave,
-            save: { completion in
+             
+             
+             
+            saveAnswering: { answer in
+                let completion: (Bool) -> Void = { answer($0 ? .saved : .refused(nil)) }
                  
                  
                  
@@ -653,14 +660,12 @@ struct ProfileEditView: View {
         .alert("Auto update will replace this edit", isPresented: $asksAboutAutoUpdate) {
             Button("Turn Off Auto Update") {
                 Task {
-                    await persist(disablingAutoUpdate: true)
-                    settleDeparture(true)
+                    settleDeparture(await persist(disablingAutoUpdate: true))
                 }
             }
             Button("Keep Auto Update") {
                 Task {
-                    await persist()
-                    settleDeparture(true)
+                    settleDeparture(await persist())
                 }
             }
              
@@ -696,7 +701,12 @@ struct ProfileEditView: View {
      
      
      
-    private func persist(disablingAutoUpdate: Bool = false) async {
+     
+     
+     
+     
+    @discardableResult
+    private func persist(disablingAutoUpdate: Bool = false) async -> Bool {
         await Task.yield()
         defer { isSaving = false }
          
@@ -735,21 +745,26 @@ struct ProfileEditView: View {
             }).value, !sites.isEmpty
         {
             errorMessage = Self.invalidDomainMessage(sites)
-            diagnosticLine = nil
-            return
+            errorWords = nil
+            diagnostic = nil
+            return false
         }
+        let saved = rawText
         do {
             try await save(
                 original,
-                rawChanged ? rawText : nil,
+                rawChanged ? saved : nil,
                 rawChanged ? importedResourceFiles : [],
                 disablingAutoUpdate
             )
             SourceEditDrafts.shared.clear(key: draftKey)
             dismissPresentation()
+            return true
         } catch {
-            diagnosticLine = CodeEditorDiagnosticParser.line(in: error.localizedDescription)
-            errorMessage = safeEditMessage(error)
+             
+             
+            show(Self.editFailure(error, in: rawText == saved ? rawText : nil))
+            return false
         }
     }
 
@@ -817,10 +832,9 @@ struct ProfileEditView: View {
             isSaving = false
             asksAboutAutoUpdate = true
         } else {
-            await persist()
              
              
-            settleDeparture(true)
+            settleDeparture(await persist())
         }
     }
 
@@ -870,37 +884,75 @@ struct ProfileEditView: View {
                     importedResourceFiles = selected.filter {
                         $0.fileName != yamlURL.lastPathComponent
                     }
-                    diagnosticLine = nil
+                    diagnostic = nil
                     errorMessage = ""
+                    errorWords = nil
                 } catch {
                     guard generation == importGeneration else { return }
-                    diagnosticLine = CodeEditorDiagnosticParser.line(in: error.localizedDescription)
-                    errorMessage = safeEditMessage(error)
+                     
+                    show(Self.editFailure(error, in: nil))
                 }
             }
         } catch {
-            diagnosticLine = CodeEditorDiagnosticParser.line(in: error.localizedDescription)
-            errorMessage = safeEditMessage(error)
+            show(Self.editFailure(error, in: nil))
         }
     }
 
-    private func safeEditMessage(_ error: Error) -> String {
+    private func show(_ failure: EditFailure) {
+        diagnostic = failure.diagnostic
+        errorMessage = failure.message
+        errorWords = failure.words
+    }
+
+     
+    struct EditFailure {
+        let message: String
+         
+        let words: String?
+        let diagnostic: CodeEditorDiagnostic?
+
+        var text: ClashDisplayText { words.map { .format(message, [$0]) } ?? .copy(message) }
+    }
+
+     
+     
+     
+    static let markedYAMLMessage =
+        "This is not valid YAML. Check the line the editor marked and the lines below it, then save again."
+     
+     
+    static let unmarkedYAMLMessage = "This is not valid YAML: %@"
+
+     
+     
+     
+    static func editFailure(_ error: Error, in text: String?) -> EditFailure {
         let classified = ConfigurationFailureClassifier.classify(
             error,
             context: .activation,
             preservesLastKnownGood: true
         )
+        let diagnostic = text.flatMap { CodeEditorDiagnostic.parsed(from: error.localizedDescription, in: $0) }
          
          
          
          
          
          
-        if case .yamlSyntax = classified?.kind {
-            return "This is not valid YAML. Check the line the editor marked, then save again."
+        guard case .yamlSyntax = classified?.kind else {
+            return EditFailure(message: classified?.localizedDescription ?? "The profile could not be saved.",
+                               words: nil, diagnostic: diagnostic)
         }
-        return classified?.localizedDescription
-            ?? "The profile could not be saved."
+        if diagnostic != nil {
+            return EditFailure(message: markedYAMLMessage, words: nil, diagnostic: diagnostic)
+        }
+         
+         
+        guard case let .invalidConfiguration(reason)? = error as? ConfigTransformsError else {
+            return EditFailure(message: classified?.localizedDescription ?? "The profile could not be saved.",
+                               words: nil, diagnostic: nil)
+        }
+        return EditFailure(message: unmarkedYAMLMessage, words: reason, diagnostic: nil)
     }
 }
 

@@ -106,7 +106,8 @@ enum ProfileRuntimeConfigBuilder {
         runtimeOverride: OverrideSpec = FlClashRuntimeConfig.load(),
         applyProviderDefinitions: Bool = true,
         applyProxyChain: Bool = true,
-        applyLegacyRelayMigration: Bool = true
+        applyLegacyRelayMigration: Bool = true,
+        scripts caller: ScriptEngine.Caller = .surfaced
     ) throws -> String {
 
 
@@ -116,10 +117,16 @@ enum ProfileRuntimeConfigBuilder {
             runtimeOverride: runtimeOverride,
             applyProviderDefinitions: applyProviderDefinitions,
             applyProxyChain: applyProxyChain,
-            applyLegacyRelayMigration: applyLegacyRelayMigration
+            applyLegacyRelayMigration: applyLegacyRelayMigration,
+            scripts: caller
         ).finished()
     }
 
+     
+     
+     
+     
+     
      
      
      
@@ -135,7 +142,8 @@ enum ProfileRuntimeConfigBuilder {
         globalOverride: OverrideSpec = GlobalConfig.load(),
         applyProviderDefinitions: Bool = true,
         applyProxyChain: Bool = true,
-        applyLegacyRelayMigration: Bool = true
+        applyLegacyRelayMigration: Bool = true,
+        scripts caller: ScriptEngine.Caller = .surfaced
     ) throws -> RuntimeBuildStages {
         try ProfilePostMergeScriptOwnershipPolicy.validate(
             postMergeScriptID: profile.postMergeScriptID,
@@ -146,9 +154,9 @@ enum ProfileRuntimeConfigBuilder {
             profile: profile,
             globalOverride: globalOverride,
             runtimeOverride: runtimeOverride,
-            profileScript: { try ScriptLibrary.apply(id: $0, to: $1, profileName: $2) },
-            configScript: { try ScriptSettings.apply(toConfigYAML: $0, profileName: $1) },
-            postMergeScript: { try ScriptLibrary.apply(id: $0, to: $1, profileName: $2) },
+            profileScript: { try ScriptLibrary.apply(id: $0, to: $1, profileName: $2, caller: caller) },
+            configScript: { try ScriptSettings.apply(toConfigYAML: $0, profileName: $1, caller: caller) },
+            postMergeScript: { try ScriptLibrary.apply(id: $0, to: $1, profileName: $2, caller: caller) },
             applyProviderDefinitions: applyProviderDefinitions,
             applyProxyChain: applyProxyChain,
             applyLegacyRelayMigration: applyLegacyRelayMigration
@@ -167,7 +175,8 @@ enum ProfileRuntimeConfigBuilder {
     ) throws -> ConfigTransforms.UDPFallbackGuardInput {
         try ConfigTransforms.udpFallbackGuardInput(
             buildProductionStages(
-                raw: raw, profile: profile, runtimeOverride: runtimeOverride
+                 
+                raw: raw, profile: profile, runtimeOverride: runtimeOverride, scripts: .silent
             ).beforeClientRuntimePolicy
         )
     }
@@ -210,6 +219,10 @@ enum ProfileRuntimeConfigBuilder {
          
         var logLevelSetByApp = false
         var modeSetByApp = false
+         
+         
+         
+        var listenerWrittenBack: [String] = []
          
          
          
@@ -318,7 +331,53 @@ enum ProfileRuntimeConfigBuilder {
          
         logLevelDirective: ClashLogSettings.LevelDirective? = nil
     ) throws -> RuntimeBuildStages {
+         
+         
+         
+         
+        let late: Set<String>
+        do {
+            let first = try autoreleasepool { try buildPass(
+                raw: raw, profile: profile, globalOverride: globalOverride, runtimeOverride: runtimeOverride,
+                profileScript: profileScript, configScript: configScript, postMergeScript: postMergeScript,
+                applyProviderDefinitions: applyProviderDefinitions, applyProxyChain: applyProxyChain,
+                applyLegacyRelayMigration: applyLegacyRelayMigration, logLevelDirective: logLevelDirective, leavingOut: []) }
+            guard !first.late.isEmpty else { return first.stages }
+            late = first.late
+        }
+        return try buildPass(
+            raw: raw, profile: profile, globalOverride: globalOverride, runtimeOverride: runtimeOverride,
+            profileScript: profileScript, configScript: configScript, postMergeScript: postMergeScript,
+            applyProviderDefinitions: applyProviderDefinitions, applyProxyChain: applyProxyChain,
+            applyLegacyRelayMigration: applyLegacyRelayMigration, logLevelDirective: logLevelDirective, leavingOut: late
+        ).stages
+    }
+
+     
+     
+     
+    private static func buildPass(
+        raw: String,
+        profile: Profile,
+        globalOverride: OverrideSpec,
+        runtimeOverride: OverrideSpec,
+        profileScript: (String?, String, String) throws -> String,
+        configScript: (String, String) throws -> String,
+        postMergeScript: (String?, String, String) throws -> String,
+        applyProviderDefinitions: Bool,
+        applyProxyChain: Bool,
+        applyLegacyRelayMigration: Bool,
+        logLevelDirective: ClashLogSettings.LevelDirective?,
+        leavingOut leftOut: Set<String>
+    ) throws -> (stages: RuntimeBuildStages, late: Set<String>) {
         let profileWorking: String
+        let pageListener = Self.lanSharingListener(of: profile)
+         
+        var mergedRules: [String] = []
+        var mergedPolicies: Set<String> = []
+         
+        var personalRules: [String] = []
+        var personalRulesPrepend = false
         switch profile.overwriteMode ?? .standard {
         case .standard, .script:
             var spec = profile.override
@@ -331,7 +390,8 @@ enum ProfileRuntimeConfigBuilder {
              
              
             let muted = Set(spec.disabledAppendRules ?? [])
-            var personalRules = spec.appendRules.filter { !muted.contains($0) }
+            personalRules = spec.appendRules.filter { !muted.contains($0) }
+            personalRulesPrepend = spec.prependRules
             spec.appendRules = []
             let patched = try ConfigTransforms.mergeOverride(
                 raw: raw,
@@ -340,24 +400,9 @@ enum ProfileRuntimeConfigBuilder {
              
              
              
-            let scripted = profile.overwriteMode == .script
+            profileWorking = profile.overwriteMode == .script
                 ? try profileScript(profile.selectedScriptID, patched, profile.label)
                 : patched
-             
-             
-             
-             
-             
-             
-             
-             
-             
-            personalRules = try resolvedFallbackTargets(personalRules, mergedInto: scripted)
-            let kept = droppingUnknownTargets(personalRules, mergedInto: scripted).kept
-            profileWorking = kept.isEmpty ? scripted : try ConfigTransforms.mergeOverride(
-                raw: scripted,
-                overrideJSON: overrideJSON(from: OverrideSpec(appendRules: kept, prependRules: spec.prependRules))
-            )
         case .custom:
             let overwritten = try (profile.customOverwrite ?? CustomOverwriteSpec())
                 .applyForFinalRuntimeMigration(to: raw)
@@ -366,11 +411,9 @@ enum ProfileRuntimeConfigBuilder {
              
              
              
-            let listener = OverridePatch(patchJSON: profile.override.patchJSON)
-                .retainingTopLevelKeys(OverridePatch.listenerKeys)
-            profileWorking = listener.patchJSON.isEmpty ? overwritten : try ConfigTransforms.mergeOverride(
+            profileWorking = pageListener.patchJSON.isEmpty ? overwritten : try ConfigTransforms.mergeOverride(
                 raw: overwritten,
-                overrideJSON: overrideJSON(from: OverrideSpec(patchJSON: listener.patchJSON))
+                overrideJSON: overrideJSON(from: OverrideSpec(patchJSON: pageListener.patchJSON))
             )
         }
 
@@ -388,20 +431,51 @@ enum ProfileRuntimeConfigBuilder {
         }
         let disabledRules = Set(profile.override.disabledGlobalRules ?? [])
         effectiveGlobal.appendRules.removeAll { disabledRules.contains($0) }
-        effectiveGlobal.appendRules = try resolvedFallbackTargets(
-            effectiveGlobal.appendRules, mergedInto: profileWorking
-        )
-        effectiveGlobal.appendRules = droppingUnknownTargets(effectiveGlobal.appendRules, mergedInto: profileWorking).kept
+         
+         
         let merged = try ConfigTransforms.mergeOverride(
             raw: profileWorking,
-            overrideJSON: overrideJSON(from: effectiveGlobal)
+            overrideJSON: overrideJSON(from: OverrideSpec(patchJSON: effectiveGlobal.patchJSON))
         )
         let profileScripted = try postMergeScript(
             profile.postMergeScriptID, merged, profile.label
         )
-        let scripted = try configScript(profileScripted, profile.label)
+        let scriptsDone = try configScript(profileScripted, profile.label)
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        personalRules = try resolvedFallbackTargets(personalRules, mergedInto: scriptsDone).filter { !leftOut.contains($0) }
+        let judged = droppingUnknownTargets(personalRules, mergedInto: scriptsDone)
+        mergedRules += judged.kept
+        mergedPolicies.formUnion(judged.policies ?? [])
+        let withPersonalRules = judged.kept.isEmpty ? scriptsDone : try ConfigTransforms.mergeOverride(
+            raw: scriptsDone,
+            overrideJSON: overrideJSON(from: OverrideSpec(appendRules: judged.kept, prependRules: personalRulesPrepend))
+        )
+        let globalRules = try resolvedFallbackTargets(
+            effectiveGlobal.appendRules, mergedInto: withPersonalRules
+        ).filter { !leftOut.contains($0) }
+        let globalJudged = droppingUnknownTargets(globalRules, mergedInto: withPersonalRules)
+        mergedRules += globalJudged.kept
+        mergedPolicies.formUnion(globalJudged.policies ?? [])
+        let scripted = globalJudged.kept.isEmpty ? withPersonalRules : try ConfigTransforms.mergeOverride(
+            raw: withPersonalRules,
+            overrideJSON: overrideJSON(from: OverrideSpec(appendRules: globalJudged.kept, prependRules: effectiveGlobal.prependRules))
+        )
         var providerMerge = ProviderDefinitionMergeReport()
         var profileLogLevel: String?
+        var scriptsListener: [String: Any]?
         var trimmedJSON: String?
         var trimmedNodesJSON: String?
         let trimmed = try applyClientTransforms(
@@ -414,6 +488,7 @@ enum ProfileRuntimeConfigBuilder {
             inspectLogLevel: { _, level in
                 profileLogLevel = level
             },
+            inspectListener: { scriptsListener = $0 },
             unchangedJSON: { trimmedJSON = $0 },
             nodesJSON: { trimmedNodesJSON = $0 }
         )
@@ -445,7 +520,8 @@ enum ProfileRuntimeConfigBuilder {
          
          
         var modeSetByApp = runtimePatch.mode != nil
-        if var layer = Self.ownLayer(of: profile, over: trimmed) {
+        let ownLayer = Self.ownLayer(of: profile, over: trimmed)
+        if var layer = ownLayer {
              
              
              
@@ -464,13 +540,19 @@ enum ProfileRuntimeConfigBuilder {
         }
          
          
+        let listenerWrittenBack = Self.lanSharingWrittenBack(pageListener, over: scriptsListener, ownLayer: ownLayer)
+        for key in listenerWrittenBack {
+            runtimePatch.setTopLevelNode(key, pageListener.topLevelNode(key))
+        }
+         
+         
          
          
          
          
          
         let directive = logLevelDirective ?? ClashLogSettings.levelDirective(
-            from: UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+            from: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
         )
         switch directive {
         case .forced(let forcedLevel):
@@ -505,7 +587,12 @@ enum ProfileRuntimeConfigBuilder {
             raw: trimmed,
             overrideJSON: runtimeOverrideJSON
         )
-        return RuntimeBuildStages(
+         
+         
+         
+         
+        let late = leftOut.isEmpty ? lateLeftOut(mergedRules, in: runtimeApplied, policies: mergedPolicies) : []
+        let stages = RuntimeBuildStages(
             afterClientTransforms: trimmed,
             beforeClientRuntimePolicy: runtimeApplied,
             udpFallback: UDPFallbackSettings.resolved(
@@ -519,6 +606,7 @@ enum ProfileRuntimeConfigBuilder {
             profileLogLevel: profileLogLevel,
             logLevelSetByApp: { if case .forced = directive { return true } else { return false } }(),
             modeSetByApp: modeSetByApp,
+            listenerWrittenBack: listenerWrittenBack,
              
              
             beforeClientRuntimePolicyJSON: trimmedJSON.flatMap { runtimeApplied == trimmed ? $0 : nil },
@@ -527,6 +615,7 @@ enum ProfileRuntimeConfigBuilder {
             nodesJSON: runtimeOverrideJSON.isEmpty || ConfigTransforms.overrideLeavesNodes(runtimeOverrideJSON)
                 ? trimmedNodesJSON : nil
         )
+        return (stages, late)
     }
 
      
@@ -567,6 +656,9 @@ enum ProfileRuntimeConfigBuilder {
         inspectLogLevel: ((Bool, String?) -> Void)? = nil,
          
          
+        inspectListener: (([String: Any]) -> Void)? = nil,
+         
+         
          
         unchangedJSON: ((String) -> Void)? = nil,
          
@@ -580,13 +672,15 @@ enum ProfileRuntimeConfigBuilder {
         if let spliced = try applyClientTransformsAroundRules(
             to: scripted, profile: profile, applyProviderDefinitions: applyProviderDefinitions,
             applyProxyChain: applyProxyChain, applyLegacyRelayMigration: applyLegacyRelayMigration,
-            providerMerge: &providerMerge, inspectLogLevel: inspectLogLevel, nodesJSON: nodesJSON) {
+            providerMerge: &providerMerge, inspectLogLevel: inspectLogLevel, inspectListener: inspectListener,
+            nodesJSON: nodesJSON) {
             return spliced
         }
         return try applyClientTransforms(
             to: scripted, profile: profile, applyProviderDefinitions: applyProviderDefinitions,
             applyProxyChain: applyProxyChain, applyLegacyRelayMigration: applyLegacyRelayMigration,
-            providerMerge: &providerMerge, inspectLogLevel: inspectLogLevel, unchangedJSON: unchangedJSON,
+            providerMerge: &providerMerge, inspectLogLevel: inspectLogLevel, inspectListener: inspectListener,
+            unchangedJSON: unchangedJSON,
             nodesJSON: nodesJSON, rulesStandIn: nil)
     }
 
@@ -609,6 +703,7 @@ enum ProfileRuntimeConfigBuilder {
         applyLegacyRelayMigration: Bool,
         providerMerge: inout ProviderDefinitionMergeReport,
         inspectLogLevel: ((Bool, String?) -> Void)?,
+        inspectListener: (([String: Any]) -> Void)?,
         nodesJSON: ((String) -> Void)?
     ) throws -> String? {
         guard scripted.utf8.count >= ConfigTransforms.ruleSectionCutFromBytes,
@@ -623,7 +718,7 @@ enum ProfileRuntimeConfigBuilder {
             rest = try applyClientTransforms(
                 to: cut.rest, profile: profile, applyProviderDefinitions: applyProviderDefinitions,
                 applyProxyChain: applyProxyChain, applyLegacyRelayMigration: applyLegacyRelayMigration,
-                providerMerge: &report, inspectLogLevel: inspectLogLevel, unchangedJSON: nil,
+                providerMerge: &report, inspectLogLevel: inspectLogLevel, inspectListener: inspectListener, unchangedJSON: nil,
                 nodesJSON: { restNodes = $0 }, rulesStandIn: standIn)
         } catch is RulesStandInTouched {
             return nil
@@ -651,6 +746,7 @@ enum ProfileRuntimeConfigBuilder {
         applyLegacyRelayMigration: Bool,
         providerMerge: inout ProviderDefinitionMergeReport,
         inspectLogLevel: ((Bool, String?) -> Void)?,
+        inspectListener: (([String: Any]) -> Void)?,
         unchangedJSON: ((String) -> Void)?,
         nodesJSON: ((String) -> Void)?,
          
@@ -725,6 +821,7 @@ enum ProfileRuntimeConfigBuilder {
         }
         let docLogLevel = document.root["log-level"] as? String
         inspectLogLevel?(docLogLevel != nil && !(document.root["log-level"] is NSNull), docLogLevel)
+        inspectListener?(document.root.filter { OverridePatch.listenerKeys.contains($0.key) })
          
          
          
@@ -765,12 +862,14 @@ enum ProfileRuntimeConfigBuilder {
     static func runtimePreview(
         raw: String,
         profile: Profile,
-        runtimeOverride: OverrideSpec = FlClashRuntimeConfig.load()
+        runtimeOverride: OverrideSpec = FlClashRuntimeConfig.load(),
+        scripts caller: ScriptEngine.Caller = .surfaced
     ) throws -> String {
         try buildProduction(
             raw: raw,
             profile: profile,
-            runtimeOverride: runtimeOverride
+            runtimeOverride: runtimeOverride,
+            scripts: caller
         )
     }
 
@@ -820,26 +919,117 @@ enum ProfileRuntimeConfigBuilder {
      
      
      
+    static func declaredRuleSetsAndSubRules(in yaml: String, readersOwn: Bool = false)
+        -> (ruleSets: Set<String>?, subRules: Set<String>?) {
+        var text = yaml
+        if let cut = text.withUTF8({ declared(inBytes: $0) }) { return sets(of: cut, readersOwn: readersOwn) }
+        let whole = (try? ConfigTransforms.foundationRoot(
+            ofYAML: yaml, omitting: ["proxies", "proxy-groups", "proxy-providers", "rules"])) ?? nil
+        return sets(of: whole, readersOwn: readersOwn)
+    }
+
+     
+     
+    static func declaredRuleSetsAndSubRules(inBytes data: Data, readersOwn: Bool = false)
+        -> (ruleSets: Set<String>?, subRules: Set<String>?)? {
+        guard let cut = data.withUnsafeBytes({ declared(inBytes: $0.bindMemory(to: UInt8.self)) }) else { return nil }
+        return sets(of: cut, readersOwn: readersOwn)
+    }
+
+     
+     
+    private static func declared(inBytes bytes: UnsafeBufferPointer<UInt8>) -> [String: Any]?? {
+        let keys = ["rule-providers", "sub-rules"]
+        guard let cut = TopLevelYAMLSections.sections(Set(keys), inBytes: bytes), cut.refused.isEmpty else { return nil }
+        let written = keys.compactMap { cut.texts[$0] }.map { $0.hasSuffix("\n") ? $0 : $0 + "\n" }.joined()
+        let read: [String: Any]? = written.isEmpty ? [:] : (try? ConfigTransforms.foundationRoot(ofYAML: written)) ?? nil
+        return .some(read)
+    }
+
+    private static func sets(of declared: [String: Any]?, readersOwn: Bool) -> (ruleSets: Set<String>?, subRules: Set<String>?) {
+        guard readersOwn, let declared, let providers = declared["rule-providers"] as? [String: Any] else {
+             
+            return (names("rule-providers", in: declared), names("sub-rules", in: declared))
+        }
+        return (Set(ModuleRuleSetSyntax.readersOwn(providers).keys), names("sub-rules", in: declared))
+    }
+
+    private static func names(_ key: String, in declared: [String: Any]?) -> Set<String>? {
+        guard let declared else { return nil }
+         
+         
+        guard let value = declared[key], !(value is NSNull) else { return [] }
+        return (value as? [String: Any]).map { Set($0.keys) }
+    }
+
+     
+     
+    static func ruleNames(in yaml: String, root: [String: Any]? = nil) -> ClashRuleNames? {
+        guard let policies = root.map(knownPolicies(root:)) ?? knownPolicies(in: yaml) else { return nil }
+        if let root {
+            return ClashRuleNames(policies: policies, ruleSets: names("rule-providers", in: root),
+                                  subRules: names("sub-rules", in: root))
+        }
+        let declared = declaredRuleSetsAndSubRules(in: yaml)
+        return ClashRuleNames(policies: policies, ruleSets: declared.ruleSets, subRules: declared.subRules)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
      
      
      
     static func droppingUnknownTargets(
         _ rules: [String],
         mergedInto yaml: String
-    ) -> (kept: [String], dropped: [String]) {
-        guard !rules.isEmpty, let known = knownPolicies(in: yaml) else { return (rules, []) }
+    ) -> (kept: [String], dropped: [String], policies: Set<String>?) {
+        guard !rules.isEmpty, let known = knownPolicies(in: yaml) else { return (rules, [], nil) }
+        let names = ClashRuleNames(policies: known, ruleSets: nil, subRules: nil)
         var kept: [String] = []
         var dropped: [String] = []
         for rule in rules {
-            if let target = StructuredRule.parse(rule)?.target, !target.isEmpty, !known.contains(target) {
+            if names.leavesOut(rule) {
                 dropped.append(rule)
             } else {
                 kept.append(rule)
             }
         }
-        return (kept, dropped)
+        return (kept, dropped, known)
     }
 
+     
+     
+     
+     
+    static func lateLeftOut(_ rules: [String], in yaml: String, policies: Set<String>) -> Set<String> {
+        let asking = rules.filter {
+            StructuredRule.parse($0)?.action == .subRule || !StructuredRule.ruleSetNames(in: $0).isEmpty
+        }
+        guard !asking.isEmpty else { return [] }
+        let declared = declaredRuleSetsAndSubRules(in: yaml)
+         
+         
+        let names = ClashRuleNames(policies: policies.isEmpty ? nil : policies,
+                                   ruleSets: declared.ruleSets, subRules: declared.subRules)
+         
+         
+        return Set(asking.filter { rule in
+            switch names.missing(in: rule) {
+            case .ruleSet?, .subRule?: return true
+            case .policy?, nil: return false
+            }
+        })
+    }
+
+     
      
      
      
@@ -855,7 +1045,7 @@ enum ProfileRuntimeConfigBuilder {
     static func personalRulesLeftOut(
         of yaml: String, root: [String: Any]? = nil, profile: Profile, globalOverride: OverrideSpec = GlobalConfig.load()
     ) -> [String] {
-        guard let known = root.map(knownPolicies(root:)) ?? knownPolicies(in: yaml) else { return [] }
+        guard let known = ruleNames(in: yaml, root: root) else { return [] }
         var candidates: [String] = []
         switch profile.overwriteMode ?? .standard {
         case .standard, .script:
@@ -868,10 +1058,9 @@ enum ProfileRuntimeConfigBuilder {
             let disabled = Set(profile.override.disabledGlobalRules ?? [])
             candidates += (profile.migratedGlobalOverride ?? globalOverride).appendRules.filter { !disabled.contains($0) }
         }
-        return candidates.filter { rule in
-            guard let target = StructuredRule.parse(rule)?.target, !target.isEmpty else { return false }
-            return !known.contains(target)
-        }
+         
+         
+        return candidates.filter(known.leavesOut)
     }
 
      
@@ -933,6 +1122,40 @@ enum ProfileRuntimeConfigBuilder {
 
      
      
+    static func lanSharingListener(of profile: Profile) -> OverridePatch {
+        OverridePatch(patchJSON: profile.override.patchJSON).retainingTopLevelKeys(OverridePatch.listenerKeys)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func lanSharingWrittenBack(_ listener: OverridePatch, over left: [String: Any]?,
+                                      ownLayer: OverridePatch?) -> [String] {
+        listener.topLevelKeys.filter { key in
+             
+             
+             
+            guard let running = ownLayer?.value(at: [key]) ?? left?[key], !(running is NSNull) else { return true }
+            return !(running as AnyObject).isEqual(listener.value(at: [key]))
+        }
+    }
+
+     
+     
      
      
      
@@ -953,8 +1176,19 @@ enum ProfileRuntimeConfigBuilder {
      
      
      
-    static func applyingOwnLayer(of profile: Profile, to document: String) throws -> String {
-        guard let layer = ownLayer(of: profile, over: document), !layer.topLevelKeys.isEmpty else { return document }
+     
+     
+     
+     
+     
+    static func applyingOwnLayer(of profile: Profile, to document: String,
+                                 listenerWrittenBack: [String]) throws -> String {
+        var layer = ownLayer(of: profile, over: document) ?? OverridePatch(patchJSON: "")
+        if !listenerWrittenBack.isEmpty {
+            let listener = lanSharingListener(of: profile)
+            for key in listenerWrittenBack { layer.setTopLevelNode(key, listener.topLevelNode(key)) }
+        }
+        guard !layer.topLevelKeys.isEmpty else { return document }
         return try ConfigTransforms.mergeOverride(
             raw: document,
             overrideJSON: overrideJSON(from: OverrideSpec(patchJSON: layer.patchJSON))
@@ -1296,9 +1530,12 @@ final class ProfileActivationCoordinator {
      
      
     private let downloadIdentity: () -> String
-    private let profileScript: (String?, String, String) throws -> String
-    private let configScript: (String, String) throws -> String
-    private let postMergeScript: (String?, String, String) throws -> String
+     
+     
+     
+    private let profileScript: ((String?, String, String) throws -> String)?
+    private let configScript: ((String, String) throws -> String)?
+    private let postMergeScript: ((String?, String, String) throws -> String)?
     private let activator: (URL) throws -> Void
     private let subscriptions: SubscriptionManager
     private let materializer: ProviderMaterializer
@@ -1377,16 +1614,10 @@ final class ProfileActivationCoordinator {
           
           
           
-         logDefaults: UserDefaults = UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard,
-         profileScript: @escaping (String?, String, String) throws -> String = {
-             try ScriptLibrary.apply(id: $0, to: $1, profileName: $2)
-         },
-         configScript: @escaping (String, String) throws -> String = {
-             try ScriptSettings.apply(toConfigYAML: $0, profileName: $1)
-         },
-         postMergeScript: @escaping (String?, String, String) throws -> String = {
-             try ScriptLibrary.apply(id: $0, to: $1, profileName: $2)
-         },
+         logDefaults: UserDefaults = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard,
+         profileScript: ((String?, String, String) throws -> String)? = nil,
+         configScript: ((String, String) throws -> String)? = nil,
+         postMergeScript: ((String?, String, String) throws -> String)? = nil,
          activator: @escaping (URL) throws -> Void,
          preflight: ((String) -> PreflightOutcome)? = nil,
           
@@ -1557,13 +1788,18 @@ final class ProfileActivationCoordinator {
      
     @discardableResult
     func activate(profile given: Profile, handedSource: HandedSource,
-                  onlyIfActive expected: ActiveConfigurationPointer? = nil) async throws -> ActiveConfigurationPointer {
+                  onlyIfActive expected: ActiveConfigurationPointer? = nil,
+                  forceFreshFetch: Bool = false) async throws -> ActiveConfigurationPointer {
         try await activate(profile: given, sourceYAML: nil, handedSource: handedSource.holdsText ? handedSource : nil,
-                           onlyIfActive: expected)
+                           onlyIfActive: expected, forceFreshFetch: forceFreshFetch)
     }
 
+     
+     
+     
     private func activate(profile given: Profile, sourceYAML: String?, handedSource: HandedSource?,
-                          onlyIfActive expected: ActiveConfigurationPointer?) async throws -> ActiveConfigurationPointer {
+                          onlyIfActive expected: ActiveConfigurationPointer?,
+                          forceFreshFetch: Bool = false) async throws -> ActiveConfigurationPointer {
          
          
          
@@ -1587,7 +1823,7 @@ final class ProfileActivationCoordinator {
         do {
             try prepareCore()
             let pointer = try await activateResolved(
-                given: given, sourceYAML: sourceYAML, handedSource: handedSource, forceFreshFetch: false,
+                given: given, sourceYAML: sourceYAML, handedSource: handedSource, forceFreshFetch: forceFreshFetch,
                 onlyIfActive: expected, firstActivation: stored == nil
             )
              
@@ -1798,7 +2034,8 @@ final class ProfileActivationCoordinator {
          
          
         let prepared: String = try autoreleasepool {
-            let reading = try prepareConfigReading(handed: chainSource, profile: profile)
+             
+            let reading = try prepareConfigReading(handed: chainSource, profile: profile, scripts: .surfaced)
             heldRoot.value = reading.root
             return reading.yaml
         }
@@ -1859,7 +2096,7 @@ final class ProfileActivationCoordinator {
         for rule in rulesLeftOut {
              
             ClashLogStore.shared.append(
-                "personal rule left out of the runtime: \(rule) names a policy this configuration does not define",
+                "personal rule left out of the runtime: \(rule) names a policy, rule set or sub-rule this configuration does not define",
                 stream: .app, level: .warning)
         }
          
@@ -2191,12 +2428,18 @@ final class ProfileActivationCoordinator {
      
      
      
+     
+     
+     
+     
+     
     func refreshProviders(
         named names: [String],
         profile given: Profile,
         fetchBudget: ProviderFetchBudget = .patient,
         expectedActive: ActiveConfigurationPointer? = nil,
-        downloadRound: ProviderDownloadRound? = nil
+        downloadRound: ProviderDownloadRound? = nil,
+        scripts caller: ScriptEngine.Caller = .surfaced
     ) async throws -> (pointer: ActiveConfigurationPointer,
                        runtimeUpdates: [String: ProviderRuntimeUpdate]) {
         try prepareCore()
@@ -2207,7 +2450,7 @@ final class ProfileActivationCoordinator {
                 "profile '\(profile.label)' has no cached source; update the profile once first")
         }
         try ConfigTransforms.validateSource(raw)
-        let merged = try prepareConfig(raw: raw, profile: profile)
+        let merged = try prepareConfig(raw: raw, profile: profile, scripts: caller)
         let reuseDir = store.providersDirectory(profileID: inUse.profileID, revision: inUse.revision)
         let publication = try await buildPublishActivate(
             profile: profile, merged: merged,
@@ -2241,7 +2484,9 @@ final class ProfileActivationCoordinator {
         }
          
         try ConfigTransforms.validateSource(raw)
-        let merged = try prepareConfig(raw: raw, profile: profile)
+         
+         
+        let merged = try prepareConfig(raw: raw, profile: profile, scripts: .surfaced)
         let reuseDir = store.providersDirectory(profileID: inUse.profileID, revision: inUse.revision)
         let publication = try await buildPublishActivate(
             profile: profile,
@@ -2283,8 +2528,12 @@ final class ProfileActivationCoordinator {
      
     private let logDefaults: UserDefaults
 
-    private func prepareConfig(raw: String, profile: Profile) throws -> String {
-        try prepareConfigReading(raw: raw, profile: profile).yaml
+     
+     
+     
+    private func prepareConfig(raw: String, profile: Profile,
+                               scripts caller: ScriptEngine.Caller = .silent) throws -> String {
+        try prepareConfigReading(handed: HandedSource(raw), profile: profile, scripts: caller).yaml
     }
 
      
@@ -2302,14 +2551,27 @@ final class ProfileActivationCoordinator {
         return PublishedPresentation.inputs(sourcePrefix: source.presentationPrefix, profile: profile, settings: settings)
     }
 
+     
+     
+     
+     
+     
     private func prepareConfigReading(raw: String, profile: Profile) throws -> (yaml: String, root: [String: Any]?) {
-        try prepareConfigReading(handed: HandedSource(raw), profile: profile)
+        try prepareConfigReading(handed: HandedSource(raw), profile: profile, scripts: .silent)
     }
 
      
      
-    private func prepareConfigReading(handed: HandedSource, profile: Profile) throws -> (yaml: String, root: [String: Any]?) {
+     
+    private func prepareConfigReading(handed: HandedSource, profile: Profile,
+                                      scripts caller: ScriptEngine.Caller) throws -> (yaml: String, root: [String: Any]?) {
         var laps = PerfLedger.Laps()
+        let libraryScript: (String?, String, String) throws -> String = {
+            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2, caller: caller)
+        }
+        let appWideScript: (String, String) throws -> String = {
+            try ScriptSettings.apply(toConfigYAML: $0, profileName: $1, caller: caller)
+        }
          
          
          
@@ -2318,8 +2580,8 @@ final class ProfileActivationCoordinator {
             profile: profile,
             globalOverride: globalOverride(),
             runtimeOverride: runtimeOverride(),
-            profileScript: profileScript,
-            configScript: configScript,
+            profileScript: profileScript ?? libraryScript,
+            configScript: configScript ?? appWideScript,
              
              
              
@@ -2329,15 +2591,14 @@ final class ProfileActivationCoordinator {
              
              
              
-            postMergeScript: postMergeScript,
+            postMergeScript: postMergeScript ?? libraryScript,
             logLevelDirective: ClashLogSettings.levelDirective(from: logDefaults)
         ) }
         lastProviderMerge = stages.providerMerge
         lastProfileLogLevel = stages.profileLogLevel
         lastLogLevelSetByApp = stages.logLevelSetByApp
         lastModeSetByApp = stages.modeSetByApp
-        lastListenerKeysSetByApp = Set(OverridePatch(patchJSON: profile.override.patchJSON)
-            .retainingTopLevelKeys(OverridePatch.listenerKeys).topLevelKeys)
+        lastListenerKeysSetByApp = Set(ProfileRuntimeConfigBuilder.lanSharingListener(of: profile).topLevelKeys)
          
          
         AppCore.returnFreeMemoryNow(after: stages.beforeClientRuntimePolicy)
@@ -2349,6 +2610,19 @@ final class ProfileActivationCoordinator {
         laps.mark("prepare.read")
         noteExternalResources(in: root, profile: profile)
         laps.mark("prepare.noteResources")
+         
+         
+         
+         
+         
+        let page = ProfileRuntimeConfigBuilder.lanSharingListener(of: profile)
+        for key in stages.listenerWrittenBack {
+            let value = page.topLevelNode(key)?.serialized() ?? ""
+             
+            ClashLogStore.shared.append(
+                #"\#(key) ran otherwise after the scripts; it runs as LAN Sharing set it (\#(value))"#,
+                stream: .app, level: .info)
+        }
         return (runtime, root)
     }
 
@@ -2759,6 +3033,24 @@ final class ProfileActivationCoordinator {
             for name in materialized.libraryCopyDates.keys {
                 if let usage = libraryFiles.nodeUsage[name] { subscriptionInfo[name] = usage }
             }
+             
+             
+             
+             
+             
+             
+             
+             
+            if let state = ProviderRefreshState.read(workingDirectory: coreHomeDir) {
+                for provider in plan.providers where provider.kind == "proxy"
+                    && !materialized.firstLoadPending.contains(provider.name) {
+                    if let newer = state.newerEntry(kind: provider.kind, name: provider.name, url: provider.url,
+                                                    than: lastUpdatedAt[provider.name]),
+                       let usage = newer.usage {
+                        subscriptionInfo[provider.name] = usage
+                    }
+                }
+            }
             try ProviderCatalog.from(
                 plan: plan,
                 entryCounts: materialized.entryCounts,
@@ -3132,7 +3424,7 @@ final class ProfileActivationCoordinator {
                 if let intentJSON = outcome.intentJSON {
                     PublishedTunIntent.publish(
                         intentJSON: intentJSON,
-                        defaults: UserDefaults(suiteName: ClashAppIdentifiers.appGroup)
+                        defaults: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
                     )
                 }
             }
@@ -3191,7 +3483,8 @@ final class ProfileActivationCoordinator {
             locations: modulesLocations)
          
          
-        ModulePublicationSummary.store(ModulePublicationSummary.summary(of: publishedModule, at: now()),
+        ModulePublicationSummary.store(ModulePublicationSummary.summary(of: publishedModule, at: now(),
+                                                                         profileID: published.profileID),
                                         locations: modulesLocations)
         let presentationNow = presentationInputs(source: sourceDigest, profile: profile)
         PublishedPresentation.record(

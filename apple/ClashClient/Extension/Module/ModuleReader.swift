@@ -233,11 +233,9 @@ enum ModuleReader {
      
      
      
-    #if os(macOS)
+     
+     
     static let maximumRuleBytes = Int.max
-    #else
-    static let maximumRuleBytes = 384 * 1024
-    #endif
 
      
     struct Pass: Sendable {
@@ -315,7 +313,6 @@ enum ModuleReader {
         attempt(1)
     }
 
-     
      
      
      
@@ -416,8 +413,8 @@ enum ModuleReader {
                  
                  
                 let size = "what the tunnel keeps of it (its rewrites, engine rules and scripts) is \(wanted) bytes"
-                let limit = total < maximumRuleBytes && maximumRuleBytes < .max
-                    ? " (\(maximumRuleBytes), less what this configuration's host lists hold)" : ""
+                let limit = total < maximumRuleBytes
+                    ? " (what memory had left at this read)" : ""
                  
                  
                  
@@ -633,6 +630,7 @@ enum ModuleTopLevelJSON {
      
      
      
+     
     static func values(keeping: @escaping (String) -> Bool, nested: [String: Set<String>] = [:], in url: URL, maximumBytes: Int,
                        maximumValueBytes: Int, chunkBytes: Int = ModuleTopLevelJSON.chunkBytes, eachChunk: ((Data) -> Void)? = nil,
                        valueBytes: ((Int) -> Void)? = nil) -> Outcome {
@@ -694,6 +692,14 @@ enum ModuleTopLevelJSON {
          
         private(set) var wanted = 0
 
+         
+         
+         
+        var bytesAsOneObject: Int {
+            let keys = Set(found.keys).union(oversized)
+            return 2 + max(0, keys.count - 1) + keys.reduce(0) { $0 + $1.utf8.count + 3 } + wanted
+        }
+
         init(keeping: @escaping (String) -> Bool, nested: [String: Set<String>] = [:], maximumValueBytes: Int) {
             self.keeping = keeping
             self.nested = nested
@@ -749,7 +755,9 @@ enum ModuleTopLevelJSON {
                     guard byte == UInt8(ascii: ":") else { return false }
                     currentKey = String(decoding: key, as: UTF8.self)
                     if let keys = nested[currentKey] {
-                        inner = [Scanner(keeping: { keys.contains($0) }, maximumValueBytes: maximumValueBytes)]
+                         
+                         
+                        inner = [Scanner(keeping: { keys.contains($0) }, maximumValueBytes: max(0, maximumValueBytes - kept))]
                         innerFailed = false
                         wantedValue = false
                         capture = nil
@@ -763,14 +771,24 @@ enum ModuleTopLevelJSON {
                     if byte == UInt8(ascii: ",") || byte == UInt8(ascii: "}") {
                         if let scanner = inner.first {
                              
-                            if !innerFailed, scanner.phase == .done, scanner.oversized.isEmpty {
-                                let object = ModuleTopLevelJSON.object(scanner.found)
-                                 
-                                wanted += object.count
-                                if kept + object.count <= maximumValueBytes {
-                                    found[currentKey] = object
-                                    kept += object.count
+                            if !innerFailed, scanner.phase == .done {
+                                if scanner.oversized.isEmpty {
+                                    let object = ModuleTopLevelJSON.object(scanner.found)
+                                     
+                                    wanted += object.count
+                                    if kept + object.count <= maximumValueBytes {
+                                        found[currentKey] = object
+                                        kept += object.count
+                                    } else {
+                                        oversized.insert(currentKey)
+                                    }
                                 } else {
+                                     
+                                     
+                                     
+                                     
+                                     
+                                    wanted += scanner.bytesAsOneObject
                                     oversized.insert(currentKey)
                                 }
                             }

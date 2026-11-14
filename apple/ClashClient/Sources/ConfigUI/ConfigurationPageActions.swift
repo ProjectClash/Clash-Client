@@ -192,13 +192,12 @@ extension ProfilesViewModel {
                 guard case .set(let path, let node) = edit, path.count == 1 else { return edit }
                 return .set(path: path, to: Self.pageNode(node, for: path[0], replacing: before.topLevelValue(path[0])))
             }
-            let label = Self.ownSchemeLabel()
             guard !changingConfigurationLibrary else { throw ConfigurationLibraryError.busy }
             changingConfigurationLibrary = true
             defer { changingConfigurationLibrary = false }
             do {
                 let prepared = try await Task.detached(priority: .userInitiated) {
-                    try library.prepareSchemePageEdit(profileID: id, expectedGeneration: snapshot.generation, label: label,
+                    try library.prepareSchemePageEdit(profileID: id, expectedGeneration: snapshot.generation,
                                                       resolveInput: ConfigurationCenterSourceBridge.BoundInputs().resolve) { page in
                         for edit in placed { page = try page.applying(edit) }
                     }

@@ -182,9 +182,9 @@
       "zh-Hant": "協定堆疊類型"
     },
     "summary": {
-      "en": "Which network stack runs the tunnel; leave it on auto unless told otherwise.",
-      "zh-Hans": "隧道使用的网络协议栈，保持自动即可。",
-      "zh-Hant": "隧道使用的網路協定堆疊，保持自動即可。"
+      "en": "In mihomo, the network stack the node's tunnel runs.",
+      "zh-Hans": "在 mihomo 里，节点隧道使用的网络协议栈。",
+      "zh-Hant": "在 mihomo 裡，節點隧道使用的網路協定堆疊。"
     },
     "presets": [
       {
@@ -211,7 +211,12 @@
           "zh-Hant": "mihomo 協定堆疊（MIPS）"
         }
       }
-    ]
+    ],
+    "platform": {
+      "en": "Every node runs the sing-box (Go) stack, whatever stack the file names.",
+      "zh-Hans": "每个节点都运行 sing-box 协议栈（Go），不管文件写的是哪个栈。",
+      "zh-Hant": "每個節點都執行 sing-box 協定堆疊（Go），不管檔案寫的是哪個堆疊。"
+    }
   },
   "proxies[*].ip-stack.congestion-controller": {
     "title": {
@@ -220,9 +225,9 @@
       "zh-Hant": "TCP 壅塞控制"
     },
     "summary": {
-      "en": "The congestion control for TCP inside the tunnel; it has no effect with gVisor.",
-      "zh-Hans": "隧道内 TCP 的拥塞控制算法，gVisor 下不起作用。",
-      "zh-Hant": "隧道內 TCP 的壅塞控制演算法，gVisor 下不起作用。"
+      "en": "The congestion control for TCP inside the tunnel.",
+      "zh-Hans": "隧道内 TCP 的拥塞控制算法。",
+      "zh-Hant": "隧道內 TCP 的壅塞控制演算法。"
     },
     "presets": [
       {
@@ -1204,6 +1209,11 @@
       "en": "QUIC's starting receive window per stream; leave it at the default.",
       "zh-Hans": "QUIC 每个流的初始接收窗口，保持默认即可。",
       "zh-Hant": "QUIC 每個串流的初始接收視窗，保持預設即可。"
+    },
+    "platform": {
+      "en": "With neither stream window written, each stream's receive window starts at 1 MiB and grows to the max window as the app reads; write either one and the small start no longer applies: what you wrote is used, the other takes the usual default.",
+      "zh-Hans": "初始和最大两个流窗口都不写时，每条流的接收窗口从 1 MiB 起步，随读取逐步增长到最大窗口；写了其中任何一个，就不再小起步：写了的按你写的，没写的用通常的默认值。",
+      "zh-Hant": "初始和最大兩個串流視窗都不寫時，每條串流的接收視窗從 1 MiB 起步，隨讀取逐步增長到最大視窗；寫了其中任何一個，就不再小起步：寫了的依你寫的，沒寫的用通常的預設值。"
     }
   },
   "proxies[*].max-stream-receive-window": {
@@ -1228,6 +1238,11 @@
       "en": "QUIC's starting receive window per connection; leave it at the default.",
       "zh-Hans": "QUIC 整条连接的初始接收窗口，保持默认即可。",
       "zh-Hant": "QUIC 整條連線的初始接收視窗，保持預設即可。"
+    },
+    "platform": {
+      "en": "With neither connection window written, the connection's receive window starts at 12 MiB and grows to the max window as apps read; write either one and the small start no longer applies: what you wrote is used, the other takes the usual default.",
+      "zh-Hans": "初始和最大两个连接窗口都不写时，整条连接的接收窗口从 12 MiB 起步，随读取逐步增长到最大窗口；写了其中任何一个，就不再小起步：写了的按你写的，没写的用通常的默认值。",
+      "zh-Hant": "初始和最大兩個連線視窗都不寫時，整條連線的接收視窗從 12 MiB 起步，隨讀取逐步增長到最大視窗；寫了其中任何一個，就不再小起步：寫了的依你寫的，沒寫的用通常的預設值。"
     }
   },
   "proxies[*].max-connection-receive-window": {
@@ -1710,7 +1725,7 @@
     "summary": {
       "en": "Opens a new session for every connection instead of reusing idle ones.",
       "zh-Hans": "每个连接都新建会话，不复用空闲的。",
-      "zh-Hant": "每個連線都新建工作階段，不重複使用閒置的。"
+      "zh-Hant": "每個連線都建立新的工作階段，不重複使用閒置的。"
     }
   },
   "proxies[masque].private-key": {
@@ -1808,9 +1823,9 @@
       "zh-Hant": "傳輸協定"
     },
     "summary": {
-      "en": "TCP or UDP; it must match the server.",
-      "zh-Hans": "TCP 或 UDP，须与服务器一致。",
-      "zh-Hant": "TCP 或 UDP，須與伺服器一致。"
+      "en": "TCP or UDP; it must match the server. On iPhone and iPad, the system may cut the connection under heavy traffic when the UDP transport is used; use TCP if the server offers it.",
+      "zh-Hans": "TCP 或 UDP，须与服务器一致。在 iPhone 和 iPad 上，UDP 传输在流量很大时可能被系统断开；服务器也提供 TCP 时建议用 TCP。",
+      "zh-Hant": "TCP 或 UDP，須與伺服器一致。在 iPhone 和 iPad 上，UDP 傳輸在流量很大時可能被系統中斷；伺服器也提供 TCP 時建議用 TCP。"
     },
     "presets": [
       {
@@ -1846,6 +1861,11 @@
       "en": "Low",
       "zh-Hans": "低",
       "zh-Hant": "低"
+    },
+    "platform": {
+      "en": "On a node using the TCP transport, multiplexing is always Off here, whatever level the node writes: each connection opens its own link to the node, with one more TCP handshake. A node using the UDP transport runs the level it writes.",
+      "zh-Hans": "TCP 传输的节点在这里一律按「关闭」运行，不管节点上写了哪一档：每个连接各自连到节点，各多一次 TCP 握手。UDP 传输的节点按节点上写的档位运行。",
+      "zh-Hant": "TCP 傳輸的節點在這裡一律依「關閉」執行，不管節點上寫了哪一檔：每個連線各自連到節點，各多一次 TCP 握手。UDP 傳輸的節點依節點上寫的檔位執行。"
     },
     "presets": [
       {

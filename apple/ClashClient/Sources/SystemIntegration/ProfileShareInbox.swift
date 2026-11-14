@@ -47,7 +47,6 @@ enum ProfileShareInboxError: LocalizedError, Equatable {
  
  
 struct ProfileShareInbox {
-    static let appGroupIdentifier = ClashAppIdentifiers.appGroup
      
      
      

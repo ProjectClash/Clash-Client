@@ -983,7 +983,15 @@ struct ClashTVRuleRecovery: Codable {
              
              
              
-            let compiled = ["domain", "ipcidr"].contains(behavior) ? "mapped"
+             
+             
+             
+             
+             
+             
+             
+             
+            let compiled = ["domain", "ipcidr"].contains(behavior) && format != "mrs" ? "mapped"
                 : behavior == "classical" && format != "mrs" ? "indexed" : nil
             guard let product = entry.products?[productKey] else { continue }
              

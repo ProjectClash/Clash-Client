@@ -65,6 +65,8 @@ public struct ClashMacOriginalProvidersPage: View {
      
      
     @Environment(\.clashFeedback) private var feedback
+     
+     
     @State private var busy = false
     @State private var selection = Set<ClashMacOriginalNode.ID>()
     @State private var adding = false
@@ -73,7 +75,12 @@ public struct ClashMacOriginalProvidersPage: View {
      
      
      
-    @State private var pressedSources: [ClashMacLibrarySource.ID: Bool] = [:]
+     
+     
+     
+     
+     
+    @State private var writes = ClashMacPageWrites<ClashMacLibrarySource.ID>()
     @State private var libraryFailure: String?
     @State private var deleting: ClashMacOriginalNode?
     @Environment(\.configurationFieldCopy) private var copy
@@ -153,22 +160,26 @@ public struct ClashMacOriginalProvidersPage: View {
         .sheet(isPresented: $adding) {
             ClashMacNewProxyProviderSheet(types: Self.types(catalog), taken: taken.union((providers ?? []).map(\.name)), catalog: catalog,
                                          save: { name, type, location in
-                try await actions.add(name, type, location)
-                await load()
+                try await writes.turns.run {
+                    try await actions.add(name, type, location)
+                    await load()
+                }
             }, close: { adding = false })
         }
-        .alert(Text(clash: .copy("Delete")), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+         
+         
+        .alert(Text(clash: .copy("Delete")), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+               presenting: deleting) { provider in
             Button(role: .destructive) {
-                let provider = deleting
                 deleting = nil
-                if let provider { Task { await delete(provider) } }
+                Task { await delete(provider) }
             } label: {
                 Text(clash: .copy("Delete"))
             }
             .accessibilityIdentifier("configuration-center.original-providers.delete.confirm")
             Button(role: .cancel) {} label: { Text(clash: .copy("Cancel")) }
-        } message: {
-            if let deleting { Text(verbatim: deleting.name) }
+        } message: { provider in
+            Text(verbatim: provider.name)
         }
     }
 
@@ -228,27 +239,13 @@ public struct ClashMacOriginalProvidersPage: View {
             if !offered.isEmpty {
                 Section {
                     ForEach(offered) { source in
-                        Toggle(isOn: Binding(get: { pressedSources[source.id] ?? (source.addedSetName != nil) }, set: { on in
-                            if on, source.addedSetName == nil {
-                                pressedSources[source.id] = on
-                                Task {
-                                    await perform { say(try await actions.addFromLibrary(source)) }
-                                    pressedSources[source.id] = nil
-                                }
-                            } else if !on, let name = source.addedSetName {
-                                pressedSources[source.id] = on
-                                Task {
-                                    await perform { try await actions.delete(name) }
-                                    pressedSources[source.id] = nil
-                                }
-                            }
-                        })) {
+                        ClashStoredToggle(writes.switches, key: source.id, stored: source.addedSetName != nil,
+                                          identifier: "configuration-center.library-sources.source",
+                                          write: { on in try await writeLibrary(source.id, on) }) {
                             Text(verbatim: Self.title(source)).lineLimit(1)
                             Text(clash: Self.detail(source))
                         }
                         .toggleStyle(.switch)
-                        .disabled(busy)
-                        .accessibilityIdentifier("configuration-center.library-sources.source")
                     }
                 } header: {
                     Text(clash: .copy("Node Library"))
@@ -287,9 +284,47 @@ public struct ClashMacOriginalProvidersPage: View {
      
      
      
+    enum LibraryWrite: Equatable {
+        case add(ClashMacLibrarySource)
+        case delete(String)
+        case nothing
+    }
+
+    static func libraryWrite(_ on: Bool, source: ClashMacLibrarySource?) -> LibraryWrite {
+        guard let source else { return .nothing }
+        if on, source.addedSetName == nil { return .add(source) }
+        if !on, let name = source.addedSetName { return .delete(name) }
+        return .nothing
+    }
+
+     
+     
+     
+    private func writeLibrary(_ id: ClashMacLibrarySource.ID, _ on: Bool) async throws {
+        let written: Bool
+        switch Self.libraryWrite(on, source: library?.first { $0.id == id }) {
+        case .add(let source): written = await apply { say(try await actions.addFromLibrary(source)) }
+        case .delete(let name): written = await apply { try await actions.delete(name) }
+        case .nothing: return
+        }
+        if !written { throw ClashStoredWriteSaidElsewhere() }
+    }
+
+     
+     
     private func perform(_ work: @escaping @MainActor () async throws -> Void) async {
-        busy = true
-        defer { busy = false }
+        await writes.turns.run {
+            busy = true
+            defer { busy = false }
+            _ = await apply(work)
+        }
+    }
+
+     
+     
+     
+     
+    private func apply(_ work: @escaping @MainActor () async throws -> Void) async -> Bool {
         var refusal: String?
         do {
             try await work()
@@ -299,6 +334,7 @@ public struct ClashMacOriginalProvidersPage: View {
         }
         await load()
         if let refusal { failure = refusal }
+        return refusal == nil
     }
 
      

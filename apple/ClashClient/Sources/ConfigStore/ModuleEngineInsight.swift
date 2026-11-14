@@ -53,7 +53,18 @@ struct ModuleEngineInsight: Equatable {
         if grew > 0 { insight.notices.append(Copy.rewritesTooLarge) }
         if counters.rewriteOverBudget + counters.scriptOverBudget > 0 { insight.notices.append(Copy.tooManyRewrites) }
         insight.notices += report.omittedModules.map(Copy.leftOut)
-        insight.notices += insight.pinnedHosts.map(Copy.pinned)
+         
+         
+         
+         
+         
+         
+        if insight.pinnedHosts.count > 1 {
+            insight.notices.append(Copy.pinnedHosts(first: insight.pinnedHosts[0],
+                                                     total: insight.pinnedHosts.count))
+        } else {
+            insight.notices += insight.pinnedHosts.map(Copy.pinned)
+        }
         return insight
     }
 
@@ -95,10 +106,10 @@ struct ModuleEngineInsight: Equatable {
             let name = module.name.trimmingCharacters(in: .whitespacesAndNewlines)
             switch module.reason {
             case .overBudget:
-                return name.isEmpty ? .app("A module has too much in it, so it was skipped.") : moduleTooLarge(name)
+                return name.isEmpty ? .app("One module's rewrites, scripts and some rules are more than memory can hold, so they weren't loaded.") : moduleTooLarge(name)
             case .overSharedBudget:
                  
-                return name.isEmpty ? .app("Too many modules are on, so one of them didn't take effect; turn some off to make room.")
+                return name.isEmpty ? .app("Not enough memory to load one module's rewrites, scripts and some rules; turn some modules off to make room.")
                     : tooManyModulesOn(name)
             case .unreadable, .digestMismatch, .scriptMismatch:
                 return name.isEmpty ? .app("A module couldn't be loaded this time, so it was skipped.") : moduleNotLoaded(name)
@@ -112,19 +123,35 @@ struct ModuleEngineInsight: Equatable {
 
          
         static func moduleTooLarge(_ name: String) -> AuthoredText {
-            .app("The module “%@” has too much in it, so it was skipped.", arguments: [name])
+            .app("The rewrites, scripts and some rules of “%@” are more than memory can hold, so they weren't loaded.", arguments: [name])
         }
 
          
         static func tooManyModulesOn(_ name: String) -> AuthoredText {
-            .app("Too many modules are on, so “%@” didn't take effect; turn some off to make room.", arguments: [name])
+            .app("Not enough memory to load the rewrites, scripts and some rules of “%@”; turn some modules off to make room.", arguments: [name])
+        }
+
+         
+        static func pinned(_ host: String) -> AuthoredText {
+            .app("%@ isn't affected by modules.", arguments: [host])
         }
 
          
          
          
-        static func pinned(_ host: String) -> AuthoredText {
-            .app("%@ isn't affected by modules.", arguments: [host])
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        static func pinnedHosts(first host: String, total: Int) -> AuthoredText {
+            .app("Modules are on for %@ and other addresses, %@ in all, but these apps have strict security policies and trust only specific certificates, so modules don't reach them.",
+                 arguments: [host, String(total)])
         }
 
         static var every: [AuthoredText] {
@@ -133,7 +160,10 @@ struct ModuleEngineInsight: Equatable {
              rewritesTooLarge, tooManyRewrites, moduleNotLoaded("A"), moduleTooLarge("A"), tooManyModulesOn("A"),
              leftOut(.init(id: "a", name: "", reason: .unreadable, detail: "")),
              leftOut(.init(id: "a", name: "", reason: .overBudget, detail: "")),
-             leftOut(.init(id: "a", name: "", reason: .overSharedBudget, detail: "")), pinned("a.example")]
+             leftOut(.init(id: "a", name: "", reason: .overSharedBudget, detail: "")), pinned("a.example"),
+              
+              
+             pinnedHosts(first: "a.example", total: 12)]
         }
     }
 }

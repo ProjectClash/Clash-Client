@@ -45,9 +45,41 @@ extension ImportedFileBytes {
     }
 }
 
+ 
+ 
 enum ProfileImportRequest: Equatable {
-    case subscription(String)
-    case configuration(fileName: String, yaml: String)
+    case subscription(String, rules: InstallLinkRuleScheme? = nil)
+    case configuration(fileName: String, yaml: String, rules: InstallLinkRuleScheme? = nil)
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+enum InstallLinkRuleScheme: String, Equatable, Sendable, CaseIterable {
+    case defaultRules = "default"
+    case lazyRules = "lazy"
+    case original
+
+     
+     
+     
+    init?(linkValue: String?) {
+        guard let linkValue, let scheme = Self(rawValue: linkValue.lowercased()) else { return nil }
+        self = scheme
+    }
+
+     
+     
+    var name: String {
+        switch self {
+        case .defaultRules: "Default Rules"
+        case .lazyRules: "Lazy Rules"
+        case .original: "Original"
+        }
+    }
 }
 
  
@@ -80,9 +112,43 @@ enum FlClashInstallLink {
      
     private static let schemes: Set<String> = ["clash", "clashmeta", "flclash"]
 
+     
+     
+    struct Target: Equatable {
+        let url: String
+        let rules: InstallLinkRuleScheme?
+    }
+
     static func subscriptionURL(from link: URL) throws -> String {
-        guard let components = URLComponents(url: link, resolvingAgainstBaseURL: false),
-              let scheme = components.scheme?.lowercased(),
+        try target(of: link).url
+    }
+
+     
+     
+    static func target(of link: URL) throws -> Target {
+        guard let components = URLComponents(url: link, resolvingAgainstBaseURL: false) else {
+            throw ProfileInstallLinkError.unsupportedLink
+        }
+        let target = try target(of: components)
+         
+         
+         
+         
+        guard let subscription = URLComponents(string: target.url),
+              subscription.scheme != nil,
+              subscription.host != nil else {
+            throw ProfileInstallLinkError.unusableSubscription
+        }
+        return target
+    }
+
+     
+     
+     
+     
+     
+    static func target(of components: URLComponents) throws -> Target {
+        guard let scheme = components.scheme?.lowercased(),
               schemes.contains(scheme),
               components.host?.lowercased() == "install-config" else {
             throw ProfileInstallLinkError.unsupportedLink
@@ -91,16 +157,8 @@ enum FlClashInstallLink {
               !raw.isEmpty else {
             throw ProfileInstallLinkError.missingSubscription
         }
-         
-         
-         
-         
-        guard let subscription = URLComponents(string: raw),
-              subscription.scheme != nil,
-              subscription.host != nil else {
-            throw ProfileInstallLinkError.unusableSubscription
-        }
-        return raw
+        let rules = components.queryItems?.first(where: { $0.name == "rules" })?.value
+        return Target(url: raw, rules: InstallLinkRuleScheme(linkValue: rules))
     }
 
      
@@ -126,6 +184,43 @@ final class ProfileImportRouter: ObservableObject {
      
      
     @Published private(set) var pendingConfirmation: String?
+     
+     
+    @Published private(set) var pendingRules: InstallLinkRuleScheme?
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @Published private(set) var waitingLinks: [FlClashInstallLink.Target] = []
+     
+     
+     
+     
+     
+     
+     
+    static let waitingLinksAtMost = 4
+     
+     
+     
+     
+     
+     
+     
+    let pauseBeforeTheNextQuestion: TimeInterval
+     
+     
+     
+     
+    var aQuestionIsAskedOrDue: Bool { pendingConfirmation != nil || !waitingLinks.isEmpty }
+     
+     
+    private var theAnsweredQuestionIsLeaving = false
     @Published private(set) var pendingImport: ProfileImportRequest?
     @Published private(set) var errorMessage = ""
      
@@ -202,10 +297,12 @@ final class ProfileImportRouter: ObservableObject {
             let session = URLSession(configuration: configuration)
             defer { session.finishTasksAndInvalidate() }
             return try await session.data(for: URLRequest(url: url)).0
-        }
+        },
+        pauseBeforeTheNextQuestion: TimeInterval = 0.5
     ) {
         self.inbox = inbox
         self.fetchLocalOrigin = fetchLocalOrigin
+        self.pauseBeforeTheNextQuestion = pauseBeforeTheNextQuestion
     }
 
      
@@ -223,7 +320,19 @@ final class ProfileImportRouter: ObservableObject {
                  
                 return try importFile(link)
             }
-            pendingConfirmation = try FlClashInstallLink.subscriptionURL(from: link)
+            let target = try FlClashInstallLink.target(of: link)
+            guard let asking = pendingConfirmation else {
+                 
+                 
+                 
+                if waitingLinks.isEmpty, !theAnsweredQuestionIsLeaving {
+                    ask(target)
+                } else {
+                    wait(target, behind: nil)
+                }
+                return nil
+            }
+            wait(target, behind: FlClashInstallLink.Target(url: asking, rules: pendingRules))
             return nil
         } catch {
              
@@ -232,12 +341,61 @@ final class ProfileImportRouter: ObservableObject {
         }
     }
 
+     
+     
+     
+    private func ask(_ target: FlClashInstallLink.Target) {
+        pendingRules = target.rules
+        pendingConfirmation = target.url
+    }
+
+     
+     
+     
+     
+    private func wait(_ target: FlClashInstallLink.Target, behind asking: FlClashInstallLink.Target?) {
+        if target == asking || waitingLinks.contains(target) {
+            ClashLogStore.shared.append("install link already asked about or waiting, once  \(target.url)",
+                                        stream: .app, level: .warning)
+        } else if waitingLinks.count >= Self.waitingLinksAtMost {
+            ClashLogStore.shared.append("install link dropped, \(waitingLinks.count) already wait  \(target.url)",
+                                        stream: .app, level: .warning)
+        } else {
+            waitingLinks.append(target)
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+    private func askTheNextLinkOnceTheAnsweredOneHasGone() {
+        theAnsweredQuestionIsLeaving = true
+        let pause = pauseBeforeTheNextQuestion
+        DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + pause) {
+                guard let self else { return }
+                self.theAnsweredQuestionIsLeaving = false
+                guard self.pendingConfirmation == nil, let next = self.waitingLinks.first else { return }
+                 
+                 
+                self.ask(next)
+                self.waitingLinks.removeFirst()
+            }
+        }
+    }
+
     func acceptPendingConfirmation() {
         guard let url = pendingConfirmation else { return }
+        let rules = pendingRules
         ClashLogStore.shared.append("install link accepted  \(url)", stream: .app, level: .warning)
         pendingConfirmation = nil
+        pendingRules = nil
+        defer { askTheNextLinkOnceTheAnsweredOneHasGone() }
         guard FlClashInstallLink.isLocalOrigin(url), let local = URL(string: url) else {
-            publishInOrder(.subscription(url))
+            publishInOrder(.subscription(url, rules: rules))
             return
         }
          
@@ -248,7 +406,7 @@ final class ProfileImportRouter: ObservableObject {
          
          
          
-        enqueue { [weak self] in
+        enqueue(rules: rules) { [weak self] in
             guard let self else { return ([], []) }
             do {
                 let data = try await self.fetchLocalOrigin(local)
@@ -263,7 +421,12 @@ final class ProfileImportRouter: ObservableObject {
         ClashLogStore.shared.append(
             "install link declined  hadPending=\(pendingConfirmation != nil)",
             stream: .app, level: .warning)
+         
+         
+        let answered = pendingConfirmation != nil
         pendingConfirmation = nil
+        pendingRules = nil
+        if answered { askTheNextLinkOnceTheAnsweredOneHasGone() }
     }
 
      
@@ -280,6 +443,13 @@ final class ProfileImportRouter: ObservableObject {
 
     nonisolated static func confirmationText(for raw: String) -> String {
         raw
+    }
+
+     
+     
+     
+    nonisolated static func confirmationRuleLine(for rules: InstallLinkRuleScheme?) -> ClashDisplayText? {
+        rules.map { .formatCopy("Rule scheme: %@", [$0.name]) }
     }
 
      
@@ -449,8 +619,10 @@ final class ProfileImportRouter: ObservableObject {
      
      
      
+     
     @discardableResult
-    private func enqueue(_ produce: @escaping @MainActor () async
+    private func enqueue(rules: InstallLinkRuleScheme? = nil,
+                         _ produce: @escaping @MainActor () async
                             -> (items: [(data: Data, fileName: String)], failures: [Refusal]))
         -> Task<ProfileImportOutcome, Never> {
         let previous = checking
@@ -477,7 +649,7 @@ final class ProfileImportRouter: ObservableObject {
                 case .failure(let error):
                     told.append(self.refusal(error))
                 case .success(let yaml):
-                    self.publish(.configuration(fileName: item.fileName, yaml: yaml))
+                    self.publish(.configuration(fileName: item.fileName, yaml: yaml, rules: rules))
                     imported += 1
                 }
             }

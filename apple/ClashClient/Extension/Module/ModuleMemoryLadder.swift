@@ -278,7 +278,7 @@ final class ModuleMemoryLadder: ModuleAllowance {
         guard !thresholds.relievesOnCriticalOnly else { return }
         let at = now()
         let near = lastHeadroom.map { $0 < thresholds.relief } ?? false
-        if !forced, !near, let last = lastReadingAt, at.timeIntervalSince(last) < Self.readingSpacing, at >= last { return }
+        if !forced, !near, let last = lastReadingAt, (0..<Self.readingSpacing).contains(at.timeIntervalSince(last)) { return }
         lastReadingAt = at
         let reading = probe()
         onReading(reading)
@@ -439,6 +439,9 @@ struct ModuleLadderSeams {
  
  
  
+ 
+ 
+ 
 enum ModuleEngineBudget {
     static let steady: Int64 = 4 << 20
     #if os(macOS)
@@ -474,14 +477,21 @@ enum ModuleEngineBudget {
      
      
      
-     
     static let heldPerCompiledRegex: Int64 = 1_843
-    static let ruleBytesPerCompiledRegex: Int64 = 30
      
-    static let compiledRegexesAtMost: Int64 = {
-        let sum = ModuleGatedMatcher.maximumPinned.addingReportingOverflow(ModuleRewriteProgram.maximumCarriedRegexes)
-        return Int64(sum.overflow ? .max : sum.partialValue)
-    }()
+     
+     
+    static let chargedPerCompiledRegex: Int64 = 3_174
+     
+     
+     
+     
+     
+     
+     
+     
+    static let ruleBytesPerCompiledRegex: Int64 = 30
+    static let regexesTheShareSetsAside: Int64 = 512
 
      
      
@@ -507,27 +517,97 @@ enum ModuleEngineBudget {
      
     static func programHeld(ruleBytes: Int) -> Int64 {
         let bytes = Int64(max(0, ruleBytes))
-        return heldPerProgram + bytes * heldPerRuleByte + min(bytes / ruleBytesPerCompiledRegex, compiledRegexesAtMost) * heldPerCompiledRegex
+        return heldPerProgram + bytes * heldPerRuleByte
+            + min(bytes / ruleBytesPerCompiledRegex, regexesTheShareSetsAside) * chargedPerCompiledRegex
     }
 
      
      
      
      
-    static func ruleBytes(listsHolding lists: Int64) -> Int {
+     
+     
+     
+     
+     
+    static func programRoom(headroom: Int64?, holding held: Int64 = 0, keptRuleBytes kept: Int) -> Int64? {
+        #if os(macOS)
+        return nil
+        #else
+        guard let headroom else { return nil }
+        let thresholds = ModuleLadderThresholds.iOS
+        let structures = programHeld(keptRuleBytes: kept, compiledRegexes: 0)
+        let steady = headroom + max(0, held) - thresholds.floor - growthReserve - structures
+        let peak = headroom - thresholds.relief - structures
+        return max(0, min(steady, peak))
+        #endif
+    }
+
+     
+     
+     
+     
+    static let readPeakPerRuleByte: Int64 = 12
+
+     
+     
+     
+     
+     
+     
+    static let growthReserve: Int64 = 6 << 20
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func ruleBytes(headroom: Int64?, holding held: Int64 = 0) -> Int {
         #if os(macOS)
         return ModuleReader.maximumRuleBytes
         #else
-        let left = steady - lists
-        var low = 0, high = ModuleReader.maximumRuleBytes
-        guard programHeld(ruleBytes: high) > left else { return high }
+        guard let headroom else { return ModuleReader.maximumRuleBytes }
+        let thresholds = ModuleLadderThresholds.iOS
+        let peakRoom = headroom - thresholds.relief
+        let steadyRoom = headroom + max(0, held) - thresholds.floor - growthReserve
+        guard peakRoom > 0, steadyRoom > 0 else { return 0 }
+        var low = 0, high = Int(peakRoom / readPeakPerRuleByte)
         while low < high {
-            let middle = (low + high + 1) / 2
-            if programHeld(ruleBytes: middle) <= left { low = middle } else { high = middle - 1 }
+            let middle = low + (high - low + 1) / 2
+            if programHeld(ruleBytes: middle) <= steadyRoom { low = middle } else { high = middle - 1 }
         }
         return low
         #endif
     }
+
+     
+     
+     
+     
+     
+    static func headroomForShare(_ reading: ModuleMemoryReading = ModuleMemoryProbe.read(),
+                                 onADevice: Bool = onADevice) -> Int64? {
+        if let headroom = reading.headroom { return headroom }
+        guard onADevice, reading.footprint >= 0, let limit = ModuleLadderThresholds.iOS.assumedLimit else { return nil }
+        return max(0, limit - reading.footprint)
+    }
+
+    #if targetEnvironment(simulator)
+    static let onADevice = false
+    #else
+    static let onADevice = true
+    #endif
 }
 
 extension ModuleEngineAssembly {

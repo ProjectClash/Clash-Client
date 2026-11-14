@@ -152,6 +152,11 @@ public struct ConfigurationCollectionEntry: Identifiable, Equatable, Sendable {
      
      
      
+     
+    public var copyUpdatedAt: Date? = nil
+     
+     
+     
     public var sourceUserAgent: String? = nil
     public var id: ConfigurationCollection.ID { collection.id }
     public init(source: ConfigurationSourceRecord, collection: ConfigurationCollection) {

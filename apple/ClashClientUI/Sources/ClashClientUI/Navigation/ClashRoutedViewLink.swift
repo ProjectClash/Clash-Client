@@ -94,6 +94,51 @@ private struct ClashNativePushBoundaryModifier: ViewModifier {
     }
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashNativeNavigationLink<Destination: View, Label: View>: View {
+    private let destination: Destination
+    private let label: Label
+
+    public var body: some View {
+        NavigationLink {
+            destination
+                .clashNativePushBoundary()
+        } label: {
+            label
+        }
+    }
+
+    public init(
+        @ViewBuilder destination: () -> Destination,
+        @ViewBuilder label: () -> Label
+    ) {
+        self.destination = destination()
+        self.label = label()
+    }
+}
+
 public enum ClashViewRouteRegistry {
     private struct Entry {
         let builder: () -> AnyView
@@ -549,6 +594,10 @@ public struct ClashRoutedViewDestination<Destination: View>: View {
 #else
         NavigationLink(isActive: $isPresented) {
             ClashLazyView(destination)
+                 
+                 
+                 
+                .clashNativePushBoundary()
         } label: {
             EmptyView()
         }
@@ -606,7 +655,10 @@ private struct ClashNativeRoutedDestination<Content: View>: View {
     }
 
     var body: some View {
-        content.environment(
+        content
+             
+            .environment(\.clashIsPushedPage, true)
+            .environment(
             \.clashPopRoute,
             ClashRoutePusher { _ in
                 awaitsReturn = false

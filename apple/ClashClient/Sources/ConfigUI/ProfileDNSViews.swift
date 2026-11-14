@@ -176,7 +176,7 @@ struct ProfileDNSSettingsAdapter: View {
      
     nonisolated static func derive(profile: Profile, sourceYAML: String?, sidecar: String?) -> DNSDerivation {
         let stages = sidecar.flatMap {
-            try? ProfileRuntimeConfigBuilder.buildProductionStages(raw: $0, profile: profile, applyProxyChain: false)
+            try? ProfileRuntimeConfigBuilder.buildProductionStages(raw: $0, profile: profile, applyProxyChain: false, scripts: .silent)
         }
         let finished = stages.flatMap { try? $0.finished() }
         var bases = sourceYAML.map(ClashDNSInheritedBases.read(sourceYAML:)) ?? .none

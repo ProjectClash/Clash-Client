@@ -19,12 +19,14 @@ import SwiftUI
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
 struct ClashMacTunnelSettingsView: View {
     @ObservedObject var vpn: VPNController
-    @State private var draft = VPNTunnelSettings()
-    @State private var hasLoaded = false
-    @State private var isApplying = false
-    @State private var error = ""
      
      
      
@@ -57,7 +59,7 @@ struct ClashMacTunnelSettingsView: View {
 
             Section {
                 Toggle("Include Local Networks", isOn: binding(\.includeLocalNetworks))
-                    .disabled(!draft.localNetworksSwitchIsEnabled)
+                    .disabled(!shown.localNetworksSwitchIsEnabled)
                     .accessibilityIdentifier("tunnel.includeLocalNetworks")
             } header: {
                 Text("Include Local Networks")
@@ -71,7 +73,7 @@ struct ClashMacTunnelSettingsView: View {
             if #available(macOS 13.3, *) {
                 Section {
                     Toggle("Include APNs", isOn: binding(\.includeAPNs))
-                        .disabled(!draft.apnsSwitchIsEnabled)
+                        .disabled(!shown.apnsSwitchIsEnabled)
                         .accessibilityIdentifier("tunnel.includeAPNs")
                 } header: {
                     Text("Include APNs")
@@ -124,21 +126,12 @@ struct ClashMacTunnelSettingsView: View {
                 Text("If YES, 17.0.0.0/8 stays outside the tunnel and push.apple.com resolves to its real address, so Apple push notifications reach this Mac directly instead of through the proxy. Takes effect on the next connection.")
             }
 
-            if !error.isEmpty {
+            if !vpn.tunnelSettingsRefusal.isEmpty {
                 Section {
-                    ClashStatusMessage(text: .copy(error), kind: .error)
+                    ClashStatusMessage(text: .copy(vpn.tunnelSettingsRefusal), kind: .error)
                         .accessibilityIdentifier("tunnel.error")
                 }
             }
-        }
-        .disabled(isApplying)
-        .onAppear {
-            guard !hasLoaded else { return }
-            draft = vpn.tunnelSettings
-            hasLoaded = true
-        }
-        .onChange(of: vpn.tunnelSettings) { settings in
-            draft = settings
         }
         .task { moduleSets = await ModuleDeviceSettingNote.published() }
     }
@@ -155,30 +148,17 @@ struct ClashMacTunnelSettingsView: View {
         }
     }
 
+     
+    private var shown: VPNTunnelSettings { vpn.waitingTunnelSettings ?? vpn.tunnelSettings }
+
     private func binding(_ keyPath: WritableKeyPath<VPNTunnelSettings, Bool>) -> Binding<Bool> {
         Binding(
-            get: { draft[keyPath: keyPath] },
+            get: { shown[keyPath: keyPath] },
             set: { value in
-                var next = draft
+                var next = shown
                 next[keyPath: keyPath] = value
-                draft = next
-                commit(next)
+                vpn.flipTunnelSettings(to: next)
             }
         )
-    }
-
-     
-     
-    private func commit(_ settings: VPNTunnelSettings) {
-        isApplying = true
-        error = ""
-        Task {
-            let applied = await vpn.updateTunnelSettings(settings)
-            if !applied {
-                error = vpn.lastError
-                draft = vpn.tunnelSettings
-            }
-            isApplying = false
-        }
     }
 }

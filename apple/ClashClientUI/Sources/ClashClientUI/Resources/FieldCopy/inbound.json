@@ -706,9 +706,9 @@
       }
     ],
     "summary": {
-      "en": "The congestion control for TCP inside the tunnel; only the mihomo stack (MIPS) uses it.",
-      "zh-Hans": "隧道内 TCP 的拥塞控制算法，只有 mihomo 协议栈（MIPS）使用。",
-      "zh-Hant": "隧道內 TCP 的壅塞控制演算法，只有 mihomo 協定堆疊（MIPS）使用。"
+      "en": "The congestion control for TCP inside the tunnel.",
+      "zh-Hans": "隧道内 TCP 的拥塞控制算法。",
+      "zh-Hant": "隧道內 TCP 的壅塞控制演算法。"
     },
     "title": {
       "en": "TCP Congestion Control",
@@ -4460,6 +4460,14 @@
           "zh-Hant": "mihomo 協定堆疊（MIPS）"
         },
         "value": "mips"
+      },
+      {
+        "label": {
+          "en": "sing-box stack (Go)",
+          "zh-Hans": "sing-box 协议栈（Go）",
+          "zh-Hant": "sing-box 協定堆疊（Go）"
+        },
+        "value": "go"
       }
     ],
     "summary": {
@@ -4542,6 +4550,18 @@
       "en": "Forward Target",
       "zh-Hans": "转发目标",
       "zh-Hant": "轉送目標"
+    }
+  },
+  "listeners[*].tcp-idle-timeout": {
+    "summary": {
+      "en": "Closes a TCP connection after it has been idle in both directions for this many seconds. Empty or 0 never closes it; values under 60 are rejected.",
+      "zh-Hans": "TCP 连接两个方向都空闲超过这么多秒就关掉。不写或写 0 不关；小于 60 会被拒绝。",
+      "zh-Hant": "TCP 連線兩個方向都閒置超過這麼多秒就關閉。不寫或寫 0 不關；小於 60 會被拒絕。"
+    },
+    "title": {
+      "en": "TCP Idle Timeout",
+      "zh-Hans": "TCP 空闲超时",
+      "zh-Hant": "TCP 閒置逾時"
     }
   },
   "listeners[*].tlsmirror-config": {
@@ -4812,7 +4832,7 @@
         "label": {
           "en": "TUN (virtual network card)",
           "zh-Hans": "TUN（虚拟网卡）",
-          "zh-Hant": "TUN（虛擬網路卡）"
+          "zh-Hant": "TUN（虛擬網卡）"
         },
         "value": "tun"
       },

@@ -236,6 +236,12 @@ struct HomeConnectionIssueView: View {
      
      
     var modulesListener: ModuleActivationRecord? = nil
+     
+     
+     
+    var onDemandNote: String?
+     
+    var openOnDemand: () -> Void = {}
 
     @Environment(\.locale) private var locale
 
@@ -249,6 +255,8 @@ struct HomeConnectionIssueView: View {
     @State private var confirmsVPNProfileReset = false
      
     @State private var wantsLogsOnDismiss = false
+     
+    @State private var wantsOnDemandOnDismiss = false
     @State private var feedback: ClashFeedbackPresentation?
 
     var body: some View {
@@ -280,7 +288,7 @@ struct HomeConnectionIssueView: View {
             dismissTitle: "Done"
         )
 #endif
-        .sheet(isPresented: $managesRuleSets) {
+        .clashSheet(isPresented: $managesRuleSets) {
             ClashFeatureNavigationContainer {
                 MemoryTrimManageView(
                     items: ruleSetItems,
@@ -294,7 +302,7 @@ struct HomeConnectionIssueView: View {
             }
             .clashModalPresentation(.page)
         }
-        .sheet(isPresented: $managesDNS) {
+        .clashSheet(isPresented: $managesDNS) {
             ClashFeatureNavigationContainer {
                 DNSTrimManageView(
                     policyKeys: dnsPolicyKeys,
@@ -311,7 +319,7 @@ struct HomeConnectionIssueView: View {
             }
             .clashModalPresentation(.page)
         }
-        .sheet(isPresented: $managesGeo) {
+        .clashSheet(isPresented: $managesGeo) {
             ClashFeatureNavigationContainer {
                 GeoTrimManageView(
                     siteItems: geoSiteItems,
@@ -328,7 +336,7 @@ struct HomeConnectionIssueView: View {
             }
             .clashModalPresentation(.page)
         }
-        .sheet(isPresented: $showsProviderLoad) {
+        .clashSheet(isPresented: $showsProviderLoad) {
             ClashFeatureNavigationContainer {
                 ProviderLoadDetailView(rows: providerLoadRows)
             }
@@ -338,6 +346,11 @@ struct HomeConnectionIssueView: View {
              
              
              
+            if wantsOnDemandOnDismiss {
+                wantsOnDemandOnDismiss = false
+                openOnDemand()
+                return
+            }
             guard wantsLogsOnDismiss else { return }
             wantsLogsOnDismiss = false
             openLogs()
@@ -393,6 +406,26 @@ struct HomeConnectionIssueView: View {
                     Text(clash: wayOut)
                         .font(.subheadline)
                         .accessibilityIdentifier("connection.issue.way-out")
+                }
+            }
+
+             
+             
+             
+             
+            if let onDemandNote {
+                Section {
+                    Text(verbatim: onDemandNote)
+                        .font(.subheadline)
+                        .accessibilityIdentifier("connection.issue.on-demand")
+                    Button {
+                        wantsOnDemandOnDismiss = true
+                        dismiss()
+                    } label: {
+                        Label("Open On Demand", systemImage: ClashMoreDestination.onDemand.symbol.name)
+                            .font(.subheadline)
+                    }
+                    .accessibilityIdentifier("connection.issue.open-on-demand")
                 }
             }
 

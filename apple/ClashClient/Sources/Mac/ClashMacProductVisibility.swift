@@ -276,8 +276,24 @@ struct ClashMacWindowReader: NSViewRepresentable {
     final class ReadingView: NSView {
         var onWindow: ((NSWindow) -> Void)?
 
+         
+         
+         
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            let center = NotificationCenter.default
+            center.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+            guard let window else { return }
+            onWindow?(window)
+             
+             
+             
+             
+            center.addObserver(self, selector: #selector(windowDidBecomeKey(_:)),
+                               name: NSWindow.didBecomeKeyNotification, object: window)
+        }
+
+        @objc private func windowDidBecomeKey(_ notification: Notification) {
             if let window { onWindow?(window) }
         }
     }

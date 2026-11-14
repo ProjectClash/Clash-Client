@@ -8,27 +8,72 @@ public enum ConfigurationRuleDocument {
      
      
      
+     
+     
     public static func project(_ document: OrderedJSON) -> OrderedJSON {
         guard case .object(let pairs) = document else { return document }
-        var result = OrderedJSON.object(pairs.filter { keys.contains($0.key) })
-        let nodes: Set<String>
-        if case .array(let values) = document.topLevelValue("proxies") {
-            nodes = Set(values.compactMap { value in
-                if case .string(let name) = value.topLevelValue("name") { return name }
-                return nil
-            })
-        } else { nodes = [] }
-        guard case .array(let groups) = document.topLevelValue("proxy-groups") else { return result }
-        result = result.settingTopLevel("proxy-groups", to: .array(groups.map { group in
+        return .object(pairs.filter { keys.contains($0.key) })
+    }
+
+     
+     
+     
+     
+     
+    public static func namedNodes(of document: OrderedJSON, recorded: [String]?) -> [String]? {
+        let nodes = Set(nodeNames(in: document)).union(recorded ?? [])
+        guard !nodes.isEmpty, case .array(let groups)? = document.topLevelValue("proxy-groups") else { return nil }
+        var seen = Set<String>(), named: [String] = []
+        for group in groups {
+            guard case .array(let members)? = group.topLevelValue("proxies") else { continue }
+            for case .string(let name) in members where nodes.contains(name) && seen.insert(name).inserted { named.append(name) }
+        }
+        return named.isEmpty ? nil : named
+    }
+
+     
+     
+    public static func namedNodesSource(of document: OrderedJSON, sourceID: String, recorded: String?) -> String? {
+        recorded ?? (nodeNames(in: document).isEmpty ? nil : sourceID)
+    }
+
+     
+    public static func nodeNames(in document: OrderedJSON) -> [String] {
+        guard case .array(let values) = document.topLevelValue("proxies") else { return [] }
+        return values.compactMap { value in
+            if case .string(let name) = value.topLevelValue("name") { return name }
+            return nil
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func binding(_ document: OrderedJSON, nodes: Set<String>, supplied: Set<String>) -> OrderedJSON {
+        guard !nodes.isEmpty, case .array(let groups) = document.topLevelValue("proxy-groups") else { return document }
+        return document.settingTopLevel("proxy-groups", to: .array(groups.map { group in
             var value = group
             var bindsNodes = false
             if case .array(let members) = group.topLevelValue("proxies") {
+                var named = 0
                 let retained = members.filter { member in
-                    if case .string(let name) = member, nodes.contains(name) { return false }
-                    return true
+                    guard case .string(let name) = member, nodes.contains(name) else { return true }
+                    named += 1
+                    return supplied.contains(name)
                 }
-                bindsNodes = retained.count != members.count
-                value = value.settingTopLevel("proxies", to: .array(retained))
+                bindsNodes = named > 0 && members.count - retained.count == named
+                if retained.count != members.count { value = value.settingTopLevel("proxies", to: .array(retained)) }
+                if case .string(let selected) = value.topLevelValue("default-selected"), nodes.contains(selected),
+                   !supplied.contains(selected) {
+                    value = value.removingTopLevel("default-selected")
+                }
             }
              
              
@@ -42,13 +87,9 @@ public enum ConfigurationRuleDocument {
                 if case .array(let providers) = group.topLevelValue("use"), !providers.isEmpty { namesProviders = true }
                 else { namesProviders = false }
                 value = value.settingTopLevel(namesProviders ? "include-all-proxies" : "include-all", to: .scalar("true"))
-                if case .string(let selected) = value.topLevelValue("default-selected"), nodes.contains(selected) {
-                    value = value.removingTopLevel("default-selected")
-                }
             }
             return value
         }))
-        return result
     }
 }
 
@@ -103,6 +144,13 @@ public struct ConfigurationRuleDraft: Equatable, Sendable {
      
      
      
+    public private(set) var namedNodes: [String]?
+     
+    public private(set) var namedNodesSourceID: String?
+     
+     
+     
+     
      
     public struct SubRule: Identifiable, Equatable, Sendable {
         public let id: UUID
@@ -124,6 +172,9 @@ public struct ConfigurationRuleDraft: Equatable, Sendable {
         notes = scheme.ruleNotes ?? [:]
         originalDocument = try OrderedJSON.parse(payload.documentJSON)
         additionalDocument = ConfigurationRuleDocument.project(originalDocument)
+        namedNodes = ConfigurationRuleDocument.namedNodes(of: originalDocument, recorded: scheme.namedNodes)
+        namedNodesSourceID = namedNodes == nil ? nil
+            : ConfigurationRuleDocument.namedNodesSource(of: originalDocument, sourceID: scheme.sourceID, recorded: scheme.namedNodesSourceID)
         groups = try ConfigurationRuleGroupSnapshot.read(additionalDocument).map { Group(id: UUID(), document: $0.document) }
         guard case .array(let rules) = originalDocument.topLevelValue("rules") else { throw ConfigurationLibraryError.missingRules }
         rows = try rules.map {
@@ -151,6 +202,8 @@ public struct ConfigurationRuleDraft: Equatable, Sendable {
         notes = [:]
         originalDocument = document
         additionalDocument = document
+        namedNodes = ConfigurationRuleDocument.namedNodes(of: document, recorded: nil)
+        namedNodesSourceID = nil
         groups = try ConfigurationRuleGroupSnapshot.read(document).map { Group(id: UUID(), document: $0.document) }
         guard case .array(let rules) = document.topLevelValue("rules") else { throw ConfigurationLibraryError.missingRules }
         rows = try rules.map {
@@ -200,6 +253,8 @@ public struct ConfigurationRuleDraft: Equatable, Sendable {
         result.version = stored.version
         result.originalDocument = stored.originalDocument
         result.additionalDocument = stored.additionalDocument
+        result.namedNodes = stored.namedNodes
+        result.namedNodesSourceID = stored.namedNodesSourceID
         let storedKeys: Set<String>
         if case .object(let providers)? = stored.additionalDocument.topLevelValue("rule-providers") {
             storedKeys = Set(providers.map(\.key))
@@ -335,6 +390,13 @@ public struct ConfigurationRuleDraft: Equatable, Sendable {
         }
         return currentDocument()
     }
+     
+     
+    public var ruleSetNames: [String] {
+        guard case .object(let fields)? = additionalDocument.topLevelValue("rule-providers") else { return [] }
+        return fields.map(\.key).sorted()
+    }
+
     public func currentDocument() -> OrderedJSON {
         var result = additionalDocument.settingTopLevel("rules", to: .array(rows.map { .string($0.raw) }))
         if !groups.isEmpty || originalDocument.topLevelValue("proxy-groups") != nil {
@@ -460,9 +522,10 @@ public extension ConfigurationRuleDraft {
     }
     private func validateGroupNamesAndCycles() throws {
         var names: Set<String> = ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"]
-        if case .array(let nodes) = additionalDocument.topLevelValue("proxies") {
-            for node in nodes { if case .string(let name) = node.topLevelValue("name") { names.insert(name) } }
-        }
+         
+         
+        names.formUnion(ConfigurationRuleDocument.nodeNames(in: originalDocument))
+        names.formUnion(namedNodes ?? [])
         for group in groups {
             guard names.insert(group.name).inserted else { throw ConfigurationRuleGroupError.duplicate(group.name) }
         }
@@ -511,21 +574,30 @@ public extension ConfigurationRuleDraft {
         notes = moved
     }
 
+     
+     
+     
+     
+     
+     
+     
+    private static func groupTargetIndex(_ fields: [String]) -> Int? {
+        switch fields[0].trimmingCharacters(in: .whitespaces).uppercased() {
+        case "SUB-RULE": return nil
+        case "MATCH", "FINAL": return fields.count > 1 ? 1 : nil
+        case "NOT", "OR", "AND", "DOMAIN-REGEX", "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX":
+            return fields.count > 1 ? fields.count - 1 : nil
+        default: return fields.count > 2 ? 2 : nil
+        }
+    }
+
     private mutating func rewriteReferences(from old: String, to new: String) {
         generatedRuleGroups = generatedRuleGroups.mapValues { $0 == old ? new : $0 }
         func reference(_ value: OrderedJSON) -> OrderedJSON { value == .string(old) ? .string(new) : value }
         func rule(_ raw: String) -> String {
             var fields = raw.components(separatedBy: ",")
-            let kind = fields[0].trimmingCharacters(in: .whitespaces).uppercased()
-            let index: Int
-             
-            switch kind {
-            case "SUB-RULE": return raw
-            case "MATCH", "FINAL": index = 1
-            case "NOT", "OR", "AND", "DOMAIN-REGEX", "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX": index = fields.count - 1
-            default: index = 2
-            }
-            guard fields.indices.contains(index), fields[index].trimmingCharacters(in: .whitespaces) == old else { return raw }
+            guard let index = Self.groupTargetIndex(fields),
+                  fields[index].trimmingCharacters(in: .whitespaces) == old else { return raw }
             fields[index] = new
             return fields.joined(separator: ",")
         }
@@ -758,16 +830,23 @@ public extension ConfigurationRuleDraft {
     }
 
      
+     
+     
+     
     public func ruleSetPolicy(_ key: String) -> String? {
         guard let row = rows.first(where: { $0.raw.hasPrefix("RULE-SET," + key + ",") }) else { return nil }
-        return row.raw.split(separator: ",", maxSplits: 2, omittingEmptySubsequences: false).dropFirst(2).first.map(String.init)
+        return row.raw.components(separatedBy: ",")[2].trimmingCharacters(in: .whitespaces)
     }
 
      
      
+     
+     
     public mutating func setRuleSetPolicy(_ key: String, policy: String) {
         guard let index = rows.firstIndex(where: { $0.raw.hasPrefix("RULE-SET," + key + ",") }) else { return }
-        rows[index].raw = "RULE-SET," + key + "," + policy
+        var fields = rows[index].raw.components(separatedBy: ",")
+        fields[2] = policy
+        rows[index].raw = fields.joined(separator: ",")
         if let generated = generatedRuleGroups[key], generated != policy,
            let group = groups.first(where: { $0.name == generated }) {
             generatedRuleGroups.removeValue(forKey: key)
@@ -778,32 +857,38 @@ public extension ConfigurationRuleDraft {
      
      
      
-    public mutating func attachRuleSet(key: String, name: String, rules content: [String], policy: String) throws {
+    public mutating func attachRuleSet(key: String, name: String, rules content: [String], policy: String,
+                                       link: ConfigurationRuleSetLink? = nil, behavior: String? = nil) throws {
         if containsRuleSet(key) {
             var providers = additionalDocument.topLevelValue("rule-providers") ?? .object([])
-            providers = providers.settingTopLevel(key, to: .object([
-                ("type", .string("inline")), ("behavior", .string("classical")),
-                ("payload", .array(content.map(OrderedJSON.string)))
-            ]))
+            providers = providers.settingTopLevel(key, to: Self.ruleSetProvider(key: key, rules: content, link: link, behavior: behavior))
             additionalDocument = additionalDocument.settingTopLevel("rule-providers", to: providers)
             setRuleSetPolicy(key, policy: policy)
         } else {
-            try addRuleSet(key: key, name: name, rules: content, defaultRoute: "proxy", policy: policy)
+            try addRuleSet(key: key, name: name, rules: content, defaultRoute: "proxy", policy: policy, link: link, behavior: behavior)
         }
     }
 
      
      
      
-    mutating func addRuleSet(key: String, name: String, rules content: [String], defaultRoute: String, policy: String? = nil) throws {
+    static func ruleSetProvider(key: String, rules content: [String], link: ConfigurationRuleSetLink?,
+                                behavior: String? = nil) -> OrderedJSON {
+        if let link { return link.provider }
+        return .object([("type", .string("inline")), ("behavior", .string(behavior ?? "classical")),
+                        ("payload", .array(content.map(OrderedJSON.string)))])
+    }
+
+     
+     
+     
+    mutating func addRuleSet(key: String, name: String, rules content: [String], defaultRoute: String, policy: String? = nil,
+                             link: ConfigurationRuleSetLink? = nil, behavior: String? = nil) throws {
         var candidate = self
         guard !containsRuleSet(key) else { return }
         var root = currentDocument()
         var providers = root.topLevelValue("rule-providers") ?? .object([])
-        providers = providers.settingTopLevel(key, to: .object([
-            ("type", .string("inline")), ("behavior", .string("classical")),
-            ("payload", .array(content.map(OrderedJSON.string)))
-        ]))
+        providers = providers.settingTopLevel(key, to: Self.ruleSetProvider(key: key, rules: content, link: link, behavior: behavior))
         root = root.settingTopLevel("rule-providers", to: providers)
         candidate.additionalDocument = root
         if let policy {
@@ -834,9 +919,8 @@ public extension ConfigurationRuleDraft {
             try candidate.setGroup(group.document.settingTopLevel("name", to: .string(value.name)), groupID: group.id)
         }
         var providers = candidate.additionalDocument.topLevelValue("rule-providers") ?? .object([])
-        let provider = OrderedJSON.object([("type", .string("inline")), ("behavior", .string("classical")),
-            ("payload", .array(value.rules.map(OrderedJSON.string)))])
-        providers = providers.settingTopLevel(key, to: provider)
+        providers = providers.settingTopLevel(key, to: Self.ruleSetProvider(key: key, rules: value.rules, link: value.link,
+                                                                            behavior: value.behavior))
         candidate.additionalDocument = candidate.additionalDocument.settingTopLevel("rule-providers", to: providers)
         self = candidate
     }
@@ -861,9 +945,13 @@ public extension ConfigurationRuleDraft {
          
          
         candidate.rows.removeAll { row in
-            let fields = row.raw.components(separatedBy: ",")
             guard !row.isFinal else { return false }
-            return fields.count > 2 && fields[2] == group.name
+             
+             
+             
+             
+            let fields = row.raw.components(separatedBy: ",")
+            return Self.groupTargetIndex(fields).map { fields[$0].trimmingCharacters(in: .whitespaces) == group.name } ?? false
         }
         try candidate.removeGroups([id])
         self = candidate

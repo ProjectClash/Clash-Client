@@ -124,8 +124,7 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
                     }
                 })
             } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ClashOpeningProgress()
             }
         }
          
@@ -553,6 +552,9 @@ struct ParsedRule: Equatable {
          
          
          
+         
+         
+         
         var fields: [Substring] = []
         fields.reserveCapacity(4)
         let utf8 = raw.utf8
@@ -560,22 +562,36 @@ struct ParsedRule: Equatable {
         var index = start
         while index < utf8.endIndex {
             if utf8[index] == 0x2C {
-                if start < index { fields.append(Self.trimmed(raw[start..<index])) }
+                fields.append(Self.trimmed(raw[start..<index]))
                 start = utf8.index(after: index)
             }
             index = utf8.index(after: index)
         }
-        if start < utf8.endIndex { fields.append(Self.trimmed(raw[start..<utf8.endIndex])) }
+        fields.append(Self.trimmed(raw[start..<utf8.endIndex]))
 
-        type = fields.first.map(String.init) ?? raw
+        type = String(fields[0])
         typeUppercased = type.uppercased()
-        var end = fields.count
-        while end > 1, Self.isModifier(fields[end - 1]) { end -= 1 }
-        target = end > 1 ? String(fields[end - 1]) : ""
-        switch end {
-        case ...2: payload = ""
-        case 3: payload = String(fields[1])
-        default: payload = fields[1..<(end - 1)].joined(separator: ",")
+         
+         
+         
+         
+         
+         
+        if typeUppercased == "MATCH" {
+             
+            target = fields.count > 1 ? String(fields[1]) : ""
+            payload = ""
+        } else if ClashStructuredRule.headsWhosePayloadConsumesRemainingFields.contains(typeUppercased) {
+             
+            target = fields.count > 1 ? String(fields[fields.count - 1]) : ""
+            payload = fields.count > 2 ? fields[1..<(fields.count - 1)].joined(separator: ",") : ""
+        } else {
+             
+             
+             
+             
+            payload = fields.count > 1 ? String(fields[1]) : ""
+            target = fields.count > 2 ? String(fields[2]) : ""
         }
     }
 
@@ -585,23 +601,6 @@ struct ParsedRule: Equatable {
               let last = bytes.lastIndex(where: { $0 != 0x20 && $0 != 0x09 })
         else { return part[part.startIndex..<part.startIndex] }
         return part[first...last]
-    }
-
-     
-     
-    private static func isModifier(_ field: Substring) -> Bool {
-        let bytes = field.utf8
-        guard bytes.count == 10 || bytes.count == 3 else { return false }
-        let want: StaticString = bytes.count == 10 ? "no-resolve" : "src"
-        return want.withUTF8Buffer { expected in
-            var i = 0
-            for byte in bytes {
-                let lower = (0x41...0x5A).contains(byte) ? byte | 0x20 : byte
-                if lower != expected[i] { return false }
-                i += 1
-            }
-            return true
-        }
     }
 }
 
@@ -660,9 +659,12 @@ struct RulesOverviewModel {
      
      
      
+     
+     
     var fingerprint: String {
         "\(inlineCount)|\(inapplicableCount)|\(fallback.count)|\(ruleSets.count)|"
             + buckets.map { "\($0.target)=\($0.count)" }.joined(separator: ",")
+            + "|" + fallback.map(\.target).joined(separator: ",")
     }
 
      
@@ -878,7 +880,9 @@ struct RulesOverviewModel {
                 fallback.append(rule)
             } else if setAside(rule) {
                 inapplicable += 1
-            } else {
+            } else if !rule.target.isEmpty {
+                 
+                 
                 byTarget[rule.target, default: 0] += 1
                 ownByTarget[rule.target, default: []].append(rule)
             }
@@ -993,8 +997,11 @@ struct RulesOverviewModel {
         let fallbackRules = applicable.filter {
             $0.typeUppercased == "MATCH"
         }
+         
+         
+         
         let bucketable = applicable.filter {
-            $0.typeUppercased != "MATCH"
+            $0.typeUppercased != "MATCH" && !$0.target.isEmpty
         }
         let grouped = Dictionary(
             grouping: bucketable,

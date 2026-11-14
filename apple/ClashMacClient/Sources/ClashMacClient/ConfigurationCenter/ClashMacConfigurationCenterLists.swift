@@ -204,22 +204,25 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
         }
         .alert(
             Text(clash: .copy("Update Conflict")),
-            isPresented: Binding(get: { model.ruleConflictSourceID != nil }, set: { if !$0 { model.dismissRuleConflict() } })
-        ) {
+            isPresented: Binding(get: { model.ruleConflictSourceID != nil }, set: { if !$0 { model.dismissRuleConflict() } }),
+             
+             
+             
+             
+            presenting: model.ruleConflictSourceID
+        ) { id in
              
              
             Button(role: .destructive) {
-                if let id = model.ruleConflictSourceID {
-                    model.dismissRuleConflict()
-                    Task { _ = await model.updateSourceSaying(id, replacingRules: true) }
-                }
+                model.dismissRuleConflict()
+                Task { _ = await model.updateSourceSaying(id, replacingRules: true) }
             } label: {
                 Text(clash: .copy("Use Profile URL Rules"))
             }
             .accessibilityIdentifier("configuration-center.update-conflict.replace")
             Button(role: .cancel) { model.dismissRuleConflict() } label: { Text(clash: .copy("Cancel")) }
                 .accessibilityIdentifier("configuration-center.update-conflict.cancel")
-        } message: {
+        } message: { _ in
             Text(clash: .copy("Your rule edits conflict with this update. Use the profile URL rules to replace your edits, or cancel to keep the current profile. You can copy your rule scheme before updating."))
         }
          
@@ -240,7 +243,7 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
         guard !issues.isEmpty else { return nil }
         let names = issues.map { issue in
             model.snapshot.recipes.first { $0.id == issue.itemID }?.label
-                ?? model.snapshot.sources.first { $0.id == issue.itemID }?.label ?? issue.itemID
+                ?? model.snapshot.sources.first { $0.id == issue.itemID }.map { $0.displayLabel(locale: locale) } ?? issue.itemID
         }
         return ClashCopy.string("Some references are unavailable. Previous versions were kept:", locale: locale) + " " + names.joined(separator: ", ")
     }
@@ -273,6 +276,31 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
             Text(clash: status).foregroundStyle(.secondary)
                 .accessibilityIdentifier("configuration-center.configurations.status")
         }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func libraryNote(_ text: ClashDisplayText, identifier: String) -> some View {
+        Text(clash: text)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, ClashTheme.Spacing.row)
+            .padding(.horizontal, ClashTheme.Spacing.tight)
+            .accessibilityIdentifier(identifier)
+            .clashMacPlainRow()
     }
 
      
@@ -565,6 +593,17 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
         .padding(.top, ClashTheme.Spacing.row)
         .clashMacPlainRow()
         if let quickAdd { quickAdd(.nodes) }
+         
+         
+         
+         
+         
+         
+         
+        libraryNote(
+            .copy("These nodes are a source of their own. A configuration uses them once it turns this source on in its Proxies chapter."),
+            identifier: "configuration.library.sources.what-this-is"
+        )
         updateStatusLines
     }
 
@@ -574,7 +613,7 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
         case .source(let source, let folds):
             HStack(spacing: 0) {
                 if folds {
-                    ClashMacFoldButton(isExpanded: expansion($expandedNodeSets, source.id), title: source.label)
+                    ClashMacFoldButton(isExpanded: expansion($expandedNodeSets, source.id), title: source.displayLabel(locale: locale))
                         .accessibilityIdentifier("configuration-center.nodes.node-sets.\(source.id)")
                 }
                  
@@ -683,6 +722,10 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
             .clashMacPlainRow()
         }
         if let quickAdd { quickAdd(.rules) }
+        libraryNote(
+            .copy("This is a library. A configuration uses a rule scheme from here once that configuration is set to use it."),
+            identifier: "configuration.library.rules.what-this-is"
+        )
         updateStatusLines
     }
 
@@ -705,7 +748,7 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
             }
         case .ruleSetSource(let source):
             HStack(spacing: 0) {
-                ClashMacFoldButton(isExpanded: expansion($expandedRuleSets, source.id), title: source.label)
+                ClashMacFoldButton(isExpanded: expansion($expandedRuleSets, source.id), title: source.displayLabel(locale: locale))
                 ClashMacRuleSetSourceRow(
                     source: source, collections: ruleSets[source.id] ?? [],
                     isUpdating: model.updatingSourceIDs.contains(source.id),
@@ -800,11 +843,16 @@ public enum ClashMacDeleteCopy {
         }
     }
 
-    public static func message(_ item: ClashMacConfigurationCenterItem, isChain: Bool, locale: Locale) -> String {
+     
+     
+    public static func message(_ item: ClashMacConfigurationCenterItem, isChain: Bool,
+                               suppliesNodes: Bool = false, locale: Locale) -> String {
         switch item {
          
         case .source: ClashCopy.string(isChain
             ? "Saved profiles keep this chain. Its original nodes remain in the library."
+            : suppliesNodes
+            ? "Configurations that use this source lose its nodes."
             : "Saved profiles keep their current content and stop following this source.", locale: locale)
         case .scheme: ClashCopy.string("Saved profiles keep their current rules and stop following this scheme.", locale: locale)
         case .configuration: ClashCopy.string("This profile will be deleted. Sources and rule schemes in the library will remain.", locale: locale)
@@ -972,7 +1020,7 @@ struct ClashMacNodeSourceRow<Detail: View>: View {
                 detail(.source(source.id))
             } label: {
                 ClashMacLibraryRowLabel(
-                    title: .verbatim(source.label),
+                    title: ClashConfigurationSourceCopy.name(source),
                      
                     subtitle: source.isRetainedSnapshot == true ? .copy("Saved Copy") : .count(source.nodeCount, one: "%@ node", other: "%@ nodes"),
                     usage: source.subscriptionUsage,
@@ -1136,7 +1184,7 @@ struct ClashMacRuleSetSourceRow: View {
     var body: some View {
         ClashMacListRow {
             ClashMacLibraryRowLabel(
-                title: .verbatim(source.label),
+                title: ClashConfigurationSourceCopy.name(source),
                 subtitle: .count(collections.count, one: "%@ collection", other: "%@ collections"),
                 busy: isUpdating
             )

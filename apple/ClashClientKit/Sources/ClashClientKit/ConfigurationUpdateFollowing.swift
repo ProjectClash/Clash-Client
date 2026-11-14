@@ -42,7 +42,11 @@ public extension ConfigurationLibrarySnapshot {
             let ranALink = previous.dependencies.contains { isLink($0.id) } || linkSchemeCustomized(by: previous) != nil
             return ranALink ? .ownCopy : nil
         }
-        if sources.first(where: { $0.id == recipe.ruleSource.id })?.privateToConfigurationID == id {
+         
+         
+         
+        if sources.first(where: { $0.id == recipe.ruleSource.id })?.privateToConfigurationID == id,
+           rules.first(where: { $0.id == recipe.ruleSchemeID })?.ownViewBaseID == nil {
             return .copyWithoutOrigin
         }
         if linkSchemeCustomized(by: recipe) != nil { return .customizedRules }
@@ -231,13 +235,13 @@ public extension ConfigurationLibraryStore {
      
     private static func removeCustomizedCopyIfUnused(_ id: String, from candidate: inout ConfigurationLibrarySnapshot) {
         let previous = candidate.recipes.compactMap { $0.ownCopyOf?.previous }
-        let inUse = Set(candidate.recipes.map(\.ruleSchemeID))
-            .union(candidate.recipes.compactMap(\.composedRuleSchemeID))
-            .union(previous.map(\.ruleSchemeID))
-            .union(previous.compactMap(\.composedRuleSchemeID))
+        let inUse = candidate.schemeIDsInUse
             .union(candidate.rules.compactMap(\.rulesFromSchemeID))
             .union([candidate.selectedRuleSchemeID].compactMap { $0 })
-        guard !inUse.contains(id), let scheme = candidate.rules.first(where: { $0.id == id }) else { return }
+         
+         
+         
+        guard !inUse.contains(id), let scheme = candidate.rules.first(where: { $0.id == id }), scheme.ownViewBaseID == nil else { return }
         candidate.rules.removeAll { $0.id == id }
         let sourceInUse = candidate.rules.contains { $0.sourceID == scheme.sourceID }
             || (candidate.recipes.flatMap(\.dependencies) + previous.flatMap(\.dependencies)).contains { $0.id == scheme.sourceID }

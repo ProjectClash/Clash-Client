@@ -5,6 +5,8 @@ struct ActiveNodeProfileState: Equatable {
     let selectedMap: [String: String]
     let currentGroupName: String?
     let unfoldedGroups: Set<String>?
+     
+    var globalPickedByReader = false
 }
 
  
@@ -61,17 +63,25 @@ final class NodeProfilePreferencesStore {
             profileID: id,
             selectedMap: profile.selectedMap,
             currentGroupName: profile.currentGroupName,
-            unfoldedGroups: profile.unfoldedGroups
+            unfoldedGroups: profile.unfoldedGroups,
+            globalPickedByReader: profile.globalPickedByReader ?? false
         )
     }
 
+     
     func saveSelection(group: String, proxy: String) {
         updateActive { profile in
-            profile.selectedMap[group] = proxy
-            profile.currentGroupName = group
+            profile.noteReaderPick(group: group, member: proxy)
         }
     }
 
+     
+     
+     
+     
+     
+     
+     
      
      
      
@@ -86,8 +96,13 @@ final class NodeProfilePreferencesStore {
     func clearSelection(group: String) -> Bool {
         updateActive { profile in
             profile.selectedMap.removeValue(forKey: group)
+            if group == Self.globalGroupName { profile.globalPickedByReader = nil }
         }
     }
+
+     
+     
+    static let globalGroupName = #"GLOBAL"#
 
      
      
@@ -138,4 +153,22 @@ extension Notification.Name {
      
      
     static let clashProfileSelectionDidChange = Notification.Name("ClashProfileSelectionDidChange")
+}
+
+extension Profile {
+     
+     
+     
+     
+     
+     
+    mutating func noteReaderPick(group: String, member: String) {
+        selectedMap[group] = member
+        if GlobalProxySelectionPolicy.remembers(group: group) {
+            currentGroupName = group
+            globalPickedByReader = nil
+        } else {
+            globalPickedByReader = true
+        }
+    }
 }

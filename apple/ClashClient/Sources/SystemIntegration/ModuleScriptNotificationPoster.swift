@@ -45,13 +45,19 @@ enum ModuleScriptNotificationPoster {
      
      
      
-    static func post(_ record: ModuleScriptNotificationRecord, log: @escaping @Sendable (String) -> Void) {
+     
+    static func post(_ record: ModuleScriptNotificationRecord,
+                     words: ModuleScriptNotificationWordsStore? = ModuleScriptNotificationWordsStore.production,
+                     log: @escaping @Sendable (String) -> Void) {
         let center = UNUserNotificationCenter.current()
         @Sendable func notShown(_ status: UNAuthorizationStatus) {
             log(#"module script notification \#(record.id) from \#(record.scriptName) not shown: "#
                 + #"notifications are off for Clash (status \#(status.rawValue))"#)
         }
         @Sendable func show() {
+            if words?.keep(record) == false {
+                log(#"module script notification \#(record.id): its words were not kept whole; a tap shows what the system keeps"#)
+            }
             let request = Self.request(for: record)
              
             DispatchQueue.main.async {
@@ -103,6 +109,8 @@ struct ModuleScriptTunnelNotifier: Sendable {
     let queue: DispatchQueue
     let add: Add
     let log: @Sendable (String) -> Void
+     
+    var words: ModuleScriptNotificationWordsStore { ModuleScriptNotificationWordsStore(container: mailbox.container) }
 
     init(mailbox: ModuleScriptNotificationMailbox, postsItself: Bool = true,
          queue: DispatchQueue = DispatchQueue(label: "modules.scripts.notifications", qos: .utility),
@@ -119,8 +127,13 @@ struct ModuleScriptTunnelNotifier: Sendable {
         let log = self.log
         let add = self.add
         let postsItself = self.postsItself
+        let words = self.words
         queue.async {
+             
             guard postsItself else { return Self.leave(record, in: mailbox, log: log) }
+            if !words.keep(record) {
+                log(#"[script] the words of a notification from \#(record.scriptName) were not kept whole; a tap shows what the system keeps"#)
+            }
             add(ModuleScriptNotificationPoster.request(for: record)) { error in
                 guard let error else { return }
                 let refusal = error as NSError

@@ -34,6 +34,7 @@ public final class ConfigurationSourceText: Sendable {
             var lineStart = 0
             var line = 0
             var longest = 0
+            var widest = 0
             let step = max(count / 64, 1 << 20)
             var nextReport = step
             while true {
@@ -41,6 +42,8 @@ public final class ConfigurationSourceText: Sendable {
                 outline.read(base, from: lineStart, to: end, line: line)
                 let length = end > lineStart && base[end - 1] == 0x0D ? end - lineStart - 1 : end - lineStart
                 longest = max(longest, length)
+                widest = max(widest, length + Self.tabs(in: base, from: lineStart, to: lineStart + length)
+                    * (SourceLineWidth.tabColumns - 1))
                 guard end < count else { break }
                 lineStart = end + 1
                 line += 1
@@ -53,7 +56,7 @@ public final class ConfigurationSourceText: Sendable {
             }
             progress?(1)
             return ConfigurationSourceIndex(starts: starts, byteCount: count, sections: outline.finish(),
-                                            longestLineBytes: longest)
+                                            longestLineBytes: longest, widestLineColumns: widest)
         }
     }
 
@@ -114,6 +117,17 @@ public final class ConfigurationSourceText: Sendable {
         (0x41...0x5A).contains(byte) ? byte | 0x20 : byte
     }
 
+    private static func tabs(in base: UnsafeBufferPointer<UInt8>, from start: Int, to end: Int) -> Int {
+        guard let origin = base.baseAddress else { return 0 }
+        var found = 0
+        var position = start
+        while position < end, let tab = memchr(origin + position, 0x09, end - position) {
+            found += 1
+            position = origin.distance(to: tab.assumingMemoryBound(to: UInt8.self)) + 1
+        }
+        return found
+    }
+
     private static func newline(in base: UnsafeBufferPointer<UInt8>, from start: Int) -> Int? {
         guard start < base.count, let origin = base.baseAddress else { return nil }
         guard let found = memchr(origin + start, 0x0A, base.count - start) else { return nil }
@@ -130,12 +144,16 @@ public struct ConfigurationSourceIndex: Sendable {
      
      
     public let longestLineBytes: Int
+     
+    public let widestLineColumns: Int
 
-    init(starts: [UInt32], byteCount: Int, sections: [ConfigurationSourceSection], longestLineBytes: Int) {
+    init(starts: [UInt32], byteCount: Int, sections: [ConfigurationSourceSection], longestLineBytes: Int,
+         widestLineColumns: Int) {
         self.starts = starts
         self.byteCount = byteCount
         self.sections = sections
         self.longestLineBytes = longestLineBytes
+        self.widestLineColumns = widestLineColumns
     }
 
      
@@ -163,6 +181,124 @@ public struct ConfigurationSourceIndex: Sendable {
         let start = Int(starts[line])
         let end = line + 1 < starts.count ? Int(starts[line + 1]) - 1 : byteCount
         return start..<max(start, end)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public enum SourceLineWidth {
+     
+     
+    public static let tabColumns = 8
+
+     
+     
+    @inlinable
+    public static func columns(ofUTF16 unit: UInt16) -> Int {
+        if unit == 0x09 { return tabColumns }
+        if unit < 0x80 { return 1 }
+        if unit < 0x800 || (0xD800...0xDFFF).contains(unit) { return 2 }
+        return 3
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    public static func widestColumns(
+        in source: NSString, range: NSRange, afterLineFeed: ((Int) -> Void)? = nil
+    ) -> Int {
+        var columns = 0
+        var widest = 0
+        for index in range.location..<NSMaxRange(range) {
+            let unit = source.character(at: index)
+            switch unit {
+            case 0x0A:
+                afterLineFeed?(index + 1)
+                fallthrough
+            case 0x0D, 0x2028, 0x2029:
+                if columns > widest { widest = columns }
+                columns = 0
+            default:
+                columns += Self.columns(ofUTF16: unit)
+            }
+        }
+        return max(widest, columns)
+    }
+
+     
+     
+     
+     
+     
+     
+    public static let widestScrolledWidth: Double = 100_000
+
+     
+    public static let roomPastTheLine: Double = 128
+
+     
+     
+     
+     
+    public static func documentWidth(columns: Int, columnWidth: Double, insets: Double) -> Double? {
+        let wanted = Double(columns) * columnWidth + insets + roomPastTheLine
+        return wanted > widestScrolledWidth ? nil : wanted.rounded(.up)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func nextDocumentWidth(
+        current: Double, columns: Int, columnWidth: Double, insets: Double, exact: Bool
+    ) -> Double? {
+        guard let fitted = documentWidth(columns: columns, columnWidth: columnWidth, insets: insets) else { return nil }
+        if exact || current == 0 { return fitted }
+        if fitted - roomPastTheLine / 2 > current {
+            return min(max(fitted, current * 1.5), widestScrolledWidth).rounded(.up)
+        }
+        return current
+    }
+
+     
+     
+     
+     
+    public static func linesToMeasure(in source: NSString, edited: NSRange) -> NSRange {
+        let location = min(edited.location, source.length)
+        return source.paragraphRange(for: NSRange(location: location, length: min(edited.length, source.length - location)))
+    }
+
+     
+     
+     
+     
+    public static func edited(_ earlier: NSRange?, then edit: NSRange, changeInLength delta: Int) -> NSRange {
+        guard var range = earlier else { return edit }
+        let replacedEnd = edit.location + edit.length - delta
+        if replacedEnd <= range.location {
+            range.location += delta
+        } else if edit.location < NSMaxRange(range) {
+             
+            let start = min(range.location, edit.location)
+            let end = max(NSMaxRange(range) + delta, NSMaxRange(edit))
+            return NSRange(location: start, length: max(0, end - start))
+        }
+        return NSUnionRange(range, edit)
     }
 }
 

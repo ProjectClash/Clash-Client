@@ -15,6 +15,8 @@ import SwiftUI
 public struct ClashModuleDetailView: View {
     private let snapshot: ClashModuleDetailSnapshot?
     private let editor: ClashModuleEditorSnapshot?
+     
+    private let writes: ClashModulesWrites
     private let perform: (ClashModulesAction) -> Void
     private let close: () -> Void
     @State private var confirmsDelete = false
@@ -23,13 +25,20 @@ public struct ClashModuleDetailView: View {
      
      
     @FocusState private var nameIsFocused: Bool
+#if os(macOS)
+     
+     
+    @State private var macScript: String?
+#endif
     @Environment(\.locale) private var locale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     public init(snapshot: ClashModuleDetailSnapshot?, editor: ClashModuleEditorSnapshot? = nil,
+                writes: ClashModulesWrites,
                 perform: @escaping (ClashModulesAction) -> Void, close: @escaping () -> Void) {
         self.snapshot = snapshot
         self.editor = editor
+        self.writes = writes
         self.perform = perform
         self.close = close
     }
@@ -44,6 +53,11 @@ public struct ClashModuleDetailView: View {
 #if os(macOS)
         macSheet
             .modifier(ClashModulesEditorPresentation(editor: thisModulesEditor, perform: perform))
+             
+             
+             
+             
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("modules.detail")
             .onChange(of: snapshot?.name) { _ in nameDraft.moduleRenamed() }
 #else
@@ -71,7 +85,7 @@ public struct ClashModuleDetailView: View {
                         }
                     }
                 }
-                .clashProductModalRoot(title: snapshot?.name ?? "Module")
+                .clashProductModalRoot(title: snapshot.map { ClashDisplayText.verbatim($0.name) } ?? "Module")
         }
         .modifier(ClashModulesEditorPresentation(editor: thisModulesEditor, perform: perform))
         .accessibilityIdentifier("modules.detail")
@@ -93,12 +107,28 @@ public struct ClashModuleDetailView: View {
                     ClashModulePanelsSection(panels: snapshot.panels) { perform(.refreshPanel(id: $0)) }
                 }
                 if let settings = snapshot.settings {
-                    ClashModuleSettingsSection(moduleID: snapshot.id, settings: settings, perform: perform)
+                    ClashModuleSettingsSection(moduleID: snapshot.id, settings: settings, values: writes.settings, perform: perform)
                 }
                 ForEach(snapshot.sections) { section in
                     Section {
                         ForEach(section.items) { item in
-                            itemRow(item)
+                            if let script = item.script {
+                                 
+                                NavigationLink {
+                                     
+                                     
+                                    ClashModuleScriptSourceView(source: script, update: scriptUpdate(snapshot), perform: perform)
+                                        .clashPushedDetailPage()
+                                        .clashNativePushBoundary()
+                                } label: {
+                                    itemRow(item)
+                                }
+                                .accessibilityIdentifier("modules.detail.item.script.\(item.id)")
+                                .modifier(ClashModuleRunNowActions(id: item.runNow, perform: perform))
+                            } else {
+                                itemRow(item)
+                                    .modifier(ClashModuleRunNowActions(id: item.runNow, perform: perform))
+                            }
                         }
                     } header: {
                         sectionHeader(section)
@@ -215,8 +245,11 @@ public struct ClashModuleDetailView: View {
     private func headerSection(_ snapshot: ClashModuleDetailSnapshot) -> some View {
         Section {
             nameRow(snapshot)
-            Toggle(isOn: Binding(get: { snapshot.switching ?? snapshot.enabled },
-                                 set: { perform(.setModule(id: snapshot.id, enabled: $0)) })) {
+             
+             
+             
+            ClashStoredToggle(writes.switches, key: ClashModulesWrites.module(snapshot.id), stored: snapshot.enabled,
+                              identifier: "modules.detail.toggle", set: { perform(.setModule(id: snapshot.id, enabled: $0)) }) {
                 if snapshot.ownName != nil {
                     Text("Enable")
                 } else {
@@ -224,7 +257,6 @@ public struct ClashModuleDetailView: View {
                 }
             }
             .modifier(ClashModulesSwitchStyle())
-            .accessibilityIdentifier("modules.detail.toggle")
             if let author = snapshot.author {
                 valueRow("Author") { authorText(author) }
             }
@@ -298,14 +330,20 @@ public struct ClashModuleDetailView: View {
         }
     }
 
+     
+    private func scriptUpdate(_ snapshot: ClashModuleDetailSnapshot) -> ClashModuleScriptSourceView.Update? {
+        guard case .link = snapshot.source else { return nil }
+        return .init(isUpdating: snapshot.isUpdating, action: .refreshModule(id: snapshot.id))
+    }
+
     private func itemRow(_ item: ClashModuleDetailSnapshot.Item) -> some View {
         VStack(alignment: .leading, spacing: ClashTheme.Spacing.compact) {
-            moduleWords(item.text)
+            moduleWords(item.text, runNow: item.runNow)
                 .font(.system(.callout, design: .monospaced))
             if let detail = item.detail {
                 if case .verbatim(let words) = detail {
                      
-                    moduleWords(words)
+                    moduleWords(words, runNow: item.runNow)
                         .font(.footnote)
                 } else {
                      
@@ -316,7 +354,7 @@ public struct ClashModuleDetailView: View {
             }
             if let secondary = item.secondary {
                  
-                moduleWords(secondary)
+                moduleWords(secondary, runNow: item.runNow)
                     .font(.system(.caption, design: .monospaced))
             }
             if let place = item.place {
@@ -342,12 +380,26 @@ public struct ClashModuleDetailView: View {
      
      
      
-    private func moduleWords(_ words: String) -> some View {
+     
+     
+     
+    private func moduleWords(_ words: String, runNow: String? = nil) -> some View {
         Text(unhyphenated: Self.drawn(words))
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityLabel(Text(verbatim: words))
 #if os(iOS) || os(macOS)
             .contextMenu {
+                if let runNow {
+                    Button {
+                        perform(.runAppScript(id: runNow))
+                    } label: {
+                        Label {
+                            Text(clash: "Run Now")
+                        } icon: {
+                            Image(systemName: ClashSymbol.playFill.rawValue)
+                        }
+                    }
+                }
                 Button {
                     perform(.copy(words))
                 } label: {
@@ -604,6 +656,50 @@ extension ClashModuleDetailView {
 
     var macSheet: some View {
         VStack(spacing: 0) {
+            if let snapshot, let id = macScript, let script = Self.macScript(id, in: snapshot) {
+                macScriptPage(script, snapshot)
+            } else {
+                macLines
+            }
+            Divider()
+            macBar
+        }
+        .frame(minWidth: 480, idealWidth: Mac.width, minHeight: 420, idealHeight: Mac.height)
+         
+         
+        .onExitCommand {
+            saveName()
+            close()
+        }
+         
+         
+         
+        .task(id: snapshot?.id) {
+            if let id = snapshot?.id { perform(.panelsAppeared(module: id)) }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+    private func macScriptPage(_ script: ClashModuleScriptSource, _ snapshot: ClashModuleDetailSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+             
+            Text(verbatim: script.name)
+                .font(.title2.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, ClashMacGroupMetrics.margin)
+                .padding(.top, Mac.top)
+                .accessibilityIdentifier("modules.script.name")
+            ClashModuleScriptSourceView(source: script, update: scriptUpdate(snapshot), perform: perform)
+        }
+    }
+
+     
+    private var macLines: some View {
             List {
                 if let snapshot {
                     macHeader(snapshot)
@@ -643,20 +739,8 @@ extension ClashModuleDetailView {
              
              
             .environment(\.defaultMinListRowHeight, 0)
-            Divider()
-            macBar
-        }
-        .frame(minWidth: 480, idealWidth: Mac.width, minHeight: 420, idealHeight: Mac.height)
-        .onExitCommand {
-            saveName()
-            close()
-        }
-         
-         
-         
-        .task(id: snapshot?.id) {
-            if let id = snapshot?.id { perform(.panelsAppeared(module: id)) }
-        }
+             
+            .onAppear { macScript = nil }
     }
 
      
@@ -676,15 +760,14 @@ extension ClashModuleDetailView {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Toggle(isOn: Binding(get: { snapshot.switching ?? snapshot.enabled },
-                                 set: { perform(.setModule(id: snapshot.id, enabled: $0)) })) {
+            ClashStoredToggle(writes.switches, key: ClashModulesWrites.module(snapshot.id), stored: snapshot.enabled,
+                              identifier: "modules.detail.toggle", set: { perform(.setModule(id: snapshot.id, enabled: $0)) }) {
                 Text(verbatim: snapshot.name)
             }
             .modifier(ClashModulesSwitchStyle())
             .labelsHidden()
             .controlSize(.small)
             .padding(.top, 2)
-            .accessibilityIdentifier("modules.detail.toggle")
         }
     }
 
@@ -864,7 +947,37 @@ extension ClashModuleDetailView {
                 .foregroundStyle(.tint)
                 .accessibilityIdentifier("modules.detail.item.action.\(item.id)")
             }
+            if item.script != nil {
+                 
+                 
+                Button {
+                    macScript = item.id
+                } label: {
+                    Text(clash: "Show Script…")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.tint)
+                .accessibilityIdentifier("modules.detail.item.showScript.\(item.id)")
+            }
+            if let id = item.runNow {
+                 
+                 
+                 
+                Button {
+                    perform(.runAppScript(id: id))
+                } label: {
+                    Text(clash: "Run Now")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.tint)
+                .accessibilityIdentifier("modules.detail.item.runNow.\(id)")
+            }
         }
+    }
+
+     
+    static func macScript(_ id: String, in snapshot: ClashModuleDetailSnapshot) -> ClashModuleScriptSource? {
+        snapshot.sections.lazy.flatMap(\.items).first { $0.id == id }?.script
     }
 
      
@@ -872,11 +985,34 @@ extension ClashModuleDetailView {
      
     private var macBar: some View {
         HStack(spacing: ClashTheme.Spacing.row) {
-            if let snapshot {
+            if macScript != nil {
+                Button {
+                    macScript = nil
+                } label: {
+                    Text("Back")
+                }
+                .clashMacFormActionChrome()
+                .accessibilityIdentifier("modules.script.back")
+            } else if let snapshot {
                 deleteButton(snapshot, title: "Delete Module…", destructive: false)
                     .clashMacFormActionChrome()
             }
             Spacer(minLength: 0)
+             
+             
+            if let snapshot, let id = macScript, let file = Self.macScript(id, in: snapshot)?.file {
+                Button {
+                    Task {
+                        if case .text(let text) = await ClashModuleScriptSourceView.read(file) {
+                            perform(.copy(text.original))
+                        }
+                    }
+                } label: {
+                    Text("Copy")
+                }
+                .clashMacFormActionChrome()
+                .accessibilityIdentifier("modules.script.copy")
+            }
             Button {
                 saveName()
                 close()
@@ -1084,6 +1220,53 @@ struct ClashModuleMacSettingRow: View {
     }
 }
 #endif
+
+ 
+ 
+ 
+ 
+struct ClashModuleRunNowActions: ViewModifier {
+    let id: String?
+    let perform: (ClashModulesAction) -> Void
+
+    func body(content: Content) -> some View {
+#if os(iOS)
+        if let id {
+            content
+                 
+                 
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button {
+                        perform(.runAppScript(id: id))
+                    } label: {
+                        label
+                    }
+                    .tint(.accentColor)
+                    .accessibilityIdentifier("modules.detail.item.runNow.\(id)")
+                }
+                .contextMenu {
+                    Button {
+                        perform(.runAppScript(id: id))
+                    } label: {
+                        label
+                    }
+                }
+        } else {
+            content
+        }
+#else
+        content
+#endif
+    }
+
+    private var label: some View {
+        Label {
+            Text(clash: "Run Now")
+        } icon: {
+            Image(systemName: ClashSymbol.playFill.rawValue)
+        }
+    }
+}
 
 struct ClashModulesListStyle: ViewModifier {
     func body(content: Content) -> some View {

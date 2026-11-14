@@ -100,13 +100,8 @@ struct OnDemandConfigView: View {
                         }
                         .clashRegularDetailPageLayout(enabled: usesRegularDetailLayout)
                     } label: {
-                        HStack {
-                            Text(rule.action.title)
-                            Spacer()
-                            Text(rule.interface.title)
-                                .foregroundStyle(.secondary)
-                        }
-                        .accessibilityElement(children: .combine)
+                        OnDemandRuleRowLabel(rule: rule)
+                            .accessibilityElement(children: .combine)
                     }
                     .deleteDisabled(draft.alwaysOn)
                     .moveDisabled(draft.alwaysOn)
@@ -321,6 +316,28 @@ struct OnDemandConfigView: View {
 
 }
 
+ 
+ 
+ 
+ 
+ 
+struct OnDemandRuleRowLabel: View {
+    @Environment(\.locale) private var locale
+    let rule: OnDemandRuleSpec
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
+            Text(verbatim: rule.title(locale: locale))
+            if let conditions = rule.conditions(locale: locale) {
+                Text(verbatim: conditions)
+                    .font(ClashPlatformLayout.pageUsesSystemSettingsIdiom ? ClashMacSettingsType.value : .caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+}
+
 private struct OnDemandRuleEditor: View {
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
@@ -442,10 +459,13 @@ private struct OnDemandRuleEditor: View {
                                 .clashRegularDetailPageLayout(enabled: usesRegularDetailLayout)
                         } label: {
                             VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
-                                Text(rule.action.title)
-                                Text(rule.matchDomains.isEmpty
-                                     ? "Add match domains"
-                                     : rule.matchDomains.joined(separator: ", "))
+                                 
+                                 
+                                 
+                                Text(clash: .copy(rule.action.title))
+                                (rule.matchDomains.isEmpty
+                                     ? Text("Add match domains")
+                                     : Text(verbatim: rule.matchDomains.joined(separator: ", ")))
                                     .font(ClashPlatformLayout.pageUsesSystemSettingsIdiom ? ClashMacSettingsType.value : .caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)

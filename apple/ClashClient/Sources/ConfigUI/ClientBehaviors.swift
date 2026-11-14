@@ -4,15 +4,17 @@ import Foundation
  
  
  
+ 
+ 
 enum NodeSwitchSettings {
-    static let key = "nodes.autoCloseOnSwitch"
+    static let key = ClashConnectionsOnSwitch.key
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
     static func autoCloseOnSwitch(from defaults: UserDefaults = appGroupDefaults) -> Bool {
-        defaults.object(forKey: key) == nil ? true : defaults.bool(forKey: key)
+        ClashConnectionsOnSwitch.isOn(in: defaults)
     }
 
     static func setAutoCloseOnSwitch(_ enabled: Bool,
@@ -62,7 +64,7 @@ enum UDPFallbackSettings {
     static let fallbackDefault: UDPFallbackPolicy = .off
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
      

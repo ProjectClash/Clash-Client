@@ -64,6 +64,14 @@ extension ProfilesViewModel {
          
          
          
+         
+         
+         
+         
+        var schemeChoices: [ConfigurationRuleScheme] = []
+         
+         
+         
         var sourceTooLargeToReadWhole = false
 
          
@@ -86,8 +94,22 @@ extension ProfilesViewModel {
     }
 
      
-    func loadConfigurationEditorPage(profileID: String) async throws -> ConfigurationEditorPage {
-        var page = try await loadingConfigurationEditorPage(profileID: profileID)
+     
+     
+     
+     
+     
+    func loadConfigurationEditorPage(profileID: String, withMenu: Bool = false) async throws -> ConfigurationEditorPage {
+        let (loaded, snapshot) = try await loadingConfigurationEditorPage(profileID: profileID)
+        var page = loaded
+        if withMenu {
+            var running: ConfigurationRuleScheme?
+            if case .composed(let scheme, _) = page.form { running = scheme }
+            page.schemeChoices = await Task.detached(priority: .userInitiated) { [running] in
+                Self.menuChoices(Self.schemeChoices(snapshot, for: snapshot.recipes.first { $0.id == profileID }),
+                                 running: running)
+            }.value
+        }
         let profile = profiles.first { $0.id == profileID }
         let workingDir = self.workingDir
         page.sourceTooLargeToReadWhole = await Task.detached(priority: .userInitiated) {
@@ -96,7 +118,7 @@ extension ProfilesViewModel {
         return page
     }
 
-    private func loadingConfigurationEditorPage(profileID: String) async throws -> ConfigurationEditorPage {
+    private func loadingConfigurationEditorPage(profileID: String) async throws -> (ConfigurationEditorPage, ConfigurationLibrarySnapshot) {
         guard let library = configurationLibraryStore,
               let profile = profiles.first(where: { $0.id == profileID }) else {
             throw PipelineError.sourceUnavailable("the profile is no longer available")
@@ -126,12 +148,8 @@ extension ProfilesViewModel {
         let latest = (try? latestProfile(profileID)) ?? profile
          
          
-         
-        let workingDir = self.workingDir
         let own = await Task.detached(priority: .userInitiated) { () -> OrderedJSON in
-            let gatedSource = latest.legacyRuntimeDNSGated == true
-                ? (try? Self.storedSourceYAML(for: latest, preferCachedSource: true, workingDir: workingDir)) ?? nil : nil
-            return Self.ownSettings(of: latest, source: gatedSource)
+            Self.ownSettings(of: latest)
         }.value
         if let recipe = snapshot.recipes.first(where: { $0.id == profileID }), recipe.preservesOriginal != true {
             guard let scheme = snapshot.rules.first(where: { $0.id == recipe.ruleSchemeID })
@@ -144,20 +162,21 @@ extension ProfilesViewModel {
                 return (running.settings.removingTopLevel("dns").settingTopLevel("dns", to: running.dns),
                         try Self.settingsPage(of: latest, in: snapshot, scripted: scripted) != nil)
             }.value
-            return ConfigurationEditorPage(profileID: profileID, label: profile.label,
+            return (ConfigurationEditorPage(profileID: profileID, label: profile.label,
                 form: .composed(scheme: scheme, ownership: snapshot.schemePageOwnership(profileID: profileID)),
                 rows: rows, document: page, ownLayer: onPage ? nil : own,
                 ownDNSSwitch: onPage ? nil : Self.ownDNSSwitch(of: latest),
-                followedLink: snapshot.followedLinkLabel(ofScheme: scheme.id))
+                followedLink: snapshot.followedLinkLabel(ofScheme: scheme.id)), snapshot)
         }
         let outlined = outline.original
+         
          
         let source = snapshot.recipes.first { $0.id == profileID }.flatMap { recipe in
             snapshot.sources.first { $0.id == recipe.ruleSource.id }
         }
         var followsSubscription = false
         if let source {
-            if case .subscription = source.origin { followsSubscription = true }
+            if case .subscription = source.origin, source.isRetainedSnapshot != true { followsSubscription = true }
         } else if case .url = latest.source {
             followsSubscription = true
         }
@@ -171,10 +190,10 @@ extension ProfilesViewModel {
            let recipe = snapshot.recipes.first(where: { $0.id == profileID }) {
             let file = try library.originalURL(recipe.ruleSource)
             let digest = try await Task.detached(priority: .userInitiated) { try Self.textDigest(fileAt: file) }.value
-            return ConfigurationEditorPage(profileID: profileID, label: profile.label, form: .original,
+            return (ConfigurationEditorPage(profileID: profileID, label: profile.label, form: .original,
                                            rows: rows, document: outlined.document, followsSubscription: followsSubscription,
                                            readDigest: digest, ownLayer: own, ownDNSSwitch: Self.ownDNSSwitch(of: latest),
-                                           keptRules: .init(count: source.ruleCount, file: file))
+                                           keptRules: .init(count: source.ruleCount, file: file)), snapshot)
         }
         guard let text = await loadSourceYAML(for: profile) else {
             throw PipelineError.sourceUnavailable("The saved configuration is unavailable.")
@@ -186,9 +205,9 @@ extension ProfilesViewModel {
             let document = try outlined.flatMap { $0.json == json ? $0.document : nil } ?? OrderedJSON.parse(json)
             return (document, Self.textDigest(text))
         }.value
-        return ConfigurationEditorPage(profileID: profileID, label: profile.label, form: .original,
+        return (ConfigurationEditorPage(profileID: profileID, label: profile.label, form: .original,
                                        rows: rows, document: document, followsSubscription: followsSubscription,
-                                       readDigest: digest, ownLayer: own, ownDNSSwitch: Self.ownDNSSwitch(of: latest))
+                                       readDigest: digest, ownLayer: own, ownDNSSwitch: Self.ownDNSSwitch(of: latest)), snapshot)
     }
 
 
@@ -199,18 +218,14 @@ extension ProfilesViewModel {
      
      
      
-    nonisolated static func ownSettings(of profile: Profile, source: String?) -> OrderedJSON {
+    nonisolated static func ownSettings(of profile: Profile) -> OrderedJSON {
 
 
          
          
          
         var own = OverridePatch(patchJSON: profile.override.patchJSON).profileOwnedPatch
-        var layer = OverridePatch(patchJSON: profile.legacyRuntimePatchJSON ?? "")
-        if profile.legacyRuntimeDNSGated == true, layer.hasDNSOverride,
-           source.map(ProfileRuntimeConfigBuilder.hasEnabledOwnDNS(yaml:)) ?? true {
-            layer.clearDNS()
-        }
+        let layer = OverridePatch(patchJSON: profile.legacyRuntimePatchJSON ?? "")
         for key in layer.topLevelKeys {
             guard let value = layer.topLevelNode(key) else { continue }
             own.setTopLevelNode(key, mergedAsTheCoreMerges(own.topLevelNode(key), value))
@@ -240,39 +255,20 @@ extension ProfilesViewModel {
         case (false, nil):
              
              
-            var fileRunsOwnDNS = false
-            if latest.legacyRuntimeDNSGated == true, edits.contains(where: { Self.editedTopLevelKey($0) == "dns" }) {
-                 
-                let workingDir = self.workingDir
-                fileRunsOwnDNS = await Task.detached(priority: .userInitiated) {
-                    (try? Self.storedSourceYAML(for: latest, preferCachedSource: true, workingDir: workingDir)).flatMap { $0 }
-                        .map(ProfileRuntimeConfigBuilder.hasEnabledOwnDNS(yaml:)) ?? true
-                }.value
-            }
-            try updateOwnSettings(profileID: id, edits: edits, fileRunsOwnDNS: fileRunsOwnDNS)
+            try updateOwnSettings(profileID: id, edits: edits)
         default:
             throw PipelineError.sourceUnavailable("This configuration changed while its settings were open. Reopen them and try again.")
         }
     }
 
      
-    nonisolated static func editedTopLevelKey(_ edit: ConfigurationPageEdit) -> String? {
-        switch edit {
-        case .set(let path, _), .remove(let path): return path.first
-        case .insert(let path, _, _), .replace(let path, _, _), .delete(let path, _), .move(let path, _, _): return path.first
-        case .insertKey(let path, let key, _, _): return path.first ?? key
-        case .renameKey(let path, _, _), .moveKeys(let path, _, _): return path.first
-        }
-    }
-
      
      
      
-    func availableRuleSchemes(for profileID: String? = nil) async throws -> [ConfigurationRuleScheme] {
-        guard let library = configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
-        let snapshot = try await Task.detached(priority: .userInitiated) { try library.snapshot() }.value
-        let current = profileID.flatMap { id in snapshot.recipes.first { $0.id == id }?.ruleSchemeID }
-        return Self.schemeChoices(snapshot, keeping: current)
+    nonisolated static func menuChoices(_ choices: [ConfigurationRuleScheme],
+                                        running: ConfigurationRuleScheme?) -> [ConfigurationRuleScheme] {
+        guard let running, !choices.contains(where: { $0.id == running.id }) else { return choices }
+        return [running] + choices
     }
 
      
@@ -281,8 +277,22 @@ extension ProfilesViewModel {
      
      
      
+    nonisolated static func schemeChoices(_ snapshot: ConfigurationLibrarySnapshot,
+                                          for recipe: ConfigurationRecipe?) -> [ConfigurationRuleScheme] {
+        schemeChoices(snapshot, keeping: recipe?.preservesOriginal == true ? nil : recipe?.ruleSchemeID, profileID: recipe?.id)
+    }
+
      
-    nonisolated static func schemeChoices(_ snapshot: ConfigurationLibrarySnapshot, keeping current: String?) -> [ConfigurationRuleScheme] {
+     
+     
+     
+     
+     
+     
+     
+     
+    nonisolated static func schemeChoices(_ snapshot: ConfigurationLibrarySnapshot, keeping current: String?,
+                                          profileID: String? = nil) -> [ConfigurationRuleScheme] {
         let visible = Set(snapshot.visibleRuleSchemes.map(\.id))
         let builtinIDs = Set(ConfigurationBuiltins.schemes.map(\.id))
         var choices = schemeChoices(library: snapshot.rules).filter { builtinIDs.contains($0.id) || visible.contains($0.id) }
@@ -290,6 +300,7 @@ extension ProfilesViewModel {
         let order = Dictionary(snapshot.visibleRuleSchemes.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         let builtins = choices.prefix { builtinIDs.contains($0.id) }
         choices = Array(builtins) + choices.dropFirst(builtins.count).sorted { (order[$0.id] ?? .max) < (order[$1.id] ?? .max) }
+        choices = snapshot.placingOwnViews(in: choices, for: profileID, running: current)
          
          
          
@@ -946,14 +957,28 @@ enum ConfigurationLANShareStatus {
         case .scalar("true")?, .string("true")?: written = true
         default: written = false
         }
-        guard override.allowLAN ?? modules.allowLAN ?? written else { return .copy("Off") }
+         
+         
+         
          
          
         let mixed: Int32? = override.mixedPort ?? modules.mixedPort ?? port("mixed-port")
         let http: Int32? = override.httpPort ?? modules.httpPort ?? port("port")
         let socks: Int32? = override.socksPort ?? modules.socksPort ?? port("socks-port")
-        let open = [mixed, http, socks].compactMap { $0 }.first { (1...65535).contains($0) }
-        return open.map { .format("On · %@", [String($0)]) } ?? .copy("Off")
+        guard let open = [mixed, http, socks].compactMap({ $0 }).first(where: { (1...65535).contains($0) }) else {
+            return .copy("No Ports Open")
+        }
+         
+         
+        let ownAddressOnly: Bool
+        switch document.node(at: ["bind-address"]) {
+        case .string(let address)?, .scalar(let address)?:
+            ownAddressOnly = ProxyShareAddressList.isThisDeviceOnly(address.trimmingCharacters(in: CharacterSet(charactersIn: "[] ")))
+                || address.lowercased() == "localhost"
+        default: ownAddressOnly = false
+        }
+        let allowsLAN = (override.allowLAN ?? modules.allowLAN ?? written) && !ownAddressOnly
+        return .format(allowsLAN ? "LAN Allowed · %@" : "This Device Only · %@", [String(open)])
     }
 
      
@@ -1075,7 +1100,7 @@ struct ScriptedSettings: Equatable, Sendable {
      
     static func make(raw: String, profile: Profile) -> ScriptedSettings? {
         let unchanged: (String?, String, String) throws -> String = { _, yaml, _ in yaml }
-        guard let scripted = try? ProfileRuntimeConfigBuilder.buildProduction(raw: raw, profile: profile),
+        guard let scripted = try? ProfileRuntimeConfigBuilder.buildProduction(raw: raw, profile: profile, scripts: .silent),
               let plain = try? ProfileRuntimeConfigBuilder.build(
                   raw: raw, profile: profile, globalOverride: GlobalConfig.load(), runtimeOverride: FlClashRuntimeConfig.load(),
                   profileScript: unchanged, configScript: { yaml, _ in yaml }, postMergeScript: unchanged),
@@ -1127,5 +1152,124 @@ enum ConfigurationRunsOverNote {
             }
         }
         return nil
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+enum ConfigurationOutboundModeWords {
+    static func title(_ mode: Profile.OutboundMode) -> String {
+        switch mode {
+        case .global: "Global"
+        case .rule: "Rule"
+        case .direct: "Direct"
+        }
+    }
+}
+
+ 
+ 
+ 
+enum ConfigurationEditorCopy {
+     
+     
+     
+     
+    static func title(of section: ConfigurationOutlineSection) -> String {
+        switch section {
+        case .general: "General Configuration (Configuration Chapter)"
+        case .dns: "DNS"
+        case .sniffer: "Domain Sniffing (Configuration Chapter)"
+        case .inbound: "Inbounds (Configuration Chapter)"
+        case .proxies: "Proxies (Configuration Chapter)"
+        case .proxyProviders: "Proxy Providers (Configuration Chapter)"
+        case .proxyGroups: "Proxy Groups (Configuration Chapter)"
+        case .rules: "Route Rules (Configuration Chapter)"
+        case .ruleProviders: "Rule Providers (Configuration Chapter)"
+        case .subRules: "Sub-rules"
+        case .tunnels: "Tunnels (Configuration Chapter)"
+        case .ntp: "NTP"
+        case .experimental: "Experimental (Configuration Chapter)"
+        case .unknown: "Unknown Keys"
+        case .customRules: "Custom Rules"
+        case .overrideScript: "Override Script"
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct PatchKeysSetElsewhere: LocalizedError, Equatable {
+    enum Place: Hashable {
+        case chapter(ConfigurationOutlineSection)
+         
+        case outboundMode
+         
+        case unavailable
+    }
+
+    struct Group: Equatable {
+        let place: Place
+        let keys: [String]
+    }
+
+    let groups: [Group]
+
+    static let unavailableKeys: Set<String> = ["redir-port", "tproxy-port"]
+
+    static func place(of key: String) -> Place {
+        if unavailableKeys.contains(key) { return .unavailable }
+        if key == "mode" { return .outboundMode }
+        return .chapter(ConfigurationOutline.section(forTopLevelKey: key))
+    }
+
+     
+    init?(patchJSON: String) {
+        let keys = OverridePatch(patchJSON: patchJSON).topLevelKeys.filter(OverridePatch.globalRuntimeKeys.contains)
+        guard !keys.isEmpty else { return nil }
+        let order = ConfigurationOutlineSection.allCases.map(Place.chapter) + [.outboundMode, .unavailable]
+        groups = order.compactMap { place in
+            let here = keys.filter { Self.place(of: $0) == place }
+            return here.isEmpty ? nil : Group(place: place, keys: here)
+        }
+    }
+
+    private static let header = "Not saved. Set these on their own pages and remove them from Patch JSON:"
+    private static let chapterLine = "%@ — this configuration's %@"
+    private static let outboundModeLine = "%@ — Outbound Mode on Home"
+    private static let unavailableLine = "%@ — not available on this device; remove them"
+    static let copyKeys = [header, chapterLine, outboundModeLine, unavailableLine]
+
+     
+     
+    var errorDescription: String? { sentence(locale: .current) }
+
+     
+    func sentence(locale: Locale) -> String {
+         
+        let separator = locale.identifier.hasPrefix("zh") ? "、" : ", "
+        let lines = groups.map { group -> String in
+            let keys = group.keys.joined(separator: separator)
+            switch group.place {
+            case .chapter(let section):
+                let page = ClashCopy.string(ConfigurationEditorCopy.title(of: section), locale: locale)
+                return ClashCopy.format(Self.chapterLine, locale: locale, keys, page)
+            case .outboundMode:
+                return ClashCopy.format(Self.outboundModeLine, locale: locale, keys)
+            case .unavailable:
+                return ClashCopy.format(Self.unavailableLine, locale: locale, keys)
+            }
+        }
+        return ([ClashCopy.string(Self.header, locale: locale)] + lines).joined(separator: "\n")
     }
 }

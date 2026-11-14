@@ -31,8 +31,11 @@ enum ModuleQuantumultXParser {
      
     private static let proxySections: Set<String> = ["server_local", "server_remote", "policy"]
 
+     
+     
+     
     static func parse(_ text: String, manifest base: ModuleManifest, sourceURL: String?, platform: ModulePlatform,
-                      check: ModuleRuleMapping.Check) throws -> Result<ModuleIR, ModuleRefusal> {
+                      check: ModuleRuleMapping.Check, commented: Bool = false) throws -> Result<ModuleIR, ModuleRefusal> {
         let lines = text.components(separatedBy: "\n")
         var manifest = base
         manifest.format = .quantumultX
@@ -57,15 +60,25 @@ enum ModuleQuantumultXParser {
         ir.ignored += notes
         var section: String?
         var sawLine = false
+         
+         
+        var anotherApps = false
         for (index, raw) in lines.enumerated() {
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed.hasPrefix("#") || trimmed.hasPrefix(";") || trimmed.hasPrefix("//") { continue }
             let written = ModuleParser.strippingComment(trimmed)
             if written.isEmpty { continue }
             if written.hasPrefix("["), written.hasSuffix("]") {
-                section = String(written.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+                let name = String(written.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+                section = name
+                if ModuleParser.quantumultXSections.contains(key(of: name)) {
+                    anotherApps = false
+                } else if otherAppsSections.contains(key(of: name)) {
+                    anotherApps = true
+                }
                 continue
             }
+            if commented, anotherApps || !isResourceLine(written, section: section.map(key(of:))) { continue }
             sawLine = true
              
              
@@ -150,6 +163,129 @@ enum ModuleQuantumultXParser {
         default:
              
             ignore(.sectionNotSupported(origin.section))
+        }
+    }
+
+     
+
+     
+     
+     
+    private static let otherAppsSections: Set<String> = [
+        "general", "script", "rewrite", "urlrewrite", "headerrewrite", "bodyrewrite", "maplocal", "rule", "host", "plugin",
+        "argument", "panel",
+    ]
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func commentedResource(_ text: String, sourceURL: String?) -> String? {
+        let address = sourceURL.flatMap { URL(string: $0)?.path.lowercased() } ?? ""
+        guard !otherAppsModuleExtensions.contains((address as NSString).pathExtension) else { return nil }
+        let lines = text.components(separatedBy: "\n")
+        var words: [String] = []
+        words.reserveCapacity(lines.count)
+        var inComment = false
+        var outside = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if inComment || trimmed.hasPrefix("/*") {
+                let body = inComment ? Substring(trimmed) : trimmed.dropFirst(2)
+                if let close = body.range(of: "*/") {
+                    words.append(commentWords(body[..<close.lowerBound]))
+                    inComment = false
+                } else {
+                    words.append(commentWords(body))
+                    inComment = true
+                }
+                continue
+            }
+            words.append("")
+            if trimmed.hasPrefix("["), isOtherAppsSection(ModuleParser.strippingComment(trimmed)) { return nil }
+            if !outside, isOwnLine(ModuleParser.strippingComment(trimmed)) { outside = true }
+        }
+        guard words.contains(where: isOwnLine) else { return nil }
+        guard !outside || address.hasSuffix(".js") else { return nil }
+        return words.joined(separator: "\n")
+    }
+
+     
+     
+    private static let otherAppsModuleExtensions: Set<String> = ["sgmodule", "module", "plugin", "lpx", "stoverride",
+                                                                 "yaml", "yml"]
+
+     
+     
+    private static func isOtherAppsSection(_ line: String) -> Bool {
+        guard line.hasPrefix("["), line.hasSuffix("]") else { return false }
+        let name = key(of: String(line.dropFirst().dropLast()))
+        return otherAppsSections.contains(name) || name == Section.mitm.rawValue
+    }
+
+     
+     
+     
+    private static func commentWords(_ line: Substring) -> String {
+        var text = line.trimmingCharacters(in: .whitespaces)
+        let stars = text.prefix { $0 == "*" }
+        if !stars.isEmpty, text.dropFirst(stars.count).first.map({ $0 == " " || $0 == "\t" }) ?? true {
+            text = text.dropFirst(stars.count).trimmingCharacters(in: .whitespaces)
+        }
+        return text.allSatisfy({ "*=-_~#/".contains($0) }) ? "" : text
+    }
+
+     
+    private static func isOwnLine(_ line: String) -> Bool {
+        if line.hasPrefix("["), line.hasSuffix("]"),
+           ModuleParser.quantumultXSections.contains(key(of: String(line.dropFirst().dropLast()))) {
+            return true
+        }
+        return ModuleParser.isQuantumultXRewriteLine(line)
+    }
+
+     
+     
+     
+     
+     
+    private static func isResourceLine(_ line: String, section: String?) -> Bool {
+        if hostnameLine(line) != nil { return true }
+        switch section {
+        case nil: return inferredSection(line) != nil
+        case Section.rewrite.rawValue: return inferredSection(line) == .rewrite
+        case Section.mitm.rawValue:
+            guard let equals = line.firstIndex(of: "=") else { return false }
+            let name = line[..<equals].trimmingCharacters(in: .whitespaces)
+            return !name.isEmpty && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+        case Section.filter.rawValue: return filterType(line) != nil
+        case Section.task.rawValue:
+             
+            if line.lowercased().hasPrefix("event-") { return true }
+            let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            let fields = words.prefix { word in word.allSatisfy { $0.isASCII && ($0.isNumber || "*/,-?".contains($0)) } }.count
+            return fields >= 5 && words.count > fields
+        default: return false
         }
     }
 

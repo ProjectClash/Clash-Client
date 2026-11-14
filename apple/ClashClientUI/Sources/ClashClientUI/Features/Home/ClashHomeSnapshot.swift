@@ -127,17 +127,40 @@ public struct ClashHomeConnectionIssue:
          
          
         case runningPreviousRevision
+         
+         
+         
+         
+         
+         
+        case stoppedByOnDemandRule
+         
+         
+         
+         
+        case globalOnDirect
 
          
          
         public var lineTapResetsVPNProfile: Bool {
             self == .providerNotLaunched || self == .configurationNotFound
         }
+
+         
+         
+         
+        public var lineTapCommand: ClashHomeCommand {
+            if lineTapResetsVPNProfile { return .resetVPNProfile }
+            if self == .stoppedByOnDemandRule { return .openOnDemand }
+            if self == .globalOnDirect { return .openProxies }
+            return .showConnectionIssue
+        }
     }
 
     public let message: String
     public let kind: Kind
     public let allowsSystemVPNProfileReset: Bool
+     
      
      
     public let subject: String?
@@ -174,6 +197,31 @@ public enum ClashVPNAuthorizationState: String, Codable, Equatable, Sendable {
     case notCompleted
 }
 
+ 
+ 
+ 
+public enum ClashHomeGlobalExit: String, Codable, Equatable, Sendable {
+     
+    case direct
+     
+    case reject
+     
+    case other
+}
+
+public extension ClashHomeGlobalExit {
+     
+     
+    init?(_ exit: ClashTunnelOutboundMode.GlobalExit?) {
+        switch exit {
+        case .direct: self = .direct
+        case .reject: self = .reject
+        case .other: self = .other
+        case .proxy, nil: return nil
+        }
+    }
+}
+
 public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
     public var activeProfileName: String?
     public var vpnStatus: String
@@ -192,6 +240,16 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
      
      
     public var errorIsConfigurationNotFound: Bool
+     
+     
+     
+     
+     
+    public var errorOnDemandRuleNames: String?
+     
+     
+     
+    public var errorSubject: String?
     public var allowsSystemVPNProfileReset: Bool
     public var isSwitchingProxy: Bool
     public var recoveryMode: ClashHomeRecoveryMode
@@ -204,6 +262,15 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
      
      
     public var runningPreviousProfileName: String?
+     
+     
+     
+    public var globalExitWithoutProxy: ClashHomeGlobalExit?
+     
+     
+     
+     
+    public var finalRuleRoute: ClashHomeFinalRuleRoute?
 
     public init(
         activeProfileName: String?,
@@ -213,6 +280,8 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
         errorIsStartupStopped: Bool = false,
         errorIsProviderNotLaunched: Bool = false,
         errorIsConfigurationNotFound: Bool = false,
+        errorOnDemandRuleNames: String? = nil,
+        errorSubject: String? = nil,
         allowsSystemVPNProfileReset: Bool = false,
         isSwitchingProxy: Bool = false,
         recoveryMode: ClashHomeRecoveryMode = .none,
@@ -220,7 +289,9 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
         selectedProxyName: String? = nil,
         selectedProxyDelayMilliseconds: Int? = nil,
         runningPreviousRevision: Bool = false,
-        runningPreviousProfileName: String? = nil
+        runningPreviousProfileName: String? = nil,
+        globalExitWithoutProxy: ClashHomeGlobalExit? = nil,
+        finalRuleRoute: ClashHomeFinalRuleRoute? = nil
     ) {
         self.activeProfileName = activeProfileName?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -230,6 +301,8 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
         self.errorIsStartupStopped = errorIsStartupStopped
         self.errorIsProviderNotLaunched = errorIsProviderNotLaunched
         self.errorIsConfigurationNotFound = errorIsConfigurationNotFound
+        self.errorOnDemandRuleNames = errorOnDemandRuleNames
+        self.errorSubject = errorSubject
         self.allowsSystemVPNProfileReset = allowsSystemVPNProfileReset
         self.isSwitchingProxy = isSwitchingProxy
         self.recoveryMode = recoveryMode
@@ -238,6 +311,22 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
         self.selectedProxyDelayMilliseconds = selectedProxyDelayMilliseconds
         self.runningPreviousRevision = runningPreviousRevision
         self.runningPreviousProfileName = runningPreviousProfileName
+        self.globalExitWithoutProxy = globalExitWithoutProxy
+        self.finalRuleRoute = finalRuleRoute
+    }
+}
+
+ 
+ 
+public struct ClashHomeFinalRuleRoute: Codable, Equatable, Sendable {
+    public var group: String?
+    public var node: String
+    public var delayMilliseconds: Int?
+
+    public init(group: String?, node: String, delayMilliseconds: Int?) {
+        self.group = group
+        self.node = node
+        self.delayMilliseconds = delayMilliseconds
     }
 }
 
@@ -300,6 +389,33 @@ public struct ClashHomeConnectionPresentation:
 }
 
 public enum ClashHomeConnectionPresenter {
+     
+     
+     
+    public static func globalLine(_ exit: ClashHomeGlobalExit) -> String {
+        switch exit {
+        case .direct: return "In Global mode, GLOBAL is set to DIRECT, so no traffic goes through a proxy"
+        case .reject: return "In Global mode, GLOBAL is set to REJECT, so all traffic is rejected"
+        case .other: return "In Global mode, GLOBAL has no proxy chosen"
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    public static func homeStatus(
+        status: String, isPreparingStart: Bool, systemHasNotAnswered: Bool = false
+    ) -> String {
+        guard isPreparingStart || systemHasNotAnswered,
+              !["connected", "connecting", "reasserting", "disconnecting"].contains(status.lowercased())
+        else { return status }
+        return "connecting"
+    }
+
     public static func presentation(
         for facts: ClashHomeConnectionFacts
     ) -> ClashHomeConnectionPresentation {
@@ -324,6 +440,8 @@ public enum ClashHomeConnectionPresenter {
             kind = .providerNotLaunched
         } else if facts.errorIsConfigurationNotFound {
             kind = .configurationNotFound
+        } else if facts.errorOnDemandRuleNames != nil {
+            kind = .stoppedByOnDemandRule
         } else if facts.errorIsStartupStopped {
             kind = .startupStopped
         } else {
@@ -338,7 +456,11 @@ public enum ClashHomeConnectionPresenter {
              
              
             allowsSystemVPNProfileReset: kind.lineTapResetsVPNProfile
-                || (kind != .startupStopped && facts.allowsSystemVPNProfileReset)
+                || (kind != .startupStopped && facts.allowsSystemVPNProfileReset),
+             
+             
+            subject: kind == .stoppedByOnDemandRule ? facts.errorOnDemandRuleNames
+                : kind == .connectionFailure ? facts.errorSubject : nil
         )
 
         if !hasProfile {
@@ -421,7 +543,13 @@ public enum ClashHomeConnectionPresenter {
                         kind: .runningPreviousRevision,
                         subject: facts.runningPreviousProfileName
                     )
-                    : nil
+                     
+                     
+                    : facts.mode.lowercased() == "global"
+                        ? facts.globalExitWithoutProxy.map {
+                            ClashHomeConnectionIssue(message: Self.globalLine($0), kind: .globalOnDirect)
+                        }
+                        : nil
             )
         }
         if issue != nil || ["invalid", "unknown"].contains(status) {
@@ -488,7 +616,15 @@ public enum ClashHomeConnectionPresenter {
          
          
          
-        guard semanticMode(facts.mode) == "Global" else { return "" }
+         
+         
+         
+         
+         
+         
+        let mode = semanticMode(facts.mode)
+        if mode == "Rule" { return finalRuleLine(facts.finalRuleRoute) }
+        guard mode == "Global" else { return "" }
         var parts: [String] = []
         if let selected = facts.selectedProxyName?.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -496,6 +632,24 @@ public enum ClashHomeConnectionPresenter {
             parts.append(selected)
         }
         if let delay = facts.selectedProxyDelayMilliseconds, delay >= 0 {
+            parts.append("\(delay) ms")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+     
+     
+     
+    private static func finalRuleLine(_ route: ClashHomeFinalRuleRoute?) -> String {
+        guard let route else { return "" }
+        let node = route.node.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !node.isEmpty else { return "" }
+        var parts: [String] = []
+        if let group = route.group?.trimmingCharacters(in: .whitespacesAndNewlines), !group.isEmpty {
+            parts.append(group)
+        }
+        parts.append(node)
+        if let delay = route.delayMilliseconds, delay >= 0 {
             parts.append("\(delay) ms")
         }
         return parts.joined(separator: " · ")
@@ -510,6 +664,10 @@ public enum ClashHomeCommand: Codable, Equatable, Sendable {
      
      
     case resetVPNProfile
+     
+     
+     
+    case openOnDemand
     case openProxies
     case openRules
     case openRuntimeConfiguration

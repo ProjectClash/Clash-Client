@@ -97,7 +97,7 @@ public struct ClashModuleEditorView: View {
                                         busyTitle: "Saving…", onPrimary: save)
                 }
             }
-            .clashProductModalRoot(title: titleKey, actionTitle: "Save", actionDisabled: !canSave, action: save)
+            .clashProductModalRoot(title: .copy(titleKey), actionTitle: "Save", actionDisabled: !canSave, action: save)
             .confirmationDialog(Text("Discard Changes?"), isPresented: $confirmsDiscard, titleVisibility: .visible) {
                 Button(role: .destructive) {
                     perform(.closeEditor)

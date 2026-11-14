@@ -209,6 +209,7 @@ public struct ClashMacSourceContentPage: View {
                              
                              
                              
+                             
                             Button(role: .destructive) { actions.delete() } label: {
                                 Text(clash: isChain ? .copy("Delete Proxy Chain") : .copy("Delete"))
                             }
@@ -352,7 +353,11 @@ public struct ClashMacSourceDetailsSheet: View {
     private let usedBy: [ClashProfileSnapshot]
     private let actions: ClashMacSourcePaneActions
     private let close: () -> Void
-    @State private var name: String
+     
+     
+     
+     
+    @State private var name: String?
     @State private var url: String
     @State private var interval: Int
     @State private var error: String?
@@ -360,12 +365,14 @@ public struct ClashMacSourceDetailsSheet: View {
 
     public init(source: ConfigurationSourceRecord, usedBy: [ClashProfileSnapshot], actions: ClashMacSourcePaneActions, close: @escaping () -> Void) {
         self.source = source; self.usedBy = usedBy; self.actions = actions; self.close = close
-        _name = State(initialValue: source.label)
         let draft = ConfigurationSourceSettingsDraft(source: source)
         _url = State(initialValue: draft.url)
         _interval = State(initialValue: draft.intervalHours)
     }
 
+    private var shownName: String { source.displayLabel(locale: locale) }
+    private var nameField: Binding<String> { Binding(get: { name ?? shownName }, set: { name = $0 }) }
+    private var typedName: String { (name ?? shownName).trimmingCharacters(in: .whitespacesAndNewlines) }
     private var isRetained: Bool { source.isRetainedSnapshot == true }
     private var isSubscription: Bool {
         if isRetained { return false }
@@ -374,7 +381,7 @@ public struct ClashMacSourceDetailsSheet: View {
     }
     private var dirty: Bool {
         let draft = ConfigurationSourceSettingsDraft(source: source)
-        return name.trimmingCharacters(in: .whitespacesAndNewlines) != source.label
+        return typedName != shownName
             || (isSubscription && (url.trimmingCharacters(in: .whitespacesAndNewlines) != draft.url || interval != draft.intervalHours))
     }
     private var urlIsValid: Bool {
@@ -384,10 +391,10 @@ public struct ClashMacSourceDetailsSheet: View {
     }
 
     public var body: some View {
-        ClashMacSheetFrame(title: .copy("Source Details"), subtitle: .verbatim(source.label), width: 560, height: 520) {
+        ClashMacSheetFrame(title: .copy("Source Details"), subtitle: ClashConfigurationSourceCopy.name(source), width: 560, height: 520) {
             ClashMacSheetForm {
                 Section {
-                    TextField(text: $name) { Text(clash: .copy("Name")) }
+                    TextField(text: nameField) { Text(clash: .copy("Name")) }
                         .disabled(isRetained)
                         .accessibilityIdentifier("configuration-center.source.name")
                     switch source.origin {
@@ -455,7 +462,7 @@ public struct ClashMacSourceDetailsSheet: View {
                 closeIdentifier: "configuration-center.source.close",
                 primaryTitle: .copy("OK"),
                 primaryIdentifier: "configuration-center.source.save",
-                primaryDisabled: !dirty || !urlIsValid || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                primaryDisabled: !dirty || !urlIsValid || typedName.isEmpty,
                 onClose: close,
                 onPrimary: commit
             )
@@ -463,7 +470,7 @@ public struct ClashMacSourceDetailsSheet: View {
     }
 
     private func commit() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = typedName
         var settings: ConfigurationSourceSettingsDraft?
         if isSubscription {
             var draft = ConfigurationSourceSettingsDraft(source: source)
@@ -476,7 +483,10 @@ public struct ClashMacSourceDetailsSheet: View {
          
          
          
-        guard trimmed != source.label || settings != nil else { return close() }
+        guard typed != shownName || settings != nil else { return close() }
+         
+         
+        let trimmed = ClashConfigurationSourceCopy.nameToStore(typed, origin: source.origin, locale: locale)
         Task { @MainActor in
             if let refusal = await actions.save(trimmed, settings) { error = refusal } else { close() }
         }

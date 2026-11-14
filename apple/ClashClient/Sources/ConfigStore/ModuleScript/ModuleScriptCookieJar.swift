@@ -74,7 +74,7 @@ struct ModuleScriptCookieJar {
              
              
              
-            if let maxAge { if maxAge <= 0 { removes = true } } else if let expires, expires <= now { removes = true }
+            if let maxAge { if maxAge <= 0 { removes = true } } else if let expires, expires.timeIntervalSince(now) <= 0 { removes = true }
             cookies.removeAll { $0.domain == domain && $0.name == name }
             guard !removes, !value.isEmpty else { continue }
             cookies.append(Cookie(domain: domain, hostOnly: hostOnly, name: name, value: value, secure: secure,

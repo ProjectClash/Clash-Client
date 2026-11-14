@@ -1,0 +1,147 @@
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+import _CertificateInternals
+
+ 
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+public struct CertificateStore: Sendable, Hashable {
+
+    @usableFromInline
+    var systemTrustStore: Bool
+    @usableFromInline
+    var additionalTrustRoots: [DistinguishedName: [Certificate]]
+
+    @inlinable
+    public init() {
+        self.init([])
+    }
+
+    @inlinable
+    public init(_ certificates: some Sequence<Certificate>) {
+        self.systemTrustStore = false
+        self.additionalTrustRoots = Dictionary(grouping: certificates, by: \.subject)
+    }
+
+    init(systemTrustStore: Bool) {
+        self.systemTrustStore = systemTrustStore
+        self.additionalTrustRoots = [:]
+    }
+
+    @inlinable
+    public mutating func append(_ certificate: Certificate) {
+        self.append(contentsOf: CollectionOfOne(certificate))
+    }
+
+    @inlinable
+    public mutating func append(contentsOf certificates: some Sequence<Certificate>) {
+        for certificate in certificates {
+            additionalTrustRoots[certificate.subject, default: []].append(certificate)
+        }
+    }
+
+    @inlinable
+    public func appending(contentsOf certificates: some Sequence<Certificate>) -> Self {
+        var copy = self
+        copy.append(contentsOf: certificates)
+        return copy
+    }
+
+    @inlinable
+    public func appending(_ certificate: Certificate) -> Self {
+        var copy = self
+        copy.append(certificate)
+        return self
+    }
+
+    func resolve(diagnosticsCallback: ((VerificationDiagnostic) -> Void)?) async -> Resolved {
+        await Resolved(self, diagnosticsCallback: diagnosticsCallback)
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension CertificateStore {
+    @usableFromInline
+    struct Resolved {
+
+        @usableFromInline
+        var systemTrustRoots: [DistinguishedName: [Certificate]]
+
+        @usableFromInline
+        var additionalTrustRoots: [DistinguishedName: [Certificate]]
+
+        init(_ store: CertificateStore, diagnosticsCallback: ((VerificationDiagnostic) -> Void)?) async {
+            if store.systemTrustStore {
+                do {
+                    systemTrustRoots = try await CertificateStore.cachedSystemTrustRootsFuture.value
+                } catch {
+                    diagnosticsCallback?(.loadingTrustRootsFailed(error))
+                    systemTrustRoots = [:]
+                }
+            } else {
+                systemTrustRoots = [:]
+            }
+
+            additionalTrustRoots = store.additionalTrustRoots
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension CertificateStore.Resolved {
+    @inlinable
+    subscript(subject: DistinguishedName) -> [Certificate]? {
+        get {
+            var matchingCertificates: [Certificate] = []
+
+            if let matchingCertificatesInSystemTrustStore = systemTrustRoots[subject] {
+                matchingCertificates.appendOrReplaceIfEmpty(withContentsOf: matchingCertificatesInSystemTrustStore)
+            }
+
+            if let matchingCertificatesInAdditionTrustRoots = additionalTrustRoots[subject] {
+                matchingCertificates.appendOrReplaceIfEmpty(withContentsOf: matchingCertificatesInAdditionTrustRoots)
+            }
+
+            guard matchingCertificates.isEmpty else {
+                return matchingCertificates
+            }
+            return nil
+        }
+    }
+
+    @inlinable
+    func contains(_ certificate: Certificate) -> Bool {
+        if systemTrustRoots[certificate.subject]?.contains(certificate) == true {
+            return true
+        }
+
+        if additionalTrustRoots[certificate.subject]?.contains(certificate) == true {
+            return true
+        }
+
+        return false
+    }
+}
+
+extension Array {
+     
+    @inlinable
+    mutating func appendOrReplaceIfEmpty(withContentsOf newElements: [Element]) {
+        if self.isEmpty {
+            self = newElements
+        } else {
+            self.append(contentsOf: newElements)
+        }
+    }
+}

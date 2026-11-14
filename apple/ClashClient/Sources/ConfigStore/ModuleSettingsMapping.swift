@@ -1395,9 +1395,16 @@ enum ModuleSettingsMapping {
     }
 
      
+     
+     
+     
+     
+     
+     
     private static func isFakeIPRuleLine(_ text: String) -> Bool {
-        let fields = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-        return fields.count >= 2 && ["real-ip", "fake-ip"].contains(fields.last!) && ModuleYAMLText.isOneLine(text)
+        let fields = text.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let action = StructuredRule.coreTargetIndex(head: fields[0], fieldCount: fields.count) else { return false }
+        return ["real-ip", "fake-ip"].contains(fields[action].lowercased()) && ModuleYAMLText.isOneLine(text)
     }
 
      

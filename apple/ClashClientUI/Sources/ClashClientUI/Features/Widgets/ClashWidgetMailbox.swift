@@ -19,6 +19,10 @@ public enum ClashWidgetMailbox {
      
      
     public static let modeFile = "widgets/mode.json"
+     
+     
+     
+    public static let noticeFile = "widgets/notice.json"
     public static let requestNotification = "org.example.clash.widget.request"
      
     public static let updatedNotification = "org.example.clash.widget.updated"
@@ -85,6 +89,38 @@ public struct ClashWidgetModeChoice: Codable, Equatable, Sendable {
  
  
  
+ 
+ 
+ 
+public struct ClashWidgetNotice: Codable, Equatable, Sendable {
+     
+     
+    public let exit: String?
+    public let at: Date
+
+     
+    public static let lifetime: TimeInterval = 60
+
+    public init(exit: String?, at: Date) {
+        self.exit = exit
+        self.at = at
+    }
+
+     
+    public var text: String {
+        ClashTunnelOutboundMode.notTurnedOnKey(exit.map { ClashTunnelOutboundMode.GlobalExit(rawValue: $0) ?? .other })
+    }
+
+     
+    public func text(at now: Date) -> String? {
+        let age = now.timeIntervalSince(at)
+        return age >= -5 && age <= Self.lifetime ? text : nil
+    }
+}
+
+ 
+ 
+ 
 public struct ClashWidgetAppFacts: Codable, Equatable, Sendable {
     public let profile: String?
     public let firstGroup: String?
@@ -106,14 +142,21 @@ public struct ClashWidgetAppFacts: Codable, Equatable, Sendable {
      
      
     public let countsWired: Bool?
+     
+     
+     
+     
+    public let globalVerdict: ClashTunnelOutboundMode.StoredGlobalVerdict?
     public let writtenAt: Date
 
     public init(
         profile: String?, firstGroup: String?, groups: [String],
         members: [String: [String]] = [:], selections: [String: String] = [:],
         mode: ClashWidgetMode? = nil, countsWired: Bool? = nil,
+        globalVerdict: ClashTunnelOutboundMode.StoredGlobalVerdict? = nil,
         writtenAt: Date
     ) {
+        self.globalVerdict = globalVerdict
         self.profile = profile
         self.firstGroup = firstGroup
         self.groups = groups
@@ -194,6 +237,18 @@ public struct ClashWidgetMailboxStore {
 
     public func clearModeChoice() {
         try? FileManager.default.removeItem(at: root.appendingPathComponent(ClashWidgetMailbox.modeFile))
+    }
+
+    public func readNotice() -> ClashWidgetNotice? {
+        read(ClashWidgetMailbox.noticeFile)
+    }
+
+    public func writeNotice(_ notice: ClashWidgetNotice) throws {
+        try write(notice, to: ClashWidgetMailbox.noticeFile)
+    }
+
+    public func clearNotice() {
+        try? FileManager.default.removeItem(at: root.appendingPathComponent(ClashWidgetMailbox.noticeFile))
     }
 
      

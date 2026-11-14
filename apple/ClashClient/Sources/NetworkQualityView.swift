@@ -92,12 +92,12 @@ struct NetworkQualityView: View {
                     .accessibilityIdentifier("networkQuality.path.summary")
                 OverviewValueRow(
                     title: "Address Families",
-                    value: .verbatim(addressFamilySummary(networkPath.snapshot))
+                    value: Self.addressFamilies(v4: networkPath.snapshot.supportsIPv4, v6: networkPath.snapshot.supportsIPv6)
                 )
                 .accessibilityIdentifier("networkQuality.path.addressFamilies")
                 OverviewValueRow(
                     title: "System DNS",
-                    value: .verbatim(networkPath.snapshot.supportsDNS ? "Available" : "Unavailable")
+                    value: Self.systemDNS(available: networkPath.snapshot.supportsDNS)
                 )
                 .accessibilityIdentifier("networkQuality.path.systemDNS")
             }
@@ -164,13 +164,19 @@ struct NetworkQualityView: View {
         value > 0 ? "\(value)" : "—"
     }
 
-    private func addressFamilySummary(_ snapshot: NetworkPathSnapshot) -> String {
-        switch (snapshot.supportsIPv4, snapshot.supportsIPv6) {
-        case (true, true): return "IPv4 + IPv6"
-        case (true, false): return "IPv4-only"
-        case (false, true): return "IPv6-only"
-        case (false, false): return "None"
+     
+    static func addressFamilies(v4: Bool, v6: Bool) -> ClashDisplayText {
+        switch (v4, v6) {
+        case (true, true): return .copy("IPv4 + IPv6")
+        case (true, false): return .copy("IPv4-only")
+        case (false, true): return .copy("IPv6-only")
+        case (false, false): return .copy("None")
         }
+    }
+
+     
+    static func systemDNS(available: Bool) -> ClashDisplayText {
+        .copy(available ? "System DNS is available" : "Unavailable")
     }
 
     private func requestStart() {

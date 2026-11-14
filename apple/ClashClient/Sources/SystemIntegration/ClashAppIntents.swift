@@ -1,5 +1,8 @@
 import AppIntents
+import ClashClientUI
+import NetworkExtension
 import UniformTypeIdentifiers
+import WidgetKit
 
  
  
@@ -48,7 +51,7 @@ enum ClashTunnelIntentError: LocalizedError {
 @available(iOS 16.0, *)
 struct ConnectClashIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Clash"
-    static let description = IntentDescription("Start the installed Clash by Clash VPN profile.")
+    static let description = IntentDescription("Start the installed Clash VPN profile.")
     static var openAppWhenRun: Bool { false }
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, macOS 26.0, *)
@@ -65,7 +68,7 @@ struct ConnectClashIntent: AppIntent {
 @available(iOS 16.0, *)
 struct DisconnectClashIntent: AppIntent {
     static let title: LocalizedStringResource = "Stop Clash"
-    static let description = IntentDescription("Stop the active Clash by Clash VPN profile.")
+    static let description = IntentDescription("Stop the active Clash VPN profile.")
     static var openAppWhenRun: Bool { false }
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, macOS 26.0, *)
@@ -104,7 +107,7 @@ struct ToggleClashIntent: AppIntent {
 @available(iOS 16.0, *)
 struct GetClashVPNStatusIntent: AppIntent {
     static let title: LocalizedStringResource = "Get Clash VPN Status"
-    static let description = IntentDescription("Reports whether the installed Clash by Clash VPN profile is connected.")
+    static let description = IntentDescription("Reports whether the installed Clash VPN profile is connected.")
     static var openAppWhenRun: Bool { false }
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, macOS 26.0, *)
@@ -136,8 +139,18 @@ enum ClashRoutingModeIntentValue: String, AppEnum {
     var route: ClashSystemRoute {
         .mode(ClashSystemRoute.RoutingMode(rawValue: rawValue)!)
     }
+
+     
+    var widgetMode: ClashWidgetMode {
+        ClashWidgetMode(rawValue: rawValue)!
+    }
 }
 
+ 
+ 
+ 
+ 
+ 
  
  
  
@@ -145,9 +158,10 @@ enum ClashRoutingModeIntentValue: String, AppEnum {
 struct SetClashRoutingModeIntent: AppIntent {
     static let title: LocalizedStringResource = "Set Clash Routing Mode"
     static let description = IntentDescription("Switch Clash between Rule, Global, and Direct routing.")
-    static var openAppWhenRun: Bool { true }
+    static var openAppWhenRun: Bool { false }
+    static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, macOS 26.0, *)
-    static var supportedModes: IntentModes { .foreground(.immediate) }
+    static var supportedModes: IntentModes { .background }
 
     @Parameter(title: "Mode")
     var mode: ClashRoutingModeIntentValue
@@ -159,10 +173,209 @@ struct SetClashRoutingModeIntent: AppIntent {
      
      
      
+     
     func perform() async throws -> some IntentResult {
-        ClashSystemActionDispatch.enqueue(mode.route)
+        try await ClashModeShortcut.set(mode.widgetMode)
         return .result()
     }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@available(iOS 16.0, *)
+enum ClashModeShortcut {
+     
+     
+    static var store: () -> ClashWidgetMailboxStore = { ClashWidgetFactsPublisher.store }
+
+     
+    static var status: () async -> NEVPNStatus? = { await ClashVPNControlDriver.currentStatus() }
+
+     
+    static var switchRunningTunnel: (ClashWidgetMode) async -> Bool = { mode in
+        guard let session = await ClashVPNControlDriver.providerSession(),
+              let reply = await ClashClient(session: session).setMode(mode.rawValue),
+              let answer = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any] else { return false }
+        return answer[#"error"#] == nil
+    }
+
+     
+     
+     
+     
+    static var runningGlobalStep: () async -> ClashTunnelOutboundMode.GlobalSwitchStep = {
+        guard let session = await ClashVPNControlDriver.providerSession() else { return .notKnown }
+        let client = ClashClient(session: session)
+        return await ClashTunnelOutboundMode.readGlobalStep(
+            summary: { await client.send([#"cmd"#: #"proxiesSummary"#]).map { String(decoding: $0, as: UTF8.self) } },
+            members: { group in
+                await client.send([#"cmd"#: #"groupMembers"#, #"group"#: group, #"limit"#: ClashTunnelOutboundMode.membersRead])
+                    .map { String(decoding: $0, as: UTF8.self) }
+            }
+        )
+    }
+
+     
+     
+     
+    static var storedGlobalChoice: () -> ClashTunnelOutboundMode.StoredGlobalChoice? = {
+        NodeProfilePreferencesStore.live()?.load().map {
+            .init(selectedMap: $0.selectedMap, currentGroupName: $0.currentGroupName,
+                  globalPickedByReader: $0.globalPickedByReader)
+        }
+    }
+
+     
+     
+    static var announce: () -> Void = {
+        WidgetCenter.shared.reloadAllTimelines()
+        NotificationCenter.default.post(name: .clashModeChosenElsewhere, object: nil)
+    }
+
+     
+    static var log: (String) -> Void = { line in
+        ClashLogStore.shared.append(#"shortcut: "# + line, stream: .app, level: .info)
+    }
+
+     
+     
+    static var settleNanoseconds: UInt64 = 10_000_000_000
+    static var pollNanoseconds: UInt64 = 100_000_000
+
+     
+    private static func settledStatus() async -> NEVPNStatus? {
+        var current = await status()
+        var waited: UInt64 = 0
+        while current == .connecting, waited < settleNanoseconds {
+            try? await Task.sleep(nanoseconds: pollNanoseconds)
+            waited += pollNanoseconds
+            current = await status()
+        }
+        return current
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func set(_ mode: ClashWidgetMode) async throws {
+        let word = mode.rawValue
+        let current = await settledStatus()
+        let running = current == .connected || current == .reasserting
+        if mode == .global {
+            if running {
+                switch await runningGlobalStep() {
+                case .switchNow:
+                    break
+                case .ask(let exit):
+                    log(#"mode global not set: GLOBAL ends on \#(exit.rawValue)"#)
+                    throw ClashModeShortcutError.globalWithoutProxy(exit)
+                case .refuse:
+                    log(#"mode global not set: GLOBAL lists nothing to choose"#)
+                    throw ClashModeShortcutError.globalWithoutProxy(.other)
+                case .notKnown:
+                    log(#"mode global not set: GLOBAL could not be read"#)
+                    throw ClashModeShortcutError.globalNotConfirmed
+                }
+            } else if case .refuse(let exit) = store().readAppFacts()?.globalVerdict
+                        ?? ClashTunnelOutboundMode.storedGlobalVerdict(storedGlobalChoice()) {
+                 
+                 
+                 
+                log(#"mode global not kept: GLOBAL's stored choice is \#(exit.rawValue)"#)
+                throw ClashModeShortcutError.globalWithoutProxy(exit)
+            }
+        }
+        do {
+            try store().writeModeChoice(ClashWidgetModeChoice(mode: mode, at: Date()))
+        } catch {
+            log(#"mode \#(word) not saved: \#(error.localizedDescription)"#)
+            throw ClashModeShortcutError.notSaved
+        }
+        announce()
+        guard running else {
+            let state = current.map { String($0.rawValue) } ?? #"none"#
+            log(#"mode \#(word) saved; no tunnel running (status \#(state)), the next connect uses it"#)
+            return
+        }
+        guard await switchRunningTunnel(mode) else {
+            log(#"mode \#(word) saved; the running tunnel did not switch"#)
+            throw ClashModeShortcutError.runningTunnelNotSwitched
+        }
+        log(#"mode \#(word) saved and switched on the running tunnel"#)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+@available(iOS 16.0, *)
+enum ClashModeShortcutError: Error, LocalizedError, CustomLocalizedStringResourceConvertible, Equatable {
+    case notSaved
+    case runningTunnelNotSwitched
+     
+    case globalWithoutProxy(ClashTunnelOutboundMode.GlobalExit)
+     
+    case globalNotConfirmed
+
+    var localizedStringResource: LocalizedStringResource {
+        switch self {
+        case .notSaved:
+            return "Clash could not save the routing mode. Open Clash, then run the shortcut again."
+        case .runningTunnelNotSwitched:
+            return "Clash could not switch the running VPN. Open Clash to switch it."
+         
+         
+         
+        case .globalWithoutProxy(let exit):
+            return LocalizedStringResource(stringLiteral: ClashTunnelOutboundMode.notTurnedOnKey(exit))
+        case .globalNotConfirmed:
+            return LocalizedStringResource(stringLiteral: ClashTunnelOutboundMode.notTurnedOnKey(nil))
+        }
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .notSaved:
+            return String(localized: "Clash could not save the routing mode. Open Clash, then run the shortcut again.")
+        case .runningTunnelNotSwitched:
+            return String(localized: "Clash could not switch the running VPN. Open Clash to switch it.")
+        case .globalWithoutProxy(let exit):
+            return String(localized: String.LocalizationValue(stringLiteral: ClashTunnelOutboundMode.notTurnedOnKey(exit)))
+        case .globalNotConfirmed:
+            return String(localized: String.LocalizationValue(stringLiteral: ClashTunnelOutboundMode.notTurnedOnKey(nil)))
+        }
+    }
+}
+
+extension Notification.Name {
+     
+    static let clashModeChosenElsewhere = Notification.Name(#"ClashModeChosenElsewhere"#)
 }
 
 @available(iOS 16.0, *)

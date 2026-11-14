@@ -71,7 +71,7 @@ struct ConfigurationPayloadNodesPage: View {
                     .accessibilityIdentifier("configuration-editor.original-providers.payload.add-row")
                 }
                 ForEach(rows, id: \.index) { row in
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         nodePage(row)
                     } label: {
                         HStack(alignment: .firstTextBaseline) {
@@ -102,7 +102,7 @@ struct ConfigurationPayloadNodesPage: View {
         }
         .disabled(session.isSaving)
          
-        .sheet(isPresented: Binding(get: { addingType != nil }, set: { if !$0 { addingType = nil } })) {
+        .clashSheet(isPresented: Binding(get: { addingType != nil }, set: { if !$0 { addingType = nil } })) {
             ClashFeatureNavigationContainer {
                 ProxyNodeDetailsView(record: CustomNodesView.newNodeTemplate, retest: {},
                                      saveNode: { _, edited in try await add(edited) },

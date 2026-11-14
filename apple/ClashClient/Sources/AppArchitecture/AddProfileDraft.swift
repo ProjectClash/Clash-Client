@@ -106,7 +106,7 @@ struct AddProfileDraft: Equatable {
      
      
     var resolvedLink: String {
-        if case .link(let url, _) = PastedContentClassifier.classify(linkText) {
+        if case .link(let url, _, _) = PastedContentClassifier.classify(linkText) {
             return url
         }
         return linkText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -147,7 +147,7 @@ struct AddProfileDraft: Equatable {
         switch PastedContentClassifier.classify(linkText) {
         case .empty, .unrecognized, .configText, .nodeShareLinks:
             return .accepts
-        case .link(let url, let unwrapped):
+        case .link(let url, let unwrapped, _):
             if unwrapped != nil {
                 return .unwrappedInstallLink(host: URL(string: url)?.host ?? url)
             }
@@ -251,7 +251,7 @@ struct AddProfileDraft: Equatable {
             pendingConfigText = body
         case .empty:
             break
-        case .link(let url, let unwrapped):
+        case .link(let url, let unwrapped, _):
             linkText = unwrapped == nil
                 ? url
                 : raw.trimmingCharacters(in: .whitespacesAndNewlines)

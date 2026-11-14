@@ -1641,9 +1641,6 @@ private extension ModuleLoonRewriteSyntax.Reader {
         case .failure(let reason): throw reason
         }
          
-        if address.lowercased().contains("boxjs") || pattern.lowercased().contains("boxjs") {
-            throw ModuleIgnoredReason.boxJSNotSupported
-        }
          
         guard let url = URL(string: address), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               url.host?.isEmpty == false else { throw ModuleIgnoredReason.scriptWithoutAddress }
@@ -1744,7 +1741,6 @@ private extension ModuleLoonRewriteSyntax.Reader {
         case .success(let resolved): address = resolved
         case .failure(let reason): throw reason
         }
-        if address.lowercased().contains("boxjs") { throw ModuleIgnoredReason.boxJSNotSupported }
          
         guard let url = URL(string: address), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               url.host?.isEmpty == false else { throw ModuleIgnoredReason.scriptWithoutAddress }

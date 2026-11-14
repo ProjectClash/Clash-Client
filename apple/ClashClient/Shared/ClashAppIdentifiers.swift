@@ -51,6 +51,27 @@ enum ClashAppIdentifiers {
     }
 
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static var defaultsSuite: String {
+
+
+        return appGroup
+    }
+
+
+
+     
     static let iCloudContainer = "iCloud.org.example.clash"
 
      

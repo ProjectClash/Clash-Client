@@ -688,10 +688,7 @@ enum ModuleLineSyntax {
      
      
      
-    private static func scriptAddress(_ path: String, pattern: String = "") -> Result<String, ModuleIgnoredReason> {
-        if path.lowercased().contains("boxjs") || pattern.lowercased().contains("boxjs") {
-            return .failure(.boxJSNotSupported)
-        }
+    private static func scriptAddress(_ path: String) -> Result<String, ModuleIgnoredReason> {
         guard let url = URL(string: path), let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https", url.host?.isEmpty == false else {
             return .failure(.scriptWithoutAddress)
@@ -709,7 +706,7 @@ enum ModuleLineSyntax {
         if values["jq-path"] != nil { return .failure(.unsupportedRewriteType("jq-path")) }
         guard let pattern = values["pattern"], !pattern.isEmpty else { return .failure(.unreadableLine) }
         let path: String
-        switch scriptAddress(values["script-path"] ?? "", pattern: pattern) {
+        switch scriptAddress(values["script-path"] ?? "") {
         case .success(let address): path = address
         case .failure(let reason): return .failure(reason)
         }

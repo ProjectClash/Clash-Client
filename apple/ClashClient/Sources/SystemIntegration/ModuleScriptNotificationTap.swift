@@ -1,7 +1,11 @@
 #if os(iOS) || os(macOS)
+import ClashClientUI
 import Foundation
 import UserNotifications
 
+ 
+ 
+ 
  
  
  
@@ -22,13 +26,32 @@ struct ModuleScriptNotificationTap: Equatable {
      
     var open: URL?
     var refusal: Refusal?
+     
+     
+    var text: ClashScriptNotificationText
 
      
-    init?(_ tap: ClashNotificationTap) {
+     
+     
+     
+    var showsText: Bool { open == nil }
+
+     
+     
+     
+     
+     
+    init?(_ tap: ClashNotificationTap, kept: ModuleScriptNotificationWords? = nil) {
         guard tap.action == UNNotificationDefaultActionIdentifier else { return nil }
         scriptName = tap.info[#"scriptName"#] ?? #""#
-        copy = tap.info[#"clipboardText"#].flatMap { $0.isEmpty ? nil : $0 }
-        guard let written = tap.info[#"openURL"#], !written.isEmpty else { return }
+        copy = (kept?.clipboardText ?? tap.info[#"clipboardText"#]).flatMap { $0.isEmpty ? nil : $0 }
+        text = ClashScriptNotificationText(id: tap.identifier, scriptName: scriptName, title: kept?.title ?? tap.title,
+                                           subtitle: kept?.subtitle ?? tap.subtitle, body: kept?.body ?? tap.body,
+                                           clipboardText: copy)
+         
+         
+        guard let written = tap.info[#"openURL"#]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !written.isEmpty else { return }
         guard let url = URL(string: written), let scheme = url.scheme, !scheme.isEmpty else {
             refusal = .notALink(written)
             return
@@ -41,6 +64,15 @@ struct ModuleScriptNotificationTap: Equatable {
     }
 
      
+     
+    static func recordID(of tap: ClashNotificationTap) -> String? {
+        if let id = tap.info[#"id"#], !id.isEmpty { return id }
+        let prefix = ModuleScriptNotificationPoster.kind + "."
+        guard tap.identifier.hasPrefix(prefix) else { return nil }
+        return String(tap.identifier.dropFirst(prefix.count))
+    }
+
+     
     var refusalLine: String? {
         switch refusal {
         case .notALink(let written)?:
@@ -50,6 +82,14 @@ struct ModuleScriptNotificationTap: Equatable {
         case nil:
             return nil
         }
+    }
+}
+
+extension ModuleScriptNotificationWordsStore {
+     
+     
+    func take(for tap: ClashNotificationTap, now: Date = Date()) -> ModuleScriptNotificationWords? {
+        ModuleScriptNotificationTap.recordID(of: tap).flatMap { take(id: $0, now: now) }
     }
 }
 #endif

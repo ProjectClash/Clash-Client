@@ -95,6 +95,11 @@ public struct ConfigurationNewItem: Equatable, Sendable {
                 return !Self.trimmed(text).isEmpty
             case (.number, .text(let text)):
                 guard let number = Double(Self.trimmed(text)) else { return false }
+                 
+                 
+                 
+                 
+                if field.zeroMeansUnset, number == 0 { return !isRequired }
                 if let min = field.min, number < min { return false }
                 if let max = field.max, number > max { return false }
                 return true
@@ -213,6 +218,17 @@ public struct ConfigurationNewItem: Equatable, Sendable {
     public static let commonKeys: Set<String> = ["port", "listen"]
 
      
+     
+     
+     
+     
+     
+     
+    public static func asksForItsGroup(_ field: ConfigurationField) -> Bool {
+        field.requiredOneOf?.first == key(of: field)
+    }
+
+     
     public static func key(of field: ConfigurationField) -> String {
         field.path.split(separator: ".").last.map(String.init) ?? field.path
     }
@@ -260,7 +276,13 @@ public struct ConfigurationNewItem: Equatable, Sendable {
             let key = key(of: field)
             let required: Bool
             if describesRequired {
-                if field.isRequired { required = true } else if commonKeys.contains(key) { required = false } else { continue }
+                if field.isRequired || asksForItsGroup(field) {
+                    required = true
+                } else if commonKeys.contains(key) {
+                    required = false
+                } else {
+                    continue
+                }
             } else {
                 switch field.kind {
                 case .text, .number, .select, .multiSelect, .suggest: required = true

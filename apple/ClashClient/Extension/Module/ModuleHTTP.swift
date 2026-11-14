@@ -318,6 +318,28 @@ enum ModuleHTTPParser {
      
      
      
+     
+     
+     
+     
+     
+    static func mayBeginWithAMethod(_ data: Data, scan: ModuleHTTPHeadScan) -> Bool {
+        guard let begin = scan.begin else { return true }
+        var method = 0
+        for byte in data.dropFirst(begin) {
+            if byte == 0x20 { return method > 0 }
+            guard isTokenCharacter(Character(Unicode.Scalar(byte))) else { return false }
+            method += 1
+            guard method <= maximumMethodBytes else { return false }
+        }
+        return true
+    }
+
+     
+     
+     
+     
+     
     static func mayBeRequest(_ data: Data) -> Bool {
         let bytes = data.drop { $0 == 0x0D || $0 == 0x0A }
         var index = bytes.startIndex

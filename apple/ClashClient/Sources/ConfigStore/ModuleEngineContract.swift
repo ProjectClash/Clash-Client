@@ -1488,7 +1488,7 @@ extension ModuleEngineReport {
      
     func identityDegradeHolds(for fingerprint: String) -> Bool {
         guard let failed = identityFailedAt[fingerprint], let retried = identityRetriedAt[fingerprint] else { return false }
-        return failed >= retried
+        return failed.timeIntervalSince(retried) >= 0
     }
 
      

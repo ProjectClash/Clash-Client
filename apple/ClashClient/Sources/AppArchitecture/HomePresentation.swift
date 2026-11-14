@@ -292,6 +292,7 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
      
      
      
+     
     static func make(
         sourceYAML: String?,
         effectiveYAML: String?,
@@ -316,7 +317,7 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
             adapted.append(.init(
                 id: "omitted-personal-rules",
                 title: "Custom Rules Not in Effect",
-                detail: "Each of these rules names a policy this configuration does not define, so it is left out and its traffic follows the rules below it. Route the rule to one of this configuration's policy groups, or switch to a rule scheme that has that one.",
+                detail: "Each of these rules uses a policy, rule set or sub-rule this configuration does not have, so it is left out and its traffic follows the rules below it. Change the rule to use one this configuration has.",
                 lines: omittedPersonalRules
             ))
         }
@@ -330,8 +331,6 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
     }
 
 #if os(macOS)
-     
-     
      
      
      
@@ -356,6 +355,15 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
             id: "dns-interception",
             title: "DNS Interception",
             detail: "DNS interception runs inside the packet tunnel. A profile that sets dns.listen gets that listener too, opened exactly as written; only its Linux routing mark is zeroed."
+        ),
+         
+         
+         
+         
+        .init(
+            id: "tunnel-stack",
+            title: "Tunnel Stack",
+            detail: "The tunnel runs the sing-box (Go) packet stack, whatever stack a profile writes: on the Mac the tunnel reads its own network interface, and that stack is the one built to drive it."
         ),
         .init(
             id: "geodata-loader",
@@ -410,8 +418,7 @@ struct ProfileFinalConfigurationSnapshot: Equatable, Sendable {
              
              
              
-             
-            detail: "Clash picks its own packet stack for the Apple tunnel; a profile that sets tun.stack to system, gvisor, or mixed is honoured, and leaving it out is the usual choice."
+            detail: "The tunnel runs the sing-box (Go) packet stack, whatever stack a profile writes: on iPhone and iPad the tunnel reads its own network interface, and that stack is the one built to drive it."
         ),
         .init(
             id: "geodata-loader",
@@ -762,12 +769,80 @@ enum HomeProxiesEntryPolicy {
         pending: String?,
         lastOpened: String?,
         groups: [String],
-        readerFoldedAll: Bool = false
+        readerFoldedAll: Bool = false,
+        mode: ProxyBrowsingVisibility.Mode = .rule,
+        liveCatalog: Bool = false
     ) -> String? {
         if let pending { return pending }
+        if let global = globalToOpen(mode: mode, liveCatalog: liveCatalog, candidates: groups,
+                                     readerFoldedAll: readerFoldedAll) { return global }
         if readerFoldedAll { return nil }
         if let lastOpened, groups.contains(lastOpened) { return lastOpened }
-        return groups.first
+         
+         
+         
+        return groups.first { $0 != ProxyBrowsingVisibility.kernelGlobalGroupName }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func globalToOpen(mode: ProxyBrowsingVisibility.Mode, liveCatalog: Bool, candidates: [String],
+                             readerFoldedAll: Bool) -> String? {
+        let global = ProxyBrowsingVisibility.kernelGlobalGroupName
+        return mode == .global && liveCatalog && !readerFoldedAll && candidates.contains(global) ? global : nil
+    }
+
+     
+    private static func listed<Group>(_ groups: [Group], name: (Group) -> String, isHidden: (Group) -> Bool,
+                                      coreMode: String, opening: ProxyBrowsingVisibility.Opening)
+        -> (mode: ProxyBrowsingVisibility.Mode, names: [String]) {
+        let mode = ProxyBrowsingVisibility.Mode(coreValue: coreMode)
+        return (mode, candidates(groups, mode: mode, opening: opening, name: name, isHidden: isHidden))
+    }
+
+     
+     
+     
+    private static func chooseNodeEntry(_ opening: ProxyBrowsingVisibility.Opening, candidates: [String]) -> String? {
+        let global = ProxyBrowsingVisibility.kernelGlobalGroupName
+        return opening == .choosingInGlobal && candidates.contains(global) ? global : nil
+    }
+
+     
+     
+    static func homeEntry<Group>(pending: String?, lastOpened: String?, groups: [Group], name: (Group) -> String,
+                                 isHidden: (Group) -> Bool, coreMode: String, liveCatalog: Bool,
+                                 readerFoldedAll: Bool, opening: ProxyBrowsingVisibility.Opening = .browsing) -> String? {
+        let listed = listed(groups, name: name, isHidden: isHidden, coreMode: coreMode, opening: opening)
+        if let global = chooseNodeEntry(opening, candidates: listed.names) { return global }
+        return groupToOpen(pending: pending, lastOpened: lastOpened, groups: listed.names,
+                           readerFoldedAll: readerFoldedAll, mode: listed.mode, liveCatalog: liveCatalog)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func railEntry<Group>(openedGroup: String?, groups: [Group], name: (Group) -> String,
+                                 isHidden: (Group) -> Bool, coreMode: String, liveCatalog: Bool,
+                                 readerFoldedAll: Bool, opening: ProxyBrowsingVisibility.Opening = .browsing) -> String? {
+        if opening == .browsing, let openedGroup { return openedGroup }
+        let listed = listed(groups, name: name, isHidden: isHidden, coreMode: coreMode, opening: opening)
+        if let global = chooseNodeEntry(opening, candidates: listed.names) { return global }
+        if let openedGroup { return openedGroup }
+        return globalToOpen(mode: listed.mode, liveCatalog: liveCatalog, candidates: listed.names,
+                            readerFoldedAll: readerFoldedAll)
     }
 
      
@@ -782,10 +857,11 @@ enum HomeProxiesEntryPolicy {
     static func candidates<Group>(
         _ groups: [Group],
         mode: ProxyBrowsingVisibility.Mode,
+        opening: ProxyBrowsingVisibility.Opening = .browsing,
         name: (Group) -> String,
         isHidden: (Group) -> Bool
     ) -> [String] {
-        ProxyBrowsingVisibility.groups(groups, mode: mode, name: name, isHidden: isHidden).map(name)
+        ProxyBrowsingVisibility.groups(groups, mode: mode, opening: opening, name: name, isHidden: isHidden).map(name)
     }
 }
 
@@ -850,12 +926,96 @@ enum HomeProxiesCardPolicy {
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum HomeNamedRoute {
+    struct Route: Equatable {
+         
+         
+         
+        var group: String?
+        var node: String?
+        var delay: Int?
+
+        static let none = Route(group: nil, node: nil, delay: nil)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func route(mode: Profile.OutboundMode, groups: [ProxyGroup], delays: [String: Int],
+                      terminals: [String: String] = [:], groupsAreTheCores: Bool = true,
+                      finalRuleTarget: String? = nil) -> Route {
+        switch mode {
+        case .global:
+             
+             
+            guard let group = groups.first(where: { $0.name == GlobalProxySelectionPolicy.groupName }) else { return .none }
+            let end = group.resolvedNow.isEmpty ? group.now : group.resolvedNow
+            guard !end.isEmpty else { return .none }
+             
+             
+             
+            return Route(group: nil, node: end, delay: NodeInventory.routeDelay(from: group.name, groups: groups, delays: delays))
+        case .rule:
+            guard groupsAreTheCores,
+                  let target = finalRuleTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !target.isEmpty else {
+                return .none
+            }
+            let builtins = ConfigurationLibraryPicks.builtinNames
+            if groups.contains(where: { $0.name == target }) {
+                 
+                 
+                guard let end = terminals[target], !groups.contains(where: { $0.name == end }) else { return .none }
+                 
+                 
+                return Route(group: target, node: end,
+                             delay: builtins.contains(end) ? nil : NodeInventory.routeDelay(from: target, groups: groups, delays: delays))
+            }
+             
+             
+             
+            guard !groups.isEmpty, !builtins.contains(target) else { return .none }
+            return Route(group: nil, node: target, delay: NodeInventory.memberDelay(target, delays: delays))
+        case .direct:
+            return .none
+        }
+    }
+
+     
+     
+     
+     
+     
+    static func finalRuleTarget(of overview: RulesOverviewModel?) -> String? {
+        guard let target = overview?.fallback.first?.target.trimmingCharacters(in: .whitespacesAndNewlines),
+              !target.isEmpty else { return nil }
+        return target
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
 enum ProxiesPresentedDocument {
     static func make(
         source: String?,
         profile: Profile,
         fallback: String?,
-        build: (String, Profile) throws -> String = { try ProfileRuntimeConfigBuilder.buildProduction(raw: $0, profile: $1) }
+        build: (String, Profile) throws -> String = { try ProfileRuntimeConfigBuilder.buildProduction(raw: $0, profile: $1, scripts: .silent) }
     ) -> String? {
         guard let source else { return fallback }
         return (try? build(source, profile)) ?? fallback

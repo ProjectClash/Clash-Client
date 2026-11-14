@@ -362,7 +362,7 @@ struct ProxyNodeDetailSheet: View {
                     ClashSheetCloseButton { dismiss() }
                 }
             }
-            .clashProductModalRoot(title: ClashCopy.string("Node Details", locale: .current))
+            .clashProductModalRoot(title: "Node Details")
         }
         .task(id: nodeName) {
             let name = nodeName
@@ -567,12 +567,22 @@ struct ProxyNodeDetailSheet: View {
 
      
      
+     
+     
+     
     @ViewBuilder
     private func valueRow<Value: View>(
         _ label: LocalizedStringKey,
         @ViewBuilder value: () -> Value
     ) -> some View {
-        if #available(iOS 16.0, macOS 13.0, *) {
+#if os(macOS)
+        LabeledContent {
+            value()
+        } label: {
+            Text(label)
+        }
+#else
+        if #available(iOS 16.0, *) {
             LabeledContent {
                 value()
             } label: {
@@ -586,6 +596,7 @@ struct ProxyNodeDetailSheet: View {
                     .foregroundStyle(.secondary)
             }
         }
+#endif
     }
 
     private func copyYAML(_ details: ProxyProtocolDetails) {
@@ -681,13 +692,17 @@ struct ProxyNodeEditorSheet: View {
                         subscriptionReset: overrideKey.map { key in
                             { try profiles.removeProxyNodeOverride(named: key, profileID: profile.id) }
                         },
-                        onDone: { closeModal() }
+                        onDone: { closeModal() },
+                        drawsClose: true
                     )
+                     
+#if os(macOS)
                     .clashToolbarUnlessInPanel {
                         ToolbarItem(placement: .cancellationAction) {
                             ClashSheetCloseButton { dismiss() }
                         }
                     }
+#endif
                 }
             } else {
                 ProxyNodeDetailSheet(

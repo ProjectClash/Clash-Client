@@ -2570,7 +2570,7 @@ private struct ClashActivityDetailHost: ViewModifier {
 #if os(macOS)
         content
 #else
-        content.sheet(item: $selected) { connection in
+        content.clashSheet(item: $selected) { connection in
             ClashSingleColumnNavigationContainer {
                 ClashActivityConnectionDetailView(
                     connection: connection,

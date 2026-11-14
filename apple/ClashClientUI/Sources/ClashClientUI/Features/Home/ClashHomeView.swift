@@ -204,7 +204,7 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
          
          
         .clashFrameWatch("Home")
-        .sheet(isPresented: $showsCardCustomization) {
+        .clashSheet(isPresented: $showsCardCustomization) {
             ClashHomeCardCustomizationView(
                 cards: $favoriteCards,
                 palette: palette,
@@ -662,9 +662,9 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
                  
                  
                  
-                send(issue.kind.lineTapResetsVPNProfile
-                    ? .resetVPNProfile
-                    : .showConnectionIssue)
+                 
+                 
+                send(issue.kind.lineTapCommand)
             } label: {
                  
                  
@@ -686,8 +686,9 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
                  
                 ClashHomeIssueLineLabel(
                     text: issue.text,
-                    offersReason: !issue.kind.lineTapResetsVPNProfile,
-                    isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+                    offersReason: issue.kind.lineTapCommand == .showConnectionIssue,
+                    isAccessibilitySize: dynamicTypeSize.isAccessibilitySize,
+                    choosesNode: issue.kind == .globalOnDirect
                 )
             }
             .buttonStyle(.borderless)
@@ -706,7 +707,7 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
              
              
              
-            .modifier(ClashHomeIssueLineHint(resetsVPNProfile: issue.kind.lineTapResetsVPNProfile))
+            .modifier(ClashHomeIssueLineHint(kind: issue.kind))
         }
     }
 
@@ -1040,8 +1041,8 @@ extension ClashHomeCommand {
      
     var opensAPresentation: Bool {
         switch self {
-        case .openProfiles, .showConnectionIssue, .openProxies, .openRules,
-             .openRuntimeConfiguration:
+        case .openProfiles, .showConnectionIssue, .openOnDemand, .openProxies,
+             .openRules, .openRuntimeConfiguration:
             true
         case .performPrimaryAction(let action):
              

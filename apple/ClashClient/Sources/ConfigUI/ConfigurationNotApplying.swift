@@ -38,11 +38,21 @@ extension ProxyNodeCatalogLayout {
      
      
      
-    func splittingOffThePlatformsRows() -> ProxyNodeCatalogLayout {
+     
+     
+     
+     
+     
+     
+     
+    func splittingOffThePlatformsRows(in entry: OrderedJSON? = nil) -> ProxyNodeCatalogLayout {
         var platform: [Row] = []
         let kept = groups.compactMap { group -> Group? in
             let rows = group.rows.filter { row in
-                guard row.field?.platformDecision?.overridesTheFile == true else { return true }
+                guard let decision = row.field?.platformDecision, decision.overridesTheFile else { return true }
+                if let entry, !decision.applies(to: entry.node(at: Array(row.path.dropLast())) ?? .object([])) {
+                    return true
+                }
                 platform.append(row)
                 return false
             }

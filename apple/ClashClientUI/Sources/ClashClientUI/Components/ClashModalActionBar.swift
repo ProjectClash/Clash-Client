@@ -49,7 +49,7 @@ public struct ClashModalActionBar: View {
              
              
             if primaryDisabled, !isBusy, let primaryHint {
-                Text(clash: .formatCopy("Needs %@", [primaryHint]))
+                Text(clash: Self.visibleHint(primaryHint))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -63,6 +63,14 @@ public struct ClashModalActionBar: View {
         )
         .padding(.vertical, ClashTheme.Spacing.standard)
         .modifier(ClashModalActionBarSurface())
+    }
+
+     
+     
+     
+     
+    static func visibleHint(_ hint: String) -> ClashDisplayText {
+        .copy(hint)
     }
 
     private var primaryButton: some View {

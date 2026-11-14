@@ -98,7 +98,10 @@ enum ModuleScriptHostWiring {
             selected: { group in ModuleScriptCoreReading.selected(widget: ClashWidgetGroupJSON(group, 1)) },
             final: { ModuleScriptCoreReading.final(rulesPage: ClashRulesPageJSON(0, 1, #"["MATCH"]"#)) },
             builtins: { ModuleScriptCoreReading.builtins },
-            groupTypes: { ModuleScriptCoreReading.groupTypes(summary: ClashProxiesSummaryJSON()) })
+            groupTypes: { ModuleScriptCoreReading.groupTypes(summary: ClashProxiesSummaryJSON()) },
+            globalRefusal: {
+                ClashTunnelOutboundMode.refusalKey(onto: TunnelGlobalReading.exit())
+            })
     }
 
      

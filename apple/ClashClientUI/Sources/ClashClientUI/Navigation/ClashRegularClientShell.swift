@@ -306,7 +306,11 @@ public struct ClashRegularClientShell<
                 set: { _ in }
             )
         ) {
-            Button("Save") { rootDepartureGuard.saveAndLeave() }
+             
+             
+            if rootDepartureGuard.saveBlock == nil {
+                Button("Save") { rootDepartureGuard.saveAndLeave() }
+            }
             Button("Discard", role: .destructive) {
                 rootDepartureGuard.discardAndLeave()
             }
@@ -314,8 +318,17 @@ public struct ClashRegularClientShell<
                 rootDepartureGuard.keepEditing()
             }
         } message: {
-            Text("This page has changes that have not been saved.")
+            if let block = rootDepartureGuard.saveBlock {
+                Text(clash: block)
+            } else {
+                Text("This page has changes that have not been saved.")
+            }
         }
+         
+         
+         
+         
+        .background { ClashDepartureRefusalAlert(departureGuard: rootDepartureGuard) }
     }
 
      
@@ -618,6 +631,8 @@ public struct ClashRegularClientShell<
                          
                         .modifier(ClashSetterRoutedBack())
                          
+                        .clashDeparturePage()
+                         
                          
                          
                          
@@ -748,6 +763,8 @@ public struct ClashRegularClientShell<
                         }
                     )
                     .modifier(ClashSetterRoutedBack())
+                     
+                    .clashDeparturePage()
                      
                      
                      

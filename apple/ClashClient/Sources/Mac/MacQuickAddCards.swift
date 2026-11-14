@@ -71,6 +71,8 @@ struct MacQuickAddCard: View {
             return nil
         case .busy(let host):
             return .busy(host)
+        case .busyNodes:
+            return .busy(ConfigurationSourceRecord.displayLabel(ConfigurationBuiltins.customNodesName, origin: .customNodes, locale: locale))
         case .failed(let message):
              
              

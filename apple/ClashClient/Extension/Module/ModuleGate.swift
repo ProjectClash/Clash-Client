@@ -14,6 +14,7 @@ import Foundation
  
  
  
+ 
 
 enum ModuleGateExtraction: Equatable, Sendable {
      
@@ -834,6 +835,72 @@ struct ModuleGateMetrics: Equatable, Sendable {
  
  
  
+final class ModuleProgramRoom {
+     
+    private(set) var left: Int64?
+     
+    private(set) var taken: Int64 = 0
+     
+     
+     
+     
+     
+    private let probe: (() -> Int64?)?
+    private let keepClear: Int64
+     
+    private var chargedSinceAsked: Int64?
+     
+    private var stopped = false
+     
+    static let askEveryBytes: Int64 = 96 << 10
+
+    init(_ bytes: Int64?, probe: (() -> Int64?)? = nil, keepClear: Int64 = ModuleLadderThresholds.iOS.relief) {
+        left = bytes.map { max(0, $0) }
+        self.probe = bytes == nil ? nil : probe
+        self.keepClear = keepClear
+    }
+
+     
+     
+    func take(_ cost: Int64) -> Bool {
+        let cost = max(0, cost)
+         
+         
+        if cost == 0 { return true }
+        if let left {
+            guard !stopped, cost <= left else { return false }
+            if let probe {
+                let since = (chargedSinceAsked ?? Self.askEveryBytes) + cost
+                if since >= Self.askEveryBytes {
+                    chargedSinceAsked = 0
+                    if let now = probe(), now <= keepClear {
+                        stopped = true
+                        self.left = 0
+                        return false
+                    }
+                } else {
+                    chargedSinceAsked = since
+                }
+            }
+            self.left = left - cost
+        }
+        taken += cost
+        return true
+    }
+
+     
+    func give(_ cost: Int64) {
+        let cost = max(0, min(cost, taken))
+        taken -= cost
+        if let left, !stopped { self.left = left + cost }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
  
 final class ModuleRegexTable {
      
@@ -851,6 +918,9 @@ final class ModuleRegexTable {
 
     let maximumPinned: Int
     let cacheCapacity: Int
+     
+     
+    let room: ModuleProgramRoom
      
      
      
@@ -871,8 +941,6 @@ final class ModuleRegexTable {
     private var ids: [String: Int32] = [:]
     private var readings: [Kept] = []
     private var leftOutWhy: [Int32: String] = [:]
-     
-    private var unpinned: [Int32: NSRegularExpression] = [:]
     private var pinned: [Int32: NSRegularExpression] = [:]
     private var pinUsers: [Int32: Int] = [:]
      
@@ -881,9 +949,11 @@ final class ModuleRegexTable {
     private var recency: [Int32] = []
     private var carried: [CarriedKey: NSRegularExpression] = [:]
 
-    init(maximumPinned: Int = ModuleGatedMatcher.maximumPinned, cacheCapacity: Int = 128) {
+    init(maximumPinned: Int = ModuleGatedMatcher.maximumPinned, cacheCapacity: Int = 128,
+         room: ModuleProgramRoom = ModuleProgramRoom(nil)) {
         self.maximumPinned = maximumPinned
         self.cacheCapacity = max(1, cacheCapacity)
+        self.room = room
     }
 
      
@@ -914,7 +984,10 @@ final class ModuleRegexTable {
                 case .ungated:
                     reading = .ungated
                     readings.append(.ungated)
-                    unpinned[id] = regex
+                     
+                     
+                     
+                     
                 case .literals(let found):
                     reading = .literals(found, caseInsensitive: analysis.caseInsensitive)
                     readings.append(.gated)
@@ -933,13 +1006,17 @@ final class ModuleRegexTable {
 
      
      
+     
     func pin(_ id: Int32) -> Bool {
         if pinned[id] != nil {
             pinUsers[id, default: 0] += 1
             return true
         }
-        guard pinned.count < maximumPinned else { return false }
-        guard let regex = unpinned.removeValue(forKey: id) ?? (try? NSRegularExpression(pattern: pattern(id))) else { return false }
+        guard pinned.count < maximumPinned, room.take(ModuleEngineBudget.chargedPerCompiledRegex) else { return false }
+        guard let regex = try? NSRegularExpression(pattern: pattern(id)) else {
+            room.give(ModuleEngineBudget.chargedPerCompiledRegex)
+            return false
+        }
         pinned[id] = regex
         pinUsers[id] = 1
         return true
@@ -952,7 +1029,7 @@ final class ModuleRegexTable {
             pinUsers[id] = users - 1
         } else {
             pinUsers[id] = nil
-            pinned[id] = nil
+            if pinned.removeValue(forKey: id) != nil { room.give(ModuleEngineBudget.chargedPerCompiledRegex) }
         }
     }
 
@@ -1015,6 +1092,13 @@ final class ModuleRegexTable {
     func carries(_ key: CarriedKey) -> Bool { carried[key] != nil }
 
      
+     
+     
+    func holdsPinned(_ key: CarriedKey) -> Bool {
+        key.options == 0 && ids[key.pattern].map { pinned[$0] != nil } == true
+    }
+
+     
     var carriedCount: Int { carried.count }
 
      
@@ -1027,7 +1111,7 @@ final class ModuleRegexTable {
                 out.append(known)
                 continue
             }
-            if key.options == 0, let id = ids[key.pattern], let regex = pinned[id] ?? unpinned[id] {
+            if key.options == 0, let id = ids[key.pattern], let regex = pinned[id] {
                 fresh[key] = regex
                 out.append(regex)
                 continue
@@ -1053,7 +1137,6 @@ final class ModuleRegexTable {
         ids = [:]
         readings = []
         leftOutWhy = [:]
-        unpinned = [:]
     }
 
      
@@ -1089,13 +1172,9 @@ final class ModuleGatedMatcher {
      
      
      
-    #if os(macOS)
     static let maximumPinned = Int.max
-    #else
-    static let maximumPinned = 256
-    #endif
-    static let overBudgetReason = "over budget: the engine holds the regexes of at most \(maximumPinned) rules "
-        + "without a literal to gate them on, and the rules before it took them"
+    static let overBudgetReason = "left out for memory: what was left as the rules were built holds no more regexes "
+        + "of rules without a literal to gate them on"
 
     private(set) var metrics: ModuleGateMetrics
      

@@ -486,11 +486,28 @@ struct ClashFeedbackCapsule: View {
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
             .strokeBorder(Color(uiColor: .separator).opacity(contrast == .increased ? 1 : 0.5),
                           lineWidth: contrast == .increased ? 1 : 0.5))
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        .compositingGroup()
         .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(presentation.accessibilityIdentifier)
     }
 
+     
+     
+     
      
      
      
@@ -581,6 +598,7 @@ struct ClashFeedbackCapsule: View {
         }
     }
 }
+
 private struct ClashFeedbackTextHeight: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }

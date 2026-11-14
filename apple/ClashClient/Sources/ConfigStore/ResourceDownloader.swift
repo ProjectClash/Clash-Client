@@ -18,6 +18,16 @@ enum DownloadError: LocalizedError, Equatable {
     case tooLarge(Int)
     case badStatus(Int)
      
+     
+     
+     
+     
+    case refusedAuthorization(Int)
+     
+     
+     
+    case linkRefused(status: Int, carried: RefusedCredential)
+     
     case invalidPayload(name: String, reason: String)
 
     var errorDescription: String? {
@@ -40,7 +50,7 @@ enum DownloadError: LocalizedError, Equatable {
                 message.replaceSubrange(range, with: argument)
             }
             return message
-        case .badStatus(let status):
+        case .badStatus(let status), .refusedAuthorization(let status), .linkRefused(let status, _):
             if status < 0 { return "The server returned an invalid response." }
             return "The server returned HTTP \(status)."
         }
@@ -54,10 +64,56 @@ enum DownloadError: LocalizedError, Equatable {
         case .tooLarge(let observedBytes):
             return .app("The download is too large (at least %@ bytes).", arguments: [String(observedBytes)])
         case .invalidPayload(let name, let reason): return .app("%@ was not updated: %@.", arguments: [name, reason])
-        case .badStatus(let status):
+        case .badStatus(let status), .refusedAuthorization(let status), .linkRefused(let status, _):
             if status < 0 { return .app("The server returned an invalid response.") }
             return .app("The server returned HTTP %@", arguments: [String(status)])
         }
+    }
+
+     
+     
+     
+    static func refusesTheLink(_ status: Int) -> Bool {
+        status == 401 || status == 403
+    }
+
+     
+     
+     
+     
+     
+    static func refusingALink(_ error: Error, sent: RefusedCredential) -> Error {
+        switch error as? DownloadError {
+        case .badStatus(let status)? where refusesTheLink(status):
+            return DownloadError.linkRefused(status: status, carried: .other)
+        case .refusedAuthorization(let status)?:
+            return DownloadError.linkRefused(status: status, carried: sent)
+        case .badStatus?, .linkRefused?, .tooLarge?, .invalidLimit?, .invalidPayload?, nil:
+            return error
+        }
+    }
+}
+
+ 
+enum RefusedCredential: Equatable, Sendable {
+     
+     
+    case other
+     
+     
+    case theLinks
+     
+     
+    case saved
+
+     
+     
+     
+    static func of(_ request: URLRequest, link: URL?, saved: String?) -> RefusedCredential {
+        guard let header = request.value(forHTTPHeaderField: "Authorization") else { return .other }
+        if let saved, header == saved { return .saved }
+        if let link, header == ProviderMaterializer.basicAuthorization(from: link) { return .theLinks }
+        return .other
     }
 }
 
@@ -84,7 +140,16 @@ enum ConfigurationFailureKind: Equatable {
     case tls
     case certificate
     case cleartextBlocked
+     
+     
+     
+     
     case authentication
+     
+     
+     
+     
+    case refusedLink(status: Int, linkHasCredentials: Bool)
     case httpStatus(Int)
     case invalidResponse
     case bodyTooLarge
@@ -186,12 +251,26 @@ struct ConfigurationFailure: LocalizedError, Equatable {
      
      
      
+     
+     
+    var kernelSentence: String {
+        if let detail, !detail.isEmpty { return detail }
+        return message
+    }
+
+     
+     
+     
     var displayMessage: ClashDisplayText {
         if case .httpStatus(let status) = kind {
             return .format(
                 "The server returned HTTP %@. Try again or check the profile source.",
                 [String(status)]
             )
+        }
+        if case .refusedLink(let status, let linkHasCredentials) = kind {
+            return .format(ConfigurationFailureClassifier.refusedLinkRow(linkHasCredentials: linkHasCredentials),
+                           [String(status)])
         }
         if let detail, !detail.isEmpty {
             switch kind {
@@ -248,9 +327,22 @@ enum ConfigurationFailureClassifier {
         }
         if let download = error as? DownloadError {
             switch download {
-            case .badStatus(let status) where [401, 403, 407].contains(status):
+            case .linkRefused(_, .saved):
+                 
+                 
+                 
                 return make(.authentication, context, preservesLastKnownGood)
-            case .badStatus(let status) where status >= 0:
+            case .linkRefused(let status, let carried):
+                 
+                 
+                 
+                 
+                return make(.refusedLink(status: status, linkHasCredentials: carried == .theLinks),
+                            context, preservesLastKnownGood)
+            case .badStatus(let status) where status >= 0, .refusedAuthorization(let status):
+                 
+                 
+                 
                 return make(.httpStatus(status), context, preservesLastKnownGood)
             case .badStatus:
                 return make(.invalidResponse, context, preservesLastKnownGood)
@@ -513,6 +605,10 @@ enum ConfigurationFailureClassifier {
              .notConnectedToInternet, .internationalRoamingOff,
              .callIsActive, .dataNotAllowed:
             kind = .connection
+        case .secureConnectionFailed where ResourceDownloader.refusesTheCertificate(error):
+             
+             
+            kind = .certificate
         case .secureConnectionFailed:
              
              
@@ -625,6 +721,16 @@ enum ConfigurationFailureClassifier {
         presentation(for: kind).title
     }
 
+     
+     
+     
+     
+    static func refusedLinkRow(linkHasCredentials: Bool) -> String {
+        linkHasCredentials
+            ? "The server refused this link (HTTP %@). Check the user name and password in the link. The link may also have expired or been reset, or the provider may limit which apps can use it."
+            : "The server refused this link (HTTP %@). The link may have expired or been reset, or the provider may limit which apps can use it."
+    }
+
 
      
      
@@ -658,7 +764,16 @@ enum ConfigurationFailureClassifier {
     ) -> [ConfigurationRecoveryAction] {
         switch kind {
         case .authentication, .credential:
+             
             return [.editCredentials, .retry, .viewDiagnostics]
+        case .refusedLink(_, linkHasCredentials: true):
+             
+             
+            return [.editProfile, .retry, .viewDiagnostics]
+        case .refusedLink(_, linkHasCredentials: false):
+             
+             
+            return [.retry, .editProfile, .viewDiagnostics]
         case .invalidURL, .invalidTextEncoding, .yamlSyntax, .mihomoSchema,
              .resourcePlan, .preflight, .sourceMissing, .bodyTooLarge:
             return [.editProfile, .viewDiagnostics]
@@ -683,11 +798,19 @@ enum ConfigurationFailureClassifier {
         case .tls:
             return (title: "Secure connection failed", message: "The TLS handshake was cut off before the server answered. If this address is blocked on the current network, connect first and try again.", code: "network.tls")
         case .certificate:
-            return (title: "Certificate rejected", message: "The server asked for a client certificate, or presented one the system could not use.", code: "network.certificate")
+            return (title: "Certificate rejected", message: "The server's certificate isn't trusted on this device, or the server asked for a client certificate.", code: "network.certificate")
         case .cleartextBlocked:
             return (title: "Plain HTTP is not allowed", message: "This platform only allows https for this address.", code: "network.cleartext")
         case .authentication:
             return (title: "Authentication failed", message: "The server rejected the saved credentials. Update them before retrying.", code: "http.auth")
+        case .refusedLink(let status, let linkHasCredentials):
+             
+             
+             
+            return (title: "Server refused the link",
+                    message: refusedLinkRow(linkHasCredentials: linkHasCredentials)
+                        .replacingOccurrences(of: "%@", with: String(status)),
+                    code: linkHasCredentials ? "http.refused.credentials" : "http.refused")
         case .httpStatus(let status):
              
              
@@ -837,19 +960,6 @@ enum DownloadHostPlace: Equatable, Sendable {
 }
 
  
-enum DownloadServerTrust: Equatable, Sendable {
-     
-     
-    case asPresented
-     
-     
-     
-     
-     
-    case verified
-}
-
- 
  
 struct UnprotectedRedirectRefused: LocalizedError, Equatable {
     let from: String
@@ -881,14 +991,15 @@ struct UnprotectedRedirectRefused: LocalizedError, Equatable {
  
 final class SecureRedirectDelegate: NSObject, URLSessionTaskDelegate {
     private let policy: DownloadRedirectPolicy
-    private let serverTrust: DownloadServerTrust
     private var redirectCount = 0
     private let lock = NSLock()
     private var refused: UnprotectedRedirectRefused?
+     
+     
+    private var handedOn: (followed: Bool, authorization: String?) = (false, nil)
 
-    init(policy: DownloadRedirectPolicy, serverTrust: DownloadServerTrust = .asPresented) {
+    init(policy: DownloadRedirectPolicy) {
         self.policy = policy
-        self.serverTrust = serverTrust
     }
 
      
@@ -897,34 +1008,14 @@ final class SecureRedirectDelegate: NSObject, URLSessionTaskDelegate {
         return refused
     }
 
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        let decision = Self.trustDecision(
-            method: challenge.protectionSpace.authenticationMethod,
-            trust: challenge.protectionSpace.serverTrust,
-            serverTrust: serverTrust
-        )
-        completionHandler(decision.disposition, decision.credential)
-    }
-
      
      
      
      
      
-    static func trustDecision(
-        method: String,
-        trust: SecTrust?,
-        serverTrust: DownloadServerTrust = .asPresented
-    ) -> (disposition: URLSession.AuthChallengeDisposition, credential: URLCredential?) {
-        guard serverTrust == .asPresented, method == NSURLAuthenticationMethodServerTrust, let trust else {
-            return (.performDefaultHandling, nil)
-        }
-        return (.useCredential, URLCredential(trust: trust))
+    func finalAuthorization(of original: URLRequest) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return handedOn.followed ? handedOn.authorization : original.value(forHTTPHeaderField: "Authorization")
     }
 
     func urlSession(
@@ -934,9 +1025,17 @@ final class SecureRedirectDelegate: NSObject, URLSessionTaskDelegate {
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
+         
+         
+        let handOn: (URLRequest?) -> Void = { [self] next in
+            if let next {
+                lock.lock(); handedOn = (true, next.value(forHTTPHeaderField: "Authorization")); lock.unlock()
+            }
+            completionHandler(next)
+        }
         guard let destination = request.url,
               let original = task.originalRequest?.url else {
-            completionHandler(nil)
+            handOn(nil)
             return
         }
          
@@ -944,21 +1043,21 @@ final class SecureRedirectDelegate: NSObject, URLSessionTaskDelegate {
             let refusal = UnprotectedRedirectRefused(from: response.url?.absoluteString ?? original.absoluteString,
                                                      to: destination.absoluteString)
             lock.lock(); refused = refusal; lock.unlock()
-            completionHandler(nil)
+            handOn(nil)
             return
         }
         let sameOrigin = Self.origin(of: original) == Self.origin(of: destination)
         switch policy {
         case .sameOrigin:
-            completionHandler(sameOrigin ? request : nil)
+            handOn(sameOrigin ? request : nil)
         case .followAcrossOrigins(let maxHops), .followWithinAModulesReach(let maxHops):
             redirectCount += 1
             guard maxHops > 0, redirectCount <= maxHops else {
-                completionHandler(nil)
+                handOn(nil)
                 return
             }
             guard !sameOrigin else {
-                completionHandler(request)
+                handOn(request)
                 return
             }
             var sanitized = request
@@ -976,7 +1075,7 @@ final class SecureRedirectDelegate: NSObject, URLSessionTaskDelegate {
             if let userAgent = task.originalRequest?.value(forHTTPHeaderField: "User-Agent") {
                 sanitized.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             }
-            completionHandler(sanitized)
+            handOn(sanitized)
         }
     }
 
@@ -1022,15 +1121,16 @@ final class ResourceDownloader: HTTPFetching {
      
      
      
+     
     static func verified() -> ResourceDownloader {
-        ResourceDownloader(fallsBackDirect: false, serverTrust: .verified)
+        ResourceDownloader(fallsBackDirect: false)
     }
 
      
      
      
+     
     let fallsBackDirect: Bool
-    let serverTrust: DownloadServerTrust
     private let timeoutSeconds: TimeInterval
     private let sleeper: Sleeper
 
@@ -1055,6 +1155,17 @@ final class ResourceDownloader: HTTPFetching {
          
          
         configuration.waitsForConnectivity = false
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration)
     }
 
@@ -1062,13 +1173,11 @@ final class ResourceDownloader: HTTPFetching {
         session: URLSession = ResourceDownloader.bounded(),
         maximumAttempts: Int = 3,
         fallsBackDirect: Bool = true,
-        serverTrust: DownloadServerTrust = .asPresented,
         sleeper: @escaping Sleeper = { try await Task.sleep(nanoseconds: $0) }
     ) {
         self.session = session
         self.maximumAttempts = max(1, maximumAttempts)
-        self.fallsBackDirect = fallsBackDirect && serverTrust == .asPresented
-        self.serverTrust = serverTrust
+        self.fallsBackDirect = fallsBackDirect
         self.timeoutSeconds = session.configuration.timeoutIntervalForResource
         self.sleeper = sleeper
     }
@@ -1148,7 +1257,33 @@ final class ResourceDownloader: HTTPFetching {
         guard (request.httpMethod ?? "GET").uppercased() == "GET", request.httpBody == nil,
               request.httpBodyStream == nil else { return false }
         guard let urlError = error as? URLError else { return false }
-        return urlError.code != .cancelled
+         
+         
+         
+         
+        return urlError.code != .cancelled && !refusesTheCertificate(urlError)
+    }
+
+     
+     
+     
+     
+     
+    static func refusesTheCertificate(_ error: URLError) -> Bool {
+        switch error.code {
+        case .serverCertificateHasBadDate, .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+             .serverCertificateNotYetValid, .clientCertificateRejected, .clientCertificateRequired:
+            return true
+        case .secureConnectionFailed:
+             
+             
+             
+            if error.userInfo[NSURLErrorFailingURLPeerTrustErrorKey] != nil { return true }
+            let code = (error.userInfo["_kCFStreamErrorCodeKey"] as? NSNumber)?.intValue
+            return code.map { [-9807, -9808, -9812, -9813, -9814, -9815, -9843].contains($0) } ?? false
+        default:
+            return false
+        }
     }
 
      
@@ -1262,7 +1397,7 @@ final class ResourceDownloader: HTTPFetching {
         maxBytes: Int,
         redirectPolicy: DownloadRedirectPolicy
     ) async throws -> DownloadResult {
-        let delegate = SecureRedirectDelegate(policy: redirectPolicy, serverTrust: serverTrust)
+        let delegate = SecureRedirectDelegate(policy: redirectPolicy)
         let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
         if let refused = delegate.refusedRedirect {
             ClashLogStore.shared.append("download refused: \(refused.localizedDescription)", stream: .app, level: .warning)
@@ -1281,7 +1416,10 @@ final class ResourceDownloader: HTTPFetching {
                 delayNanoseconds: retryAfterNanoseconds(http)
             )
         }
-        guard (200..<300).contains(http.statusCode) else { throw DownloadError.badStatus(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw Self.statusError(http.statusCode, of: request,
+                                   finalAuthorization: delegate.finalAuthorization(of: request))
+        }
         if http.expectedContentLength > Int64(maxBytes) {
             throw DownloadError.tooLarge(Int(http.expectedContentLength))
         }
@@ -1303,6 +1441,16 @@ final class ResourceDownloader: HTTPFetching {
 
     private func header(_ r: HTTPURLResponse, _ name: String) -> String? {
         r.value(forHTTPHeaderField: name)
+    }
+
+     
+     
+     
+     
+    static func statusError(_ status: Int, of request: URLRequest, finalAuthorization: String?) -> DownloadError {
+        guard DownloadError.refusesTheLink(status), let sent = request.value(forHTTPHeaderField: "Authorization"),
+              finalAuthorization == sent else { return .badStatus(status) }
+        return .refusedAuthorization(status)
     }
 
     private func isRetryableStatus(_ status: Int) -> Bool {

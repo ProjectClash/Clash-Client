@@ -203,8 +203,9 @@ enum ScriptSaveCheck {
         build: (String, Profile, @escaping ScriptStep) throws -> String = productionBuild,
         parse: (String) -> ConfigurationCompileAnswer = coreParse
     ) -> Verdict {
+         
         let script: ScriptStep = { id, yaml, name in
-            do { return try ScriptLibrary.apply(id: id, to: yaml, scripts: scripts, profileName: name) }
+            do { return try ScriptLibrary.apply(id: id, to: yaml, scripts: scripts, profileName: name, caller: .surfaced) }
             catch { throw ScriptStepFailure(underlying: error) }
         }
         let yaml: String
@@ -232,7 +233,7 @@ enum ScriptSaveCheck {
             globalOverride: GlobalConfig.load(),
             runtimeOverride: FlClashRuntimeConfig.load(),
             profileScript: script,
-            configScript: { try ScriptSettings.apply(toConfigYAML: $0, profileName: $1) },
+            configScript: { try ScriptSettings.apply(toConfigYAML: $0, profileName: $1, caller: .silent) },
             postMergeScript: script
         ).finished()
     }
@@ -302,6 +303,30 @@ extension ScriptEngine.ScriptError: ClashAuthoredError {
         case .evaluationFailed(let message): .format("script error: %@", [message])
         case .threw(let message): .format("script threw: %@", [message])
         case .timedOut, .contextUnavailable, .missingMain, .invalidResult: .copy(errorDescription ?? "")
+        }
+    }
+}
+
+ 
+ 
+extension ScriptLibraryError: ClashAuthoredError {
+    var displayText: ClashDisplayText {
+        switch self {
+        case .missing(let id): .format("Selected override script '%@' no longer exists.", [id])
+        case .tooLarge: .copy("This configuration is too large to run an override script.")
+        }
+    }
+}
+
+ 
+ 
+extension ConfigTransformsError: ClashAuthoredError {
+    var displayText: ClashDisplayText {
+        switch self {
+        case .bridgeReturnedNil(let operation):
+            .format("The configuration operation %@ did not return a result.", [operation])
+        case .invalidConfiguration(let reason):
+            .format("The downloaded configuration is invalid: %@", [Self.readable(reason)])
         }
     }
 }

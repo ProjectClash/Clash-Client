@@ -45,8 +45,17 @@ enum ModuleNodeScriptPresentation {
     static func state(_ result: ModuleAppScriptResult) -> ClashNodeScriptResult.State {
         switch result.outcome {
         case .done:
-            let message = result.htmlMessage.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-            return .finished(title: result.title, message: message.map(ClashScriptHTML.render))
+             
+             
+             
+             
+             
+            func written(_ text: String?) -> String? {
+                text.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+            }
+            let message = written(result.htmlMessage).map(ClashScriptHTML.render)
+                ?? written(result.panel?.content).map(ClashScriptHTML.plainText)
+            return .finished(title: result.title, message: message)
         case .aborted(let message):
             return .failed("The script stopped with an error.", detail: message)
         case .timedOut(let seconds):

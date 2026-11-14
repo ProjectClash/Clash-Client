@@ -458,8 +458,9 @@ extension ProfilesViewModel.CurrentConfigurationSettings {
             return nil
         case .page(.own(_, let label, let count)) where count > 1:
             return .format("Changes here apply to all %@ configurations on rule scheme “%@”.", [String(count), label])
-        case .page(.shared(_, let label)):
-            return .format("Saving here copies rule scheme “%@” for this configuration only.", [label])
+         
+         
+         
         case .ownLayer, .page:
             return .copy("Changes here apply to this configuration only.")
         }

@@ -20,13 +20,16 @@ public struct ClashMacConfigurationInspectorActions {
     public var sourceIsViewOnly: (@MainActor () async -> Bool)? = nil
     public var delete: @MainActor () -> Void
      
-    public var setSourceUpdates: @MainActor (Bool) -> Void
+     
+     
+    public var setSourceUpdates: @MainActor (Bool) async throws -> Void
      
      
     public var followLink: @MainActor (String) -> Void = { _ in }
     public var openRuntimePreview: @MainActor () -> Void
     public var restoreLastKnownGood: @MainActor () -> Void
-    public var setAutoUpdate: @MainActor (Bool) -> Void
+     
+    public var setAutoUpdate: @MainActor (Bool) async throws -> Void
     public var setInterval: @MainActor (Int) -> Void
     public var updateSource: @MainActor () -> Void
      
@@ -68,6 +71,9 @@ public struct ClashMacConfigurationInspectorActions {
      
      
     public var setOriginalUse: @MainActor (Bool) -> Void = { _ in }
+     
+     
+    public var leaveOriginal: @MainActor (String) -> Void = { _ in }
     public var loadScopeChoices: @MainActor (ConfigurationSourceRecord) async throws -> ClashMacNodeScopeChoices = { _ in
         throw ConfigurationLibraryError.unreadable
     }
@@ -95,9 +101,6 @@ public struct ClashMacConfigurationInspectorActions {
      
     public var loadSchemeGroups: (@MainActor () async -> [(name: String, type: String)])? = nil
      
-     
-    public var editSchemeSource: (@MainActor () -> Void)? = nil
-     
     public var saveAsScheme: (@MainActor (String) -> Void)? = nil
      
     public var compile: (@MainActor () async -> ClashMacCompileResult)? = nil
@@ -115,10 +118,10 @@ public struct ClashMacConfigurationInspectorActions {
         export: @escaping @MainActor () -> Void,
         editSource: @escaping @MainActor () -> Void,
         delete: @escaping @MainActor () -> Void,
-        setSourceUpdates: @escaping @MainActor (Bool) -> Void,
+        setSourceUpdates: @escaping @MainActor (Bool) async throws -> Void,
         openRuntimePreview: @escaping @MainActor () -> Void,
         restoreLastKnownGood: @escaping @MainActor () -> Void,
-        setAutoUpdate: @escaping @MainActor (Bool) -> Void,
+        setAutoUpdate: @escaping @MainActor (Bool) async throws -> Void,
         setInterval: @escaping @MainActor (Int) -> Void,
         updateSource: @escaping @MainActor () -> Void,
         stripCredentials: @escaping @MainActor () -> Void,
@@ -186,6 +189,13 @@ public struct ClashMacConfigurationInspector: View {
      
      
     @State private var asksToGoBackToLink = false
+     
+     
+     
+     
+     
+     
+    @State private var switches = ClashStoredSwitch<String>()
      
     @State private var asksWhichLink = false
     @State private var name: String
@@ -404,18 +414,22 @@ public struct ClashMacConfigurationInspector: View {
      
      
     private var management: some View {
-        Section {
+        let linked = Self.offersLinkRows(remote: profile.source == .remote, recipe: recipe, sources: sources)
+        return Section {
             nameRow
              
              
-            if profile.source != .remote {
-                LabeledContent { Text(clash: profile.sourceSummary) } label: { Text(clash: .copy("Source")) }
+             
+            if !linked {
+                LabeledContent {
+                    Text(clash: profile.source == .remote ? .copy("Saved Copy") : profile.sourceSummary)
+                } label: { Text(clash: .copy("Source")) }
             }
              
              
-            if profile.source == .remote { trafficRow }
+            if linked { trafficRow }
             followLinkRow
-            if profile.source == .remote { linkRows }
+            if linked { linkRows }
         } header: {
              
              
@@ -425,6 +439,22 @@ public struct ClashMacConfigurationInspector: View {
                 Spacer()
                 statusControls
             }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    nonisolated static func offersLinkRows(remote: Bool, recipe: ConfigurationRecipe?,
+                                           sources: [ConfigurationSourceRecord]) -> Bool {
+        guard remote else { return false }
+        guard let recipe, !recipe.sources.isEmpty else { return true }
+        return !recipe.sources.allSatisfy { reference in
+            sources.first { $0.id == reference.id }?.isRetainedSnapshot == true
         }
     }
 
@@ -535,7 +565,8 @@ public struct ClashMacConfigurationInspector: View {
      
     private var originalSourceName: String? {
         let id = recipe?.sources.first?.id ?? "legacy-" + profile.id.rawValue
-        return sources.first { $0.id == id }?.label ?? (recipe == nil ? profile.label : nil)
+        return sources.first { $0.id == id }.map { $0.displayLabel(locale: locale) }
+            ?? (recipe == nil ? profile.label : nil)
     }
 
      
@@ -595,13 +626,14 @@ public struct ClashMacConfigurationInspector: View {
         case .hidden:
             EmptyView()
         case let .toggle(isOn, turningOn):
-            Toggle(isOn: Binding(get: { isOn }, set: { on in
+            ClashStoredToggle(switches, key: followLinkKey, stored: isOn,
+                              identifier: "configuration-center.configuration.source-updates", set: { on in
                 switch (on, turningOn) {
                 case (true, .asksToReplace): asksToGoBackToLink = true
                 case (true, .asksForLink): asksWhichLink = true
-                default: actions.setSourceUpdates(on)
+                default: pressFollowLink(on)
                 }
-            })) {
+            }) {
                 Text(clash: .copy("Follow Link Updates"))
                 if let note = row.note {
                     Text(clash: note).accessibilityIdentifier("configuration-center.configuration.source-updates.note")
@@ -609,10 +641,9 @@ public struct ClashMacConfigurationInspector: View {
             }
             .toggleStyle(.switch)
             .disabled(profile.isBusy)
-            .accessibilityIdentifier("configuration-center.configuration.source-updates")
             .alert(Text(clash: .copy("Go Back to the Link’s Content?")), isPresented: $asksToGoBackToLink) {
                 Button(role: .cancel) {} label: { Text(clash: .copy("Cancel")) }
-                Button(role: .destructive) { actions.setSourceUpdates(true) } label: { Text(clash: .copy("Go Back")) }
+                Button(role: .destructive) { pressFollowLink(true) } label: { Text(clash: .copy("Go Back")) }
                     .accessibilityIdentifier("configuration-center.configuration.source-updates.confirm")
             } message: {
                 Text(clash: .copy("What was changed in this configuration here will be replaced."))
@@ -638,6 +669,15 @@ public struct ClashMacConfigurationInspector: View {
         }
     }
 
+    private var followLinkKey: String { profile.id.rawValue + "\u{0}follow-link" }
+    private var autoUpdateKey: String { profile.id.rawValue + "\u{0}auto-update" }
+
+    private func pressFollowLink(_ on: Bool) {
+        switches.press(followLinkKey, on) { [actions] on in
+            try await actions.setSourceUpdates(on)
+        }
+    }
+
      
      
     private var librarySourceInterval: Int? {
@@ -648,9 +688,14 @@ public struct ClashMacConfigurationInspector: View {
     private func chooseScheme(_ id: String) {
          
          
-        if offersOriginal, usesOriginal, let recipe {
-            actions.setOriginalUse(false)
-            if id != recipe.ruleSchemeID { chosenScheme = id; actions.setScheme(id) }
+         
+         
+         
+         
+         
+        if offersOriginal, usesOriginal, recipe != nil {
+            chosenScheme = id
+            actions.leaveOriginal(id)
             return
         }
         guard id != chosenScheme || recipe == nil else { return }
@@ -865,8 +910,7 @@ public struct ClashMacConfigurationInspector: View {
             duplicate: profile.canDuplicate ? duplicate : nil,
             duplicating: duplicating,
              
-             
-            viewsSourceOnly: viewsSourceOnly && outlineForm != .composed
+            viewsSourceOnly: viewsSourceOnly
         )
         .task(id: profile.id) {
             viewsSourceOnly = await actions.sourceIsViewOnly?() ?? false
@@ -875,9 +919,10 @@ public struct ClashMacConfigurationInspector: View {
 
      
      
+     
+     
     private var editSourceAction: (@MainActor () -> Void)? {
-        if outlineForm == .composed, let open = actions.editSchemeSource { return open }
-        return profile.canEditSource ? actions.editSource : nil
+        profile.canEditSource ? actions.editSource : nil
     }
 
     private func askSchemeName() {
@@ -905,11 +950,17 @@ public struct ClashMacConfigurationInspector: View {
         if recipe == nil {
              
              
-            Toggle(isOn: Binding(get: { profile.autoUpdate }, set: { actions.setAutoUpdate($0) })) {
+             
+             
+             
+             
+            ClashStoredToggle(switches, key: autoUpdateKey, stored: profile.autoUpdate,
+                              identifier: "configuration-center.config-url.auto-update", readBack: .whenRead,
+                              write: { [actions] on in try await actions.setAutoUpdate(on) }) {
                 Text(clash: .copy("Automatic Updates"))
             }
+            .onChange(of: profile.autoUpdate) { switches.read(autoUpdateKey, stored: $0) }
             .toggleStyle(.switch)
-            .accessibilityIdentifier("configuration-center.config-url.auto-update")
         }
          
          
@@ -1119,8 +1170,6 @@ struct ClashMacScopeRequest: Identifiable {
 struct ClashMacConfigurationSourceRow: View {
     let source: ConfigurationSourceRecord
     let chosen: Bool
-     
-    var locked = false
     let toggle: () -> Void
     let inspect: () -> Void
 
@@ -1130,22 +1179,15 @@ struct ClashMacConfigurationSourceRow: View {
              
              
             let checkbox = Toggle(isOn: Binding(get: { chosen }, set: { _ in toggle() })) {
-                Text(verbatim: source.label)
+                Text(clash: ClashConfigurationSourceCopy.name(source))
                 Text(clash: .count(source.nodeCount, one: "%@ node", other: "%@ nodes"))
             }
             .toggleStyle(.checkbox)
             .accessibilityIdentifier("configuration-center.configuration.source.\(source.id)")
-            if locked {
-                 
-                 
-                 
-                 
-                checkbox
-                    .disabled(true)
-                    .help(Text(clash: .copy("A configuration needs a source for its nodes. Turn on another source first.")))
-            } else {
-                checkbox
-            }
+             
+             
+             
+            checkbox
             Spacer()
              
              
@@ -1256,11 +1298,6 @@ struct ClashMacConfigurationSourcesPage: View {
     }
 
      
-    static func isLast(_ id: String, chosen: Set<String>) -> Bool {
-        chosen.count == 1 && chosen.contains(id)
-    }
-
-     
      
      
     static func shelves(_ sources: [ConfigurationSourceRecord]) -> [ClashMacNodeLibraryShelf] {
@@ -1323,23 +1360,14 @@ struct ClashMacConfigurationSourcesPage: View {
             ForEach(Self.shelves(listed)) { shelf in
                 Section {
                     ForEach(shelf.sources) { source in
-                         
-                         
-                         
-                        let locked = Self.isLast(source.id, chosen: chosen)
                         ClashMacConfigurationSourceRow(
-                            source: source, chosen: chosen.contains(source.id), locked: locked,
-                            toggle: { if !locked { toggle(source.id) } },
+                            source: source, chosen: chosen.contains(source.id),
+                            toggle: { toggle(source.id) },
                             inspect: { scopeSource = ClashMacScopeRequest(source: source, chosen: chosen.contains(source.id)) }
                         )
                     }
                 } header: {
                     Text(clash: .copy(shelf.group.title))
-                } footer: {
-                     
-                    if shelf.sources.contains(where: { Self.isLast($0.id, chosen: chosen) }) {
-                        Text(clash: .copy("At least one node source stays on."))
-                    }
                 }
             }
             if listed.count < matching.count {
@@ -1365,7 +1393,7 @@ struct ClashMacConfigurationSourcesPage: View {
                                 .accessibilityIdentifier("configuration-center.configuration.source-node")
                         }
                     } header: {
-                        Text(verbatim: source.label)
+                        Text(clash: ClashConfigurationSourceCopy.name(source))
                     }
                 }
             }
@@ -1378,8 +1406,7 @@ struct ClashMacConfigurationSourcesPage: View {
                 writtenScopes[request.source.id] = .some(scope)
                 if scope?.isEmpty == true { chosen.remove(request.source.id) } else { chosen.insert(request.source.id) }
                 scopeSource = nil
-            }, back: { scopeSource = nil },
-            refusesEmpty: chosen.count == 1 && chosen.contains(request.source.id))
+            }, back: { scopeSource = nil })
         }
     }
 }
@@ -1397,8 +1424,6 @@ struct ClashMacScopeSheet: View {
     let actions: ClashMacConfigurationInspectorActions
     let done: (ConfigurationNodeScope?) -> Void
     let back: () -> Void
-     
-    var refusesEmpty = false
 
     var body: some View {
         ClashMacNodeScopePage(
@@ -1411,8 +1436,7 @@ struct ClashMacScopeSheet: View {
             },
             back: back,
             closeTitle: .copy("Cancel"),
-            savesUnchanged: !request.chosen,
-            refusesEmpty: refusesEmpty
+            savesUnchanged: !request.chosen
         )
     }
 }

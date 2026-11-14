@@ -22,7 +22,26 @@ public struct ClashFieldRow: View {
     @FocusState private var focused: Bool
      
      
-    @State private var endedOnDisappear = false
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @State private var endedOnDisappearWith: String?
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @State private var holdsFocus = false
 
     public init(
         _ title: String,
@@ -166,23 +185,60 @@ public struct ClashFieldRow: View {
          
          
          
+         
+         
+         
+         
+         
+         
+         
+        .onAppear {
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            holdsFocus = focused
+        }
         .onDisappear {
-            guard focused else { return }
-            endedOnDisappear = true
+             
+             
+             
+            guard holdsFocus else { return }
+            holdsFocus = false
+            endedOnDisappearWith = text.wrappedValue
             onEditingEnded?()
-            focused = false
         }
         .onChange(of: focused) { isFocused in
+            holdsFocus = isFocused
             guard !isFocused else { return }
-            if endedOnDisappear {
-                endedOnDisappear = false
-                return
-            }
-            onEditingEnded?()
+            let ends = Self.focusLossEndsTheEdit(endedOnDisappearWith: endedOnDisappearWith,
+                                                 text: text.wrappedValue)
+            endedOnDisappearWith = nil
+            if ends { onEditingEnded?() }
         }
         .onSubmit { onEditingEnded?() }
         .accessibilityElement(children: .contain)
         .clashFieldRowIdentifier(identifier)
+    }
+
+     
+     
+    static func focusLossEndsTheEdit(endedOnDisappearWith ended: String?, text: String) -> Bool {
+        guard let ended else { return true }
+        return ended != text
     }
 
     @ViewBuilder

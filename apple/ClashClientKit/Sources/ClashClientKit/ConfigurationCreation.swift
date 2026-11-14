@@ -88,9 +88,12 @@ extension ConfigurationLibraryStore {
         guard current.generation == expectedGeneration else { throw ConfigurationLibraryError.staleGeneration }
         guard !current.sources.contains(where: { $0.id == draft.originalSourceID && $0.isRetainedSnapshot == true }),
               !draft.selectedSourceIDs.contains(where: { id in current.sources.contains { $0.id == id && $0.isRetainedSnapshot == true } }),
-              !current.rules.contains(where: { $0.id == draft.selectedRuleID && $0.isRetainedSnapshot == true }),
-              !Self.picksAnotherConfigurationsOwn(draft, profileID: profileID, in: current) else {
+              !current.rules.contains(where: { $0.id == draft.selectedRuleID && $0.isRetainedSnapshot == true }) else {
             throw ConfigurationLibraryError.retainedSnapshot
+        }
+         
+        guard !Self.picksAnotherConfigurationsOwn(draft, profileID: profileID, in: current) else {
+            throw ConfigurationLibraryError.missingDependency("another configuration's own")
         }
         if draft.originalSourceID != nil {
             return try prepareOriginal(draft, profileID: profileID, starting: current, resolveInput: resolveInput)
@@ -126,7 +129,11 @@ extension ConfigurationLibraryStore {
         var available = draft.sources(in: candidate)
         var schemes = draft.rules(in: candidate)
         var staged = draft.newSources
-        if pinnedRule == nil, let id = draft.selectedRuleID, let bundled = try ConfigurationBuiltins.source(for: id) {
+         
+         
+        if pinnedRule == nil, let picked = draft.selectedRuleID,
+           case let id = schemes.first(where: { $0.id == picked })?.rulesFromSchemeID ?? picked,
+           let bundled = try ConfigurationBuiltins.source(for: id) {
             if !available.contains(where: { $0.id == id && $0.version == bundled.record.version }) {
                 staged.removeAll { $0.record.id == id }
                 available.removeAll { $0.id == id }
@@ -197,12 +204,18 @@ extension ConfigurationLibraryStore {
             throw ConfigurationLibraryError.missingDependency(profileID)
         }
         guard !Self.picksAnotherConfigurationsOwn(draft, profileID: profileID, in: current) else {
-            throw ConfigurationLibraryError.retainedSnapshot
+            throw ConfigurationLibraryError.missingDependency("another configuration's own")
         }
         try adoptComposition(in: &existing, resolveInput: resolveInput)
         try freezeSettings(in: &existing, resolveInput: resolveInput)
         current.recipes.removeAll { $0.id == profileID }
         var draft = draft
+         
+         
+         
+         
+        if draft.selectedRuleID != existing.ruleSchemeID,
+           let own = current.ownView(of: draft.selectedRuleID, for: profileID) { draft.selectedRuleID = own.id }
         if draft.step == .rules || draft.step == .finish { draft.nodeScopes = existing.nodeScopes }
         existing.dnsMode = draft.dnsMode
         existing.customDNSJSON = draft.customDNSJSON
@@ -348,9 +361,24 @@ extension ConfigurationLibraryStore {
             if replacement.record.rulesWrittenInOriginal == true || previous.record.rulesWrittenInOriginal == true {
                 throw ConfigurationRuleReplay.Conflict(path: ["rules"])
             }
-            let incoming = ConfigurationRuleDocument.project(try OrderedJSON.parse(replacement.documentJSON))
-            let merged = try ConfigurationRuleReplay.merge(baseline: ConfigurationRuleDocument.project(OrderedJSON.parse(baseline)),
-                local: ConfigurationRuleDocument.project(OrderedJSON.parse(previous.documentJSON)), incoming: incoming)
+             
+             
+             
+             
+             
+             
+            let slots = Set(ConfigurationRuleDocument.nodeNames(in: try OrderedJSON.parse(replacement.documentJSON)))
+                .union(candidate.rules.filter { $0.sourceID == replacement.record.id }.flatMap { $0.namedNodes ?? [] })
+            func asSlots(_ document: OrderedJSON) -> OrderedJSON {
+                ConfigurationRuleDocument.binding(ConfigurationRuleDocument.project(document), nodes: slots, supplied: [])
+            }
+            let incoming = asSlots(try OrderedJSON.parse(replacement.documentJSON))
+            let merged = try ConfigurationRuleReplay.merge(baseline: asSlots(OrderedJSON.parse(baseline)),
+                local: asSlots(OrderedJSON.parse(previous.documentJSON)), incoming: incoming)
+            for i in candidate.rules.indices where candidate.rules[i].sourceID == replacement.record.id {
+                candidate.rules[i].namedNodes = nil
+                candidate.rules[i].namedNodesSourceID = nil
+            }
             var record = replacement.record
             if case .array(let rules) = merged.topLevelValue("rules") { record.ruleCount = rules.count }
             record.groupCount = try ConfigurationRuleGroupSnapshot.read(merged).count
@@ -592,6 +620,98 @@ extension ConfigurationLibraryStore {
      
      
      
+     
+     
+     
+    public func localRuleSetsToLink() throws -> [ConfigurationLocalRuleSet] {
+        let current = try snapshot()
+        let unlinked = (current.localRuleSets ?? []).filter { $0.link == nil && Self.isLink($0.input) }
+        guard !unlinked.isEmpty else { return [] }
+        var wanted = Set<String>()
+        for scheme in current.rules where (scheme.kind == .custom || scheme.kind == .imported)
+            && scheme.collectionKey == nil && scheme.rulesFromSchemeID == nil {
+            guard let document = try? ConfigurationRuleDraft(scheme: scheme, payload: ruleSchemePayload(scheme.id)).currentDocument(),
+                  ConfigurationRuleSetLink.writtenInBytes(document) >= ConfigurationRuleSetLink.writtenInLimit else { continue }
+            for set in unlinked where Self.writesIn(set, document) { wanted.insert(set.id) }
+        }
+        return unlinked.filter { wanted.contains($0.id) }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public func prepareLinkingWrittenSets(_ read: [ConfigurationLocalRuleSet], expectedGeneration: UInt64,
+        resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput = {
+            .init(id: $0.record.id, document: try OrderedJSON.parse($0.documentJSON))
+        }) throws -> PreparedConfigurationSourceUpdate? {
+        var candidate = try snapshot()
+        guard candidate.generation == expectedGeneration else { throw ConfigurationLibraryError.staleGeneration }
+        guard candidate.pendingPublications?.isEmpty ?? true else { throw ConfigurationLibraryError.busy }
+        var sets = candidate.localRuleSets ?? []
+        var recorded: [ConfigurationLocalRuleSet] = []
+        for index in sets.indices where sets[index].link == nil {
+            guard let found = read.first(where: { $0.id == sets[index].id }), let link = found.link,
+                  found.input == sets[index].input, found.rules == sets[index].rules else { continue }
+            sets[index].link = link
+            recorded.append(sets[index])
+        }
+        guard !recorded.isEmpty else { return nil }
+        candidate.localRuleSets = sets
+        var compositions: [String: ConfigurationComposition] = [:]
+        for index in candidate.recipes.indices where candidate.recipes[index].preservesOriginal != true {
+            var recipe = candidate.recipes[index]
+             
+             
+            guard let scheme = candidate.rules.first(where: { $0.id == recipe.ruleSchemeID }) else { continue }
+             
+            let base = (try? ruleBase(of: scheme, in: candidate.rules)) ?? scheme
+            guard let document = try? ConfigurationRuleDraft(scheme: base, payload: ruleSchemePayload(base.id)).currentDocument(),
+                  ConfigurationRuleSetLink.writtenInBytes(document) >= ConfigurationRuleSetLink.writtenInLimit,
+                  recorded.contains(where: { Self.writesIn($0, document) }) else { continue }
+            try freezeSettings(in: &recipe, resolveInput: resolveInput)
+            func input(_ reference: ConfigurationSourceVersion) throws -> ConfigurationInput {
+                let resolved = try resolveInput(payload(reference))
+                guard resolved.id == reference.id else { throw ConfigurationLibraryError.invalidIdentifier.noted() }
+                return resolved
+            }
+            let composition = try composeInputs(recipe.sources.map(input), ruleInput: input(recipe.ruleSource),
+                schemeID: recipe.ruleSchemeID, scheme: scheme,
+                page: try ConfigurationSchemePage.effective(of: recipe, scheme: scheme),
+                nodeScopes: recipe.nodeScopes,
+                settingsProviders: try settingsProviders(recipe.settingsRuleDependencies, resolveInput: resolveInput),
+                ruleSchemes: candidate.rules, localRuleSets: sets)
+            recipe.droppedRules = composition.droppedRules.isEmpty ? nil : composition.droppedRules
+            compositions[recipe.id] = composition
+            candidate.recipes[index] = recipe
+        }
+        return .init(candidate: candidate, payloads: [], compositions: compositions)
+    }
+
+     
+    private static func writesIn(_ set: ConfigurationLocalRuleSet, _ document: OrderedJSON) -> Bool {
+        guard let provider = document.topLevelValue("rule-providers")?.topLevelValue("local-" + set.id) else { return false }
+        return provider.topLevelValue("type") == .string("inline")
+            && provider.topLevelValue("payload") == .array(set.rules.map(OrderedJSON.string))
+    }
+
+     
+    private static func isLink(_ input: String) -> Bool {
+        guard let url = URL(string: input.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
+        return ["http", "https"].contains(url.scheme?.lowercased() ?? "") && url.host != nil
+    }
+
+     
+     
+     
+     
     public static let currentSchemePageRevision = 2
 
      
@@ -709,6 +829,10 @@ extension ConfigurationLibraryStore {
                     copied.generatedRuleGroups = scheme.generatedRuleGroups
                     copied.disabledRules = scheme.disabledRules
                     copied.ruleNotes = scheme.ruleNotes
+                    copied.namedNodes = ConfigurationRuleDocument.namedNodes(of: try OrderedJSON.parse(rulesSource.documentJSON),
+                                                                             recorded: scheme.namedNodes)
+                    copied.namedNodesSourceID = copied.namedNodes == nil ? nil : ConfigurationRuleDocument.namedNodesSource(
+                        of: try OrderedJSON.parse(rulesSource.documentJSON), sourceID: rulesSource.record.id, recorded: scheme.namedNodesSourceID)
                     copied.pageJSON = page.serialized()
                     candidate.sources.append(record); candidate.rules.append(copied); payloads.append(copy)
                     copies[scheme.id, default: []].append((page, copied.id))
@@ -773,8 +897,12 @@ extension ConfigurationLibraryStore {
      
      
      
+     
+     
+     
+     
+     
     public func prepareSchemePageEdit(profileID: String, expectedGeneration: UInt64,
-        label: (ConfigurationRuleScheme, ConfigurationRecipe) -> String = { "\($0.displayLabel) (\($1.label))" },
         resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput = {
             .init(id: $0.record.id, document: try OrderedJSON.parse($0.documentJSON))
         },
@@ -822,8 +950,13 @@ extension ConfigurationLibraryStore {
              
              
             let baseID = scheme.rulesFromSchemeID ?? scheme.id
-            var view = ConfigurationRuleScheme(label: label(scheme, recipe), kind: .custom, sourceID: scheme.sourceID)
+            let base = candidate.rules.first { $0.id == baseID } ?? ConfigurationBuiltins.schemes.first { $0.id == baseID } ?? scheme
+             
+             
+            var view = ConfigurationRuleScheme(label: base.label, kind: .custom, sourceID: scheme.sourceID)
+            if base.baseSchemeID.map(ConfigurationBuiltins.isNative) == true { view.ownViewOfCustomScheme = true }
             view.rulesFromSchemeID = baseID
+            view.privateToConfigurationID = recipe.id
             view.pageJSON = after.serialized()
             if !candidate.rules.contains(where: { $0.id == baseID }),
                let builtin = ConfigurationBuiltins.schemes.first(where: { $0.id == baseID }) {
@@ -831,6 +964,13 @@ extension ConfigurationLibraryStore {
             }
             guard recipe.ruleSource.id == view.sourceID else {
                 throw ConfigurationLibraryError.invalidIdentifier.noted("scheme page view on another source")
+            }
+             
+             
+             
+            let inUse = candidate.schemeIDsInUse
+            candidate.rules.removeAll { old in
+                old.privateToConfigurationID == recipe.id && old.plainViewBaseID == baseID && !inUse.contains(old.id)
             }
             candidate.rules.append(view)
             target = view
@@ -884,13 +1024,17 @@ extension ConfigurationLibraryStore {
         let current = try snapshot()
         guard current.generation == expectedGeneration else { throw ConfigurationLibraryError.staleGeneration }
         guard current.pendingPublications?.isEmpty ?? true else { throw ConfigurationLibraryError.busy }
-        return try switchingScheme(in: current, profileID: profileID, to: schemeID, resolveInput: resolveInput)
+        return try switchingScheme(in: current, profileID: profileID, to: schemeID, takingOwnView: true, resolveInput: resolveInput)
     }
 
      
      
      
+     
+     
+     
     internal func switchingScheme(in starting: ConfigurationLibrarySnapshot, profileID: String, to schemeID: String,
+        takingOwnView: Bool = false,
         resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput) throws -> PreparedConfigurationCreation {
         var candidate = starting
         guard let index = candidate.recipes.firstIndex(where: { $0.id == profileID }) else {
@@ -898,22 +1042,29 @@ extension ConfigurationLibraryStore {
         }
         var recipe = candidate.recipes[index]
         guard recipe.preservesOriginal != true else { throw ConfigurationLibraryError.readOnlyRuleScheme }
-        guard let target = candidate.rules.first(where: { $0.id == schemeID })
+         
+         
+        guard let target = (takingOwnView ? candidate.ownView(of: schemeID, for: profileID) : nil)
+                ?? candidate.rules.first(where: { $0.id == schemeID })
                 ?? ConfigurationBuiltins.schemes.first(where: { $0.id == schemeID }) else {
             throw ConfigurationLibraryError.missingDependency(schemeID)
         }
         guard target.isRetainedSnapshot != true else { throw ConfigurationLibraryError.retainedSnapshot }
          
          
+         
         var payloads: [ConfigurationSourcePayload] = []
         let ruleRecord: ConfigurationSourceRecord
-        if let bundled = try ConfigurationBuiltins.source(for: target.id) {
+        let rulesID = target.rulesFromSchemeID ?? target.id
+        if let bundled = try ConfigurationBuiltins.source(for: rulesID) {
             if !candidate.sources.contains(where: { $0.id == bundled.record.id && $0.version == bundled.record.version }) {
                 candidate.sources.removeAll { $0.id == bundled.record.id }
                 candidate.sources.append(bundled.record)
                 payloads.append(bundled)
             }
             ruleRecord = bundled.record
+            if !candidate.rules.contains(where: { $0.id == rulesID }),
+               let builtin = ConfigurationBuiltins.schemes.first(where: { $0.id == rulesID }) { candidate.rules.append(builtin) }
             if !candidate.rules.contains(where: { $0.id == target.id }) { candidate.rules.append(target) }
         } else {
             guard let record = candidate.sources.first(where: { $0.id == target.sourceID }) else {
@@ -1003,7 +1154,7 @@ extension ConfigurationLibraryStore {
              
              
             if recipe.sources.isEmpty, let base = template?.id, ConfigurationBuiltins.isNative(base) {
-                throw ConfigurationLibraryError.missingNodes
+                throw ConfigurationLibraryError.missingNodeSource
             }
         }
          
@@ -1032,6 +1183,10 @@ extension ConfigurationLibraryStore {
         saved.generatedRuleGroups = template?.generatedRuleGroups
         saved.disabledRules = template?.disabledRules
         saved.ruleNotes = template?.ruleNotes
+        saved.namedNodes = ConfigurationRuleDocument.namedNodes(of: try OrderedJSON.parse(rulesSource.documentJSON),
+                                                                recorded: template?.namedNodes)
+        saved.namedNodesSourceID = saved.namedNodes == nil ? nil : ConfigurationRuleDocument.namedNodesSource(
+            of: try OrderedJSON.parse(rulesSource.documentJSON), sourceID: rulesSource.record.id, recorded: template?.namedNodesSourceID)
         saved.pageJSON = page.serialized()
         candidate.sources.append(record)
         candidate.rules.append(saved)
@@ -1096,6 +1251,19 @@ extension ConfigurationLibraryStore {
 
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     public func prepareSourceRemoval(_ id: String, expectedGeneration: UInt64,
                                      resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput = {
                                          .init(id: $0.record.id, document: try OrderedJSON.parse($0.documentJSON))
@@ -1107,6 +1275,18 @@ extension ConfigurationLibraryStore {
             throw ConfigurationLibraryError.missingDependency(id)
         }
         if case .bundled = candidate.sources[index].origin { throw ConfigurationLibraryError.readOnlySource }
+        var compositions: [String: ConfigurationComposition] = [:]
+        for position in candidate.recipes.indices {
+            var recipe = candidate.recipes[position]
+            guard recipe.preservesOriginal != true, recipe.sources.contains(where: { $0.id == id }) else { continue }
+            recipe.sources.removeAll { $0.id == id }
+            recipe.nodeScopes?[id] = nil
+            if recipe.nodeScopes?.isEmpty == true { recipe.nodeScopes = nil }
+            guard let composition = try? composition(of: recipe, in: candidate, resolveInput: resolveInput) else { continue }
+            recipe.droppedRules = composition.droppedRules.isEmpty ? nil : composition.droppedRules
+            candidate.recipes[position] = recipe
+            compositions[recipe.id] = composition
+        }
         let retained = candidate.recipes.contains { $0.dependencies.contains { $0.id == id } }
             || candidate.sources.contains { $0.id != id && $0.nodeChain?.hops.contains { $0.source.id == id } == true }
         if retained {
@@ -1120,7 +1300,7 @@ extension ConfigurationLibraryStore {
             candidate.rules.removeAll { $0.sourceID == id }
         }
         candidate.updateIssues?.removeAll { $0.sourceID == id || $0.itemID == id }
-        return .init(candidate: candidate, payloads: [], compositions: [:])
+        return .init(candidate: candidate, payloads: [], compositions: compositions)
     }
 
     public func createRuleScheme(label: String, templateID: String?, expectedGeneration: UInt64) throws -> ConfigurationLibrarySnapshot {
@@ -1161,7 +1341,11 @@ extension ConfigurationLibraryStore {
         let scheme = candidate.rules[index]
         guard scheme.kind == .custom || scheme.kind == .imported else { throw ConfigurationLibraryError.readOnlyRuleScheme }
         guard scheme.isRetainedSnapshot != true else { throw ConfigurationLibraryError.retainedSnapshot }
+         
+         
+        guard scheme.ownViewBaseID == nil else { throw ConfigurationLibraryError.readOnlyRuleScheme }
         candidate.rules[index].label = name
+        candidate.namingOwnViews(of: id)
         if scheme.rulesFromSchemeID == nil, scheme.collectionKey == nil,
            let source = candidate.sources.firstIndex(where: { $0.id == scheme.sourceID }),
            candidate.sources[source].label == scheme.label, !candidate.sources[source].suppliesNodes {
@@ -1173,7 +1357,7 @@ extension ConfigurationLibraryStore {
     private func registerRuleScheme(_ source: ConfigurationSourcePayload, kind: ConfigurationRuleScheme.Kind,
                                     expectedGeneration: UInt64, generatedRuleGroups: [String: String]? = nil,
                                     disabledRules: [String]? = nil, ruleNotes: [String: String]? = nil,
-                                    pageJSON: String? = nil,
+                                    pageJSON: String? = nil, namedNodes: [String]? = nil, namedNodesSourceID: String? = nil,
                                     pageRefused: ((String) -> Void)? = nil) throws -> ConfigurationLibrarySnapshot {
         var candidate = try snapshot()
         guard candidate.generation == expectedGeneration else { throw ConfigurationLibraryError.staleGeneration }
@@ -1187,6 +1371,8 @@ extension ConfigurationLibraryStore {
         scheme.disabledRules = disabledRules.flatMap { $0.isEmpty ? nil : $0 }
         scheme.ruleNotes = ruleNotes.flatMap { $0.isEmpty ? nil : $0 }
         scheme.pageJSON = pageJSON
+        scheme.namedNodes = namedNodes
+        scheme.namedNodesSourceID = namedNodes == nil ? nil : namedNodesSourceID
         var refusal: String?
         if kind == .imported, pageJSON == nil {
              
@@ -1268,7 +1454,11 @@ extension ConfigurationLibraryStore {
         return try registerRuleScheme(copied, kind: .custom, expectedGeneration: expectedGeneration,
             generatedRuleGroups: copiedScheme?.generatedRuleGroups,
             disabledRules: copiedScheme?.disabledRules, ruleNotes: copiedScheme?.ruleNotes,
-            pageJSON: copiedScheme?.pageJSON)
+            pageJSON: copiedScheme?.pageJSON,
+            namedNodes: ConfigurationRuleDocument.namedNodes(of: try OrderedJSON.parse(original.documentJSON),
+                                                             recorded: copiedScheme?.namedNodes),
+            namedNodesSourceID: ConfigurationRuleDocument.namedNodesSource(of: try OrderedJSON.parse(original.documentJSON),
+                sourceID: original.record.id, recorded: copiedScheme?.namedNodesSourceID))
     }
 
      
@@ -1297,10 +1487,10 @@ extension ConfigurationLibraryStore {
             generatedRuleGroups: draft.generatedRuleGroups.isEmpty ? nil : draft.generatedRuleGroups,
             disabledRules: draft.disabledRules.isEmpty ? nil : draft.disabledRules.sorted(),
             ruleNotes: draft.notes.isEmpty ? nil : draft.notes,
-            pageJSON: copiedScheme?.pageJSON)
+            pageJSON: copiedScheme?.pageJSON, namedNodes: draft.namedNodes, namedNodesSourceID: draft.namedNodesSourceID)
     }
 
-    public func prepareRuleEditing(_ draft: ConfigurationRuleDraft, expectedGeneration: UInt64,
+    public func prepareRuleEditing(_ draft: ConfigurationRuleDraft, expectedGeneration: UInt64, localRuleSets: [ConfigurationLocalRuleSet]? = nil,
                                    resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput = {
                                        .init(id: $0.record.id, document: try OrderedJSON.parse($0.documentJSON))
                                    }) throws -> PreparedConfigurationSourceUpdate {
@@ -1326,7 +1516,9 @@ extension ConfigurationLibraryStore {
         let document = try draft.document()
         record.version = UUID().uuidString; record.updatedAt = Date()
         let name = draft.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        if kind == .custom { record.label = name }
+         
+        let ownView = candidate.rules[schemeIndex].ownViewBaseID != nil
+        if kind == .custom, !ownView { record.label = name }
         record.ruleCount = draft.rows.count
         record.groupCount = draft.groups.count
         record.nodeCount = 0; record.providerCount = 0; record.suppliesNodes = false
@@ -1334,9 +1526,19 @@ extension ConfigurationLibraryStore {
             original: kind == .custom ? Data(document.serialized().utf8) : previous.original,
             documentJSON: document.serialized(), resourceFiles: previous.resourceFiles,
             ruleBaselineJSON: kind == .custom ? nil : ConfigurationRuleDocument.project(try OrderedJSON.parse(previous.ruleBaselineJSON ?? previous.documentJSON)).serialized())
-        candidate.sources[sourceIndex] = replacement.record; candidate.rules[schemeIndex].label = name
+        candidate.sources[sourceIndex] = replacement.record
+         
+         
+        if !ownView {
+            candidate.rules[schemeIndex].label = name
+            candidate.namingOwnViews(of: candidate.rules[schemeIndex].id)
+        }
         candidate.rules[schemeIndex].disabledRules = draft.disabledRules.isEmpty ? nil : draft.disabledRules.sorted()
         candidate.rules[schemeIndex].ruleNotes = draft.notes.isEmpty ? nil : draft.notes
+         
+         
+        candidate.rules[schemeIndex].namedNodes = draft.namedNodes
+        candidate.rules[schemeIndex].namedNodesSourceID = draft.namedNodesSourceID
         let rules = try resolveInput(replacement)
         guard rules.id == record.id else { throw ConfigurationLibraryError.invalidIdentifier.noted() }
         var compositions: [String: ConfigurationComposition] = [:]
@@ -1355,7 +1557,8 @@ extension ConfigurationLibraryStore {
             }
             let own = candidate.rules.first { $0.id == recipe.ruleSchemeID }
             compositions[recipe.id] = try composeInputs(inputs, ruleInput: rules, schemeID: recipe.ruleSchemeID, scheme: own,
-                page: try ConfigurationSchemePage.effective(of: recipe, scheme: own), nodeScopes: recipe.nodeScopes, settingsProviders: try settingsProviders(recipe.settingsRuleDependencies, resolveInput: resolveInput), ruleSchemes: candidate.rules)
+                page: try ConfigurationSchemePage.effective(of: recipe, scheme: own), nodeScopes: recipe.nodeScopes, settingsProviders: try settingsProviders(recipe.settingsRuleDependencies, resolveInput: resolveInput), ruleSchemes: candidate.rules,
+                localRuleSets: localRuleSets)
             recipe.droppedRules = compositions[recipe.id].flatMap { $0.droppedRules.isEmpty ? nil : $0.droppedRules }
             candidate.recipes[index] = recipe
         }
@@ -1399,6 +1602,14 @@ extension ConfigurationLibraryStore {
          
         if scheme.kind == .supplied, candidate.recipes.contains(where: { $0.preservesOriginal == true && $0.ruleSchemeID == id }) {
             throw ConfigurationLibraryError.referencedBy(scheme.label)
+        }
+         
+         
+         
+         
+        let inUse = candidate.schemeIDsInUse
+        candidate.rules.removeAll { view in
+            view.plainViewBaseID == id && !inUse.contains(view.id)
         }
          
          
@@ -1587,7 +1798,8 @@ extension ConfigurationLibraryStore {
                                schemeID: String, scheme candidateScheme: ConfigurationRuleScheme? = nil,
                                page: ConfigurationSchemePage.Effective, nodeScopes: [String: ConfigurationNodeScope]? = nil,
                                settingsProviders: OrderedJSON = .object([]),
-                               ruleSchemes: [ConfigurationRuleScheme]? = nil) throws -> ConfigurationComposition {
+                               ruleSchemes: [ConfigurationRuleScheme]? = nil,
+                               localRuleSets: [ConfigurationLocalRuleSet]? = nil) throws -> ConfigurationComposition {
         let inputs = try allInputs.map { input in try nodeScopes?[input.id]?.applying(to: input) ?? input }
         let viewOrScheme = try candidateScheme ?? snapshot().rules.first { $0.id == schemeID }
          
@@ -1602,7 +1814,24 @@ extension ConfigurationLibraryStore {
             throw ConfigurationCompositionError.rulesRunOnlyAsTheOriginal(source: original.id)
         }
         let schemeID = scheme?.id ?? schemeID
+         
+         
+         
+         
+         
+         
+         
+         
+        let ownNodes = ConfigurationRuleDocument.nodeNames(in: original.document)
+        let named = Set(ownNodes).union(scheme?.namedNodes ?? [])
         var routing = ConfigurationRuleDocument.project(try scheme?.projectingCollection(original.document) ?? original.document)
+        if !named.isEmpty {
+            let supplied = Set(inputs.flatMap { input in
+                ConfigurationRuleDocument.nodeNames(in: input.document).filter { !input.hiddenNodeNames.contains($0) }
+            })
+            routing = ConfigurationRuleDocument.binding(routing, nodes: named, supplied: supplied)
+        }
+        let namedNodesFrom = ownNodes.isEmpty ? scheme?.namedNodesSourceID : nil
          
          
         if let off = scheme?.disabledRules, !off.isEmpty, case .array(let rules) = routing.topLevelValue("rules") {
@@ -1611,6 +1840,13 @@ extension ConfigurationLibraryStore {
                 if case .string(let raw) = rule { return !offSet.contains(raw) }
                 return true
             }))
+        }
+         
+         
+         
+        if ConfigurationRuleSetLink.writtenInBytes(routing) >= ConfigurationRuleSetLink.writtenInLimit {
+            routing = ConfigurationRuleSetLink.linkingWrittenSets(in: routing,
+                localSets: try localRuleSets ?? snapshot().localRuleSets ?? [])
         }
         if schemeID == ConfigurationBuiltins.basicRuleID {
             routing = inputs.isEmpty
@@ -1636,7 +1872,7 @@ extension ConfigurationLibraryStore {
             routing = routing.settingTopLevel("rule-providers", to: providers)
         }
         let ruleInput = ConfigurationInput(id: original.id, document: routing, resourcePaths: original.resourcePaths)
-        var composition = try ConfigurationComposer.compose(sources: inputs, rules: ruleInput)
+        var composition = try ConfigurationComposer.compose(sources: inputs, rules: ruleInput, namedNodesFrom: namedNodesFrom)
          
          
          
@@ -1666,8 +1902,18 @@ extension ConfigurationLibraryStore {
         guard let recipe = snapshot.recipes.first(where: { $0.id == id }), recipe.preservesOriginal != true else {
             throw ConfigurationLibraryError.missingDependency(id)
         }
+        return try composition(of: recipe, in: snapshot, resolveInput: resolveInput)
+    }
+
+     
+     
+     
+    func composition(of recipe: ConfigurationRecipe, in snapshot: ConfigurationLibrarySnapshot,
+                     held: [ConfigurationSourcePayload] = [],
+                     resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput) throws -> ConfigurationComposition {
         func input(_ reference: ConfigurationSourceVersion) throws -> ConfigurationInput {
-            let resolved = try resolveInput(payload(reference))
+            let source = try held.first { ConfigurationSourceVersion($0.record) == reference } ?? payload(reference)
+            let resolved = try resolveInput(source)
             guard resolved.id == reference.id else { throw ConfigurationLibraryError.invalidIdentifier.noted() }
             return resolved
         }
@@ -1762,6 +2008,7 @@ public extension ConfigurationLibraryStore {
      
      
     func prepareRuleCustomization(_ draft: ConfigurationRuleDraft, profileID: String? = nil, expectedGeneration: UInt64,
+        localRuleSets: [ConfigurationLocalRuleSet]? = nil,
         resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput) throws -> PreparedConfigurationSourceUpdate {
         let current = try snapshot()
         guard current.generation == expectedGeneration else { throw ConfigurationLibraryError.staleGeneration }
@@ -1780,9 +2027,16 @@ public extension ConfigurationLibraryStore {
             guard let effective = current.effectiveRuleScheme(draft.schemeID) else { throw ConfigurationLibraryError.missingDependency(draft.schemeID) }
             scheme = effective
         }
-        guard scheme.isRetainedSnapshot != true else { throw ConfigurationLibraryError.retainedSnapshot }
-        if scheme.collectionKey == nil && scheme.rulesFromSchemeID == nil && (scheme.kind == .custom || scheme.kind == .imported) {
-            let prepared = try prepareRuleEditing(draft, expectedGeneration: expectedGeneration, resolveInput: resolveInput)
+         
+         
+         
+         
+         
+        let kept = scheme.isRetainedSnapshot == true
+        guard !kept || profileID != nil else { throw ConfigurationLibraryError.retainedSnapshot }
+        if !kept, scheme.collectionKey == nil && scheme.rulesFromSchemeID == nil && (scheme.kind == .custom || scheme.kind == .imported) {
+            let prepared = try prepareRuleEditing(draft, expectedGeneration: expectedGeneration, localRuleSets: localRuleSets,
+                                                  resolveInput: resolveInput)
             var candidate = prepared.candidate
             if let i = candidate.rules.firstIndex(where: { $0.id == draft.schemeID }), candidate.rules[i].initialDocumentJSON == nil {
                 candidate.rules[i].initialDocumentJSON = draft.originalDocument.serialized()
@@ -1794,21 +2048,34 @@ public extension ConfigurationLibraryStore {
         let previous = try ruleSchemePayload(scheme.id)
         guard draft.version == ConfigurationSourceVersion(previous.record), try OrderedJSON.parse(previous.documentJSON) == draft.originalDocument else { throw ConfigurationLibraryError.staleGeneration }
         let document = try draft.document()
-        var record = ConfigurationSourceRecord(label: draft.label, origin: .file(draft.label + ".yaml"),
+         
+        let sourceName = scheme.rulesFromSchemeID != nil && scheme.ownViewBaseID != nil ? scheme.label : draft.label
+        var record = ConfigurationSourceRecord(label: sourceName, origin: .file(sourceName + ".yaml"),
             groupCount: draft.groups.count, ruleCount: draft.rows.count, suppliesNodes: false)
          
          
          
         record.ruleProviderCount = Self.ruleSetCount(document)
-        let replacement = ConfigurationSourcePayload(record: record, original: Data(document.serialized().utf8),
-            documentJSON: document.serialized(), resourceFiles: previous.resourceFiles)
          
          
          
          
         let turnsView = scheme.rulesFromSchemeID != nil
+         
+         
+         
+         
+         
+         
+        let owner = kept ? profileID : turnsView ? scheme.privateToConfigurationID : nil
+        if let owner { record.privateToConfigurationID = owner }
+        let replacement = ConfigurationSourcePayload(record: record, original: Data(document.serialized().utf8),
+            documentJSON: document.serialized(), resourceFiles: previous.resourceFiles)
+         
+         
         var customized = ConfigurationRuleScheme(id: turnsView ? scheme.id : UUID().uuidString,
             label: turnsView ? scheme.label : draft.label, kind: .custom, sourceID: record.id)
+        customized.ownViewOfCustomScheme = turnsView ? scheme.ownViewOfCustomScheme : nil
         if !turnsView { customized.baseSchemeID = scheme.id }
         customized.rulesCustomizedFromSchemeID = turnsView ? scheme.rulesFromSchemeID : scheme.id
         customized.initialDocumentJSON = previous.documentJSON
@@ -1819,6 +2086,9 @@ public extension ConfigurationLibraryStore {
          
         customized.disabledRules = draft.disabledRules.isEmpty ? nil : draft.disabledRules.sorted()
         customized.ruleNotes = draft.notes.isEmpty ? nil : draft.notes
+        customized.namedNodes = draft.namedNodes
+        customized.namedNodesSourceID = draft.namedNodesSourceID
+        if let owner { customized.privateToConfigurationID = owner }
         var candidate = current
         candidate.sources.append(record)
         if turnsView, let index = candidate.rules.firstIndex(where: { $0.id == scheme.id }) {
@@ -1858,7 +2128,8 @@ public extension ConfigurationLibraryStore {
         guard let targetID = value?.id ?? id else { throw ConfigurationLibraryError.invalidIdentifier.noted() }
         if let value {
             guard !value.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ConfigurationLibraryError.emptyName }
-            guard !value.rules.isEmpty else { throw ConfigurationLibraryError.missingRules }
+             
+            guard !value.rules.isEmpty || value.link?.format == "mrs" else { throw ConfigurationLibraryError.missingRules }
         }
         var candidate = original
         var sets = original.localRuleSets ?? []
@@ -1877,7 +2148,10 @@ public extension ConfigurationLibraryStore {
             var draft = try ConfigurationRuleDraft(scheme: scheme, payload: ruleSchemePayload(scheme.id))
             guard draft.containsRuleSet("local-" + targetID) else { continue }
             if let value { try draft.updateLocalRuleSet(value) } else { draft.removeRuleSet("local-" + targetID) }
-            let prepared = try prepareRuleCustomization(draft, expectedGeneration: original.generation, resolveInput: resolveInput)
+             
+             
+            let prepared = try prepareRuleCustomization(draft, expectedGeneration: original.generation,
+                                                        localRuleSets: sets, resolveInput: resolveInput)
             for payload in prepared.payloads {
                 guard changedSources.insert(payload.record.id).inserted else { throw ConfigurationLibraryError.invalidIdentifier.noted() }
                 guard let index = candidate.sources.firstIndex(where: { $0.id == payload.record.id }) else { throw ConfigurationLibraryError.missingDependency(payload.record.id) }
@@ -1896,6 +2170,21 @@ public extension ConfigurationLibraryStore {
 public extension ConfigurationBuiltins {
     static let lazyRuleID = "clash-lazy-rules"
     static func isNative(_ id: String) -> Bool { id == basicRuleID || id == lazyRuleID }
+
+     
+    static func displayName(for id: String) -> String? {
+        if id == basicRuleID { return NSLocalizedString("Default Configuration", comment: "Built-in routing template") }
+        if id == lazyRuleID { return NSLocalizedString("Lazy Configuration", comment: "Built-in routing template") }
+        return nil
+    }
+
+     
+     
+     
+     
+     
+     
+    static let customNodesName = "Custom Nodes"
 
      
      
@@ -1956,8 +2245,18 @@ public extension ConfigurationBuiltins {
 public extension ConfigurationRuleScheme {
      
     var displayLabel: String {
-        if id == ConfigurationBuiltins.basicRuleID { return NSLocalizedString("Default Configuration", comment: "Built-in routing template") }
-        if id == ConfigurationBuiltins.lazyRuleID { return NSLocalizedString("Lazy Configuration", comment: "Built-in routing template") }
+        if let builtin = ConfigurationBuiltins.displayName(for: id) { return builtin }
+         
+         
+         
+         
+         
+         
+        if let base = ownViewBaseID {
+            let custom = " · " + NSLocalizedString("Custom", comment: "Customized rule scheme")
+            let scheme = ConfigurationBuiltins.displayName(for: base) ?? label + (ownViewOfCustomScheme == true ? custom : "")
+            return plainViewBaseID != nil ? scheme : scheme + custom
+        }
         if baseSchemeID.map(ConfigurationBuiltins.isNative) == true { return label + " · " + NSLocalizedString("Custom", comment: "Customized rule scheme") }
         return label
     }

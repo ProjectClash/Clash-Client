@@ -35,6 +35,10 @@ struct ModulePublicationSummary: Codable, Equatable, Sendable {
      
      
     var changes: [ModuleChange]?
+     
+     
+     
+    var profileID: String?
 
      
      
@@ -64,12 +68,15 @@ struct ModulePublicationSummary: Codable, Equatable, Sendable {
     var reasons: [ModuleDegradeReason] { degradedBecause.compactMap(ModuleDegradeReason.init(spelling:)) }
 
      
-    static func summary(of publication: ProfileActivationCoordinator.ModulePublication?, at: Date) -> ModulePublicationSummary? {
+    static func summary(of publication: ProfileActivationCoordinator.ModulePublication?, at: Date,
+                        profileID: String? = nil) -> ModulePublicationSummary? {
         guard let publication else { return nil }
-        return ModulePublicationSummary(at: at, engineInjected: publication.record != nil,
-                                         certEntryIP: publication.record == nil ? nil : publication.certEntryIP,
-                                         reasons: publication.degradedBecause, notApplied: nil,
-                                         skipped: publication.skipped, changes: publication.changes)
+        var summary = ModulePublicationSummary(at: at, engineInjected: publication.record != nil,
+                                                certEntryIP: publication.record == nil ? nil : publication.certEntryIP,
+                                                reasons: publication.degradedBecause, notApplied: nil,
+                                                skipped: publication.skipped, changes: publication.changes)
+        summary.profileID = profileID
+        return summary
     }
 
      
@@ -141,6 +148,8 @@ extension ModuleDegradeReason {
         case .moduleEntriesLeftOut: return "moduleEntriesLeftOut"
         case .moduleSettingsLeftOut: return "moduleSettingsLeftOut"
         case .engineNameTaken: return "engineNameTaken"
+        case .snifferWrittenOff(let keys): return "snifferWrittenOff:" + keys
+        case .snifferNotCompleted: return "snifferNotCompleted"
          
          
         case .notApplied: return "notApplied"
@@ -169,6 +178,8 @@ extension ModuleDegradeReason {
         case ("moduleEntriesLeftOut", nil): self = .moduleEntriesLeftOut
         case ("moduleSettingsLeftOut", nil): self = .moduleSettingsLeftOut
         case ("engineNameTaken", nil): self = .engineNameTaken
+        case ("snifferWrittenOff", let keys?): self = .snifferWrittenOff(keys)
+        case ("snifferNotCompleted", nil): self = .snifferNotCompleted
         default: return nil
         }
     }

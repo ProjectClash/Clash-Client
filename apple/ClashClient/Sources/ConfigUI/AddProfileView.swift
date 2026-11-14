@@ -41,19 +41,26 @@ struct AddProfileView: View {
     @State private var importGeneration = 0
     let registerSuppliedRules: Binding<Bool>?
     let importRuleCollection: (() -> Void)?
+     
+     
+     
+     
+    let importRuleSet: ((ConfigurationRuleSetPrefill) -> Void)?
     let createEmpty: () -> Void
     let save: (String, Profile.Source, String?, [ExternalResourceImportFile]) -> Void
 
     init(initialTab: AddProfileDraft.Tab = .link, purpose: AddProfilePurpose = .profile, dismissAfterSave: Bool = true,
          availableTabs: [AddProfileDraft.Tab] = [.link, .file, .blank], tabHeader: ((Bool) -> AnyView)? = nil,
          sourceKind: ClashConfigurationSourceKind? = nil, blankFileEntry: Bool = false, isFirstConfigurationStep: Bool = false,
-         registerSuppliedRules: Binding<Bool>? = nil, importRuleCollection: (() -> Void)? = nil, createEmpty: @escaping () -> Void,
+         registerSuppliedRules: Binding<Bool>? = nil, importRuleCollection: (() -> Void)? = nil,
+         importRuleSet: ((ConfigurationRuleSetPrefill) -> Void)? = nil, createEmpty: @escaping () -> Void,
          saveAsync: ((String, Profile.Source, String?, [ExternalResourceImportFile], Bool) async throws -> Void)? = nil,
          save: @escaping (String, Profile.Source, String?, [ExternalResourceImportFile]) -> Void) {
         self.dismissAfterSave = dismissAfterSave
         self.saveAsync = saveAsync
         self.registerSuppliedRules = registerSuppliedRules
         self.importRuleCollection = importRuleCollection
+        self.importRuleSet = importRuleSet
         self.purpose = purpose
         self.availableTabs = availableTabs
         self.tabHeader = tabHeader
@@ -220,7 +227,7 @@ struct AddProfileView: View {
                     }
                 }
             }
-            .clashProductModalRoot(title: additionTitle)
+            .clashProductModalRoot(title: .copy(additionTitle))
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if insideProductModal {
                     ClashModalActionBar(
@@ -836,6 +843,13 @@ struct AddProfileView: View {
                                 completion: @escaping (Bool) -> Void) {
         isSaving = true
         Task { @MainActor in
+            if imported.isEmpty, let importRuleSet,
+               let prefill = await ConfigurationRuleSetPrefill.local(label: label, fileName: "", data: Data(pasted.utf8)) {
+                isSaving = false
+                importRuleSet(prefill)
+                completion(false)
+                return
+            }
             do {
                 let value: SubmittedSource = try await Task.detached(priority: .userInitiated) {
                     if !imported.isEmpty {
@@ -929,6 +943,14 @@ struct AddProfileView: View {
                     completion(true)
                     if dismissAfterSave { dismissPresentation() }
                 } catch {
+                     
+                     
+                    if let set = error as? ConfigurationLinkIsARuleSet, let importRuleSet {
+                        isSaving = false
+                        importRuleSet(.link(set.link, found: set.found, label: value.0))
+                        completion(false)
+                        return
+                    }
                     isSaving = false
                      
                      
@@ -1023,6 +1045,12 @@ struct AddProfileView: View {
         importingFile = true
         Task { @MainActor in
             defer { if generation == importGeneration { importingFile = false } }
+            if let importRuleSet,
+               let prefill = await ConfigurationRuleSetPrefill.local(label: draft.label, fileName: file.name, data: bytes) {
+                guard generation == importGeneration else { return }
+                importRuleSet(prefill)
+                return
+            }
             do {
                 let derived = try await Task.detached(priority: .userInitiated) {
                     try ProxyImportBridge.derivedSubscription(from: bytes, nodesOnly: nodesOnly)

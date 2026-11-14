@@ -1000,6 +1000,17 @@ final class ConfigResourceStore {
 
      
      
+     
+     
+    func publishedConfigurationURL(profileID: String, revision: String) -> URL? {
+        guard (try? validateProfileID(profileID)) != nil, Self.isValidRevision(revision) else { return nil }
+        let url = profilePaths(profileID).revisions.appendingPathComponent(revision, isDirectory: true)
+            .appendingPathComponent(Name.resolvedConfiguration)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+     
+     
     func loadConfiguration(profileID: String, revision: String) throws -> StoredConfiguration {
         try validateProfileID(profileID)
         guard Self.isValidRevision(revision) else {

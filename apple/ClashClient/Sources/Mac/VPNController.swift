@@ -92,7 +92,37 @@ final class VPNController: ObservableObject {
         didSet {
             installationReadError = nil
             lastErrorOffersVPNProfileReset = false
+            if startRefusedByCore != nil { startRefusedByCore = nil }
         }
+    }
+     
+     
+     
+     
+    @Published private(set) var startRefusedByCore: CoreStartRefusal?
+
+     
+     
+    var lastErrorText: ClashDisplayText {
+        startRefusedByCore.map { .format($0.message, [$0.words]) } ?? text(of: lastError)
+    }
+
+     
+     
+    func text(of sentence: String) -> ClashDisplayText {
+        if sentence == lastError, let refusal = startRefusedByCore { return .format(refusal.message, [refusal.words]) }
+        return .copy(CoreStartRefusal.isLead(sentence) ? MacVPNDisconnectErrorPresentation.genericStartFailureMessage : sentence)
+    }
+
+     
+     
+     
+     
+    var lastErrorReason: String {
+        if let refusal = startRefusedByCore {
+            return ClashCopy.string(for: .format(refusal.message, [refusal.words]), locale: Locale.current)
+        }
+        return CoreStartRefusal.isLead(lastError) ? MacVPNDisconnectErrorPresentation.genericStartFailureMessage : lastError
     }
      
      
@@ -191,6 +221,12 @@ final class VPNController: ObservableObject {
      
      
     var stopsTunnel: (NEVPNConnection) -> Void = { $0.stopVPNTunnel() }
+     
+     
+     
+    var startupRecord: () -> StartupOutcomeRecord? = {
+        StartupOutcomeRecord.read(from: ClashMacAppGroupAccess.readableContainer())
+    }
 
      
      
@@ -277,9 +313,52 @@ final class VPNController: ObservableObject {
         defer { preparingStarts.remove(token) }
         return await body()
     }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @Published private(set) var startAwaitingSystem = false
+    private var startAnswerDeadline: Task<Void, Never>?
+    static let startAnswerWindowMilliseconds: UInt64 = 1_000
+
+    private func systemTookStart() {
+        startAnswerDeadline?.cancel()
+        startAwaitingSystem = true
+        startAnswerDeadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.startAnswerWindowMilliseconds * 1_000_000)
+            guard !Task.isCancelled else { return }
+            self?.startNoLongerAwaited()
+        }
+    }
+
+     
+    private func systemSaid(_ status: NEVPNStatus) {
+        guard status == .connecting || status == .connected || status == .reasserting else { return }
+        startNoLongerAwaited()
+    }
+
+    private func startNoLongerAwaited() {
+        startAnswerDeadline?.cancel()
+        startAnswerDeadline = nil
+        if startAwaitingSystem { startAwaitingSystem = false }
+    }
+
+     
+    var connectedSince: Date? {
+        guard ["connected", "reasserting"].contains(status) else { return nil }
+        return manager?.connection.connectedDate
+    }
     var systemVPNAuthorization: ClashVPNAuthorizationState? {
         vpnAuthorization ?? (systemVPNInstallationKnown && manager == nil ? .required : nil)
     }
+     
      
      
     @Published private(set) var tunnelSettings = VPNTunnelSettings()
@@ -329,7 +408,7 @@ final class VPNController: ObservableObject {
 
     init(
         preferences: UserDefaults? = UserDefaults(
-            suiteName: ClashAppIdentifiers.appGroup
+            suiteName: ClashAppIdentifiers.defaultsSuite
         ),
         systemVPNManagers: (@MainActor () async throws -> [NETunnelProviderManager])? = nil,
         preferencesReadTimeout: Double = 15,
@@ -546,18 +625,81 @@ final class VPNController: ObservableObject {
      
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     @discardableResult
     func updateTunnelSettings(_ settings: VPNTunnelSettings) async -> Bool {
-        let previous = tunnelSettings
-        guard settings != previous else { return true }
-        settings.save(to: preferences)
-        tunnelSettings = settings
-        guard await installRoutingPolicy(reconnectIfNeeded: true) else {
-            previous.save(to: preferences)
-            tunnelSettings = previous
-            return false
-        }
+        guard waitForTunnelSettingsSave(settings) else { return true }
+        return await saveWaitingTunnelSettings()
+    }
+
+     
+    func flipTunnelSettings(to settings: VPNTunnelSettings) {
+        guard waitForTunnelSettingsSave(settings) else { return }
+        Task { await saveWaitingTunnelSettings() }
+    }
+
+     
+     
+     
+     
+    private func waitForTunnelSettingsSave(_ settings: VPNTunnelSettings) -> Bool {
+        waitingTunnelSettings = settings == tunnelSettings ? nil : settings
+        guard !tunnelSettingsRunning, waitingTunnelSettings != nil else { return false }
+        tunnelSettingsRunning = true
         return true
+    }
+
+     
+    @discardableResult
+    private func saveWaitingTunnelSettings() async -> Bool {
+        defer { tunnelSettingsRunning = false }
+        var applied = true
+        while let next = waitingTunnelSettings {
+            let previous = tunnelSettings
+             
+            tunnelSettings = next
+            waitingTunnelSettings = nil
+            guard next != previous else { continue }
+            next.save(to: preferences)
+            if await installForTunnelSettings() {
+                tunnelSettingsRefusal = ""
+            } else {
+                previous.save(to: preferences)
+                tunnelSettings = previous
+                applied = false
+                tunnelSettingsRefusal = lastError
+                waitingTunnelSettings = nil
+            }
+        }
+        return applied
+    }
+
+     
+    private var tunnelSettingsRunning = false
+     
+     
+    @Published private(set) var waitingTunnelSettings: VPNTunnelSettings?
+     
+    @Published private(set) var tunnelSettingsRefusal = ""
+
+
+
+    private func installForTunnelSettings() async -> Bool {
+
+
+        return await installRoutingPolicy(reconnectIfNeeded: true)
     }
 
      
@@ -757,11 +899,13 @@ final class VPNController: ObservableObject {
                             ? [Self.userInitiatedStartOption: NSNumber(value: true)]
                             : nil)
                     awaitingStartTransition = true
+                    systemTookStart()
                     adoptInstalledManager(manager)
                     lastError = ""
                 },
                 abort: { [self] in
                     awaitingStartTransition = false
+                    startNoLongerAwaited()
                      
                      
                     await Task { @MainActor in
@@ -834,6 +978,7 @@ final class VPNController: ObservableObject {
         vpnAuthorization = nil
         userStopInFlight = true
         awaitingStartTransition = false
+        startNoLongerAwaited()
         if let manager, Self.disarmOnDemandForUserStop(manager) {
              
              
@@ -929,6 +1074,7 @@ final class VPNController: ObservableObject {
         systemVPNProfileResetInFlight = true
         defer { systemVPNProfileResetInFlight = false }
         awaitingStartTransition = false
+        startNoLongerAwaited()
         do {
             if let manager {
                  
@@ -995,10 +1141,16 @@ final class VPNController: ObservableObject {
                         "vpn disconnect error  domain=\(domain) code=\(code)",
                         stream: .app, level: .warning)
                 }
+                 
+                 
+                 
+                 
+                let record = error?.domain == ClashTunnelStart.startErrorDomain ? startupRecord() : nil
                 let verdict = MacVPNDisconnectErrorPresentation.verdict(
-                    for: error, status: connection.status)
+                    for: error, status: connection.status, record: record, issuedAt: lastStartIssuedAt)
                 lastError = verdict.message
                 lastErrorOffersVPNProfileReset = verdict.offersVPNProfileReset
+                startRefusedByCore = verdict.refusal
             })
     }
 
@@ -1377,7 +1529,7 @@ final class VPNController: ObservableObject {
                 settledByTheExtension = true
             } else {
                  
-                outcome = stopGeneration == stopAtStart ? .failed(lastError) : .savedForNext
+                outcome = stopGeneration == stopAtStart ? .failed(lastErrorReason) : .savedForNext
             }
         case .reload:
              
@@ -1615,7 +1767,7 @@ final class VPNController: ObservableObject {
         guard await forceRestart() else {
              
              
-            return stopGeneration == epoch &+ 1 ? .failed(lastError) : .savedForNext
+            return stopGeneration == epoch &+ 1 ? .failed(lastErrorReason) : .savedForNext
         }
          
          
@@ -1665,7 +1817,7 @@ final class VPNController: ObservableObject {
         if !connected { answerLibraryGone(issuedAt: issuedAt, sinceStop: stopEpoch) }
         guard let settled = StartupOutcomeRecord.settlement(
             of: StartupOutcomeRecord.read(from: ClashMacAppGroupAccess.readableContainer()),
-            issuedAt: issuedAt, connected: connected, fallbackReason: lastError) else {
+            issuedAt: issuedAt, connected: connected, fallbackReason: lastErrorReason) else {
             return success
         }
         if case .keptRunning(let reason) = settled {
@@ -2018,6 +2170,8 @@ final class VPNController: ObservableObject {
 
 
     private func updateStatus(_ status: NEVPNStatus) {
+         
+        systemSaid(status)
         switch status {
         case .invalid, .disconnected: self.status = "disconnected"
         case .connecting: self.status = "connecting"

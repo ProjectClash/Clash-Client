@@ -100,6 +100,7 @@ enum VPNDisconnectErrorPresentation {
                 genericReportMessage,
                 providerNotLaunchedMessage,
             ]
+            + [OnDemandStartRefusal.certainMessage]
     )
 
     static func message(for error: NSError) -> String {
@@ -440,6 +441,9 @@ enum VPNStopSite: String {
 final class VPNController: ObservableObject {
      
      
+    private(set) lazy var tunnelSettingsApplying = TunnelSettingsApplying(vpn: self)
+     
+     
      
      
      
@@ -461,8 +465,33 @@ final class VPNController: ObservableObject {
      
     @Published private(set) var hasLoadedStatus = false
     @Published var lastError: String = "" {
-        didSet { installationReadError = nil }
+        didSet {
+            installationReadError = nil
+             
+             
+             
+             
+            if startRefusedByOnDemand != nil { startRefusedByOnDemand = nil }
+            if startRefusedByCore != nil { startRefusedByCore = nil }
+        }
     }
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @Published private(set) var startRefusedByOnDemand: OnDemandStartRefusal?
+     
+     
+     
+     
+    @Published private(set) var startRefusedByCore: CoreStartRefusal?
      
     private var installationReadError: String?
     @Published private(set) var configurationNotice: String = ""
@@ -497,6 +526,52 @@ final class VPNController: ObservableObject {
     @Published private(set) var preparingStarts: Set<UInt64> = []
     private var lastPreparingStart: UInt64 = 0
     var isPreparingStart: Bool { !preparingStarts.isEmpty }
+
+     
+     
+    var homeStatus: String {
+        ClashHomeConnectionPresenter.homeStatus(status: status, isPreparingStart: isPreparingStart,
+                                                systemHasNotAnswered: startAwaitingSystem)
+    }
+
+     
+    var connectedSince: Date? {
+        guard ["connected", "reasserting"].contains(status.lowercased()) else { return nil }
+        return manager?.connection.connectedDate
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    @Published private(set) var startAwaitingSystem = false
+    private var startAnswerDeadline: Task<Void, Never>?
+    static var startAnswerDeadlineNanoseconds: UInt64 = 1_000_000_000
+
+    func systemTookStart() {
+        startAnswerDeadline?.cancel()
+        if !startAwaitingSystem { startAwaitingSystem = true }
+        startAnswerDeadline = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.startAnswerDeadlineNanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.stopAwaitingTheSystem()
+        }
+    }
+
+     
+    func systemSaid(_ status: NEVPNStatus) {
+        if [.connecting, .connected, .reasserting].contains(status) { stopAwaitingTheSystem() }
+    }
+
+    private func stopAwaitingTheSystem() {
+        startAnswerDeadline?.cancel()
+        startAnswerDeadline = nil
+        if startAwaitingSystem { startAwaitingSystem = false }
+    }
 
      
      
@@ -542,6 +617,10 @@ final class VPNController: ObservableObject {
      
     private let unrequestedStops: VPNUnrequestedStopLog
     private var startFailureTracker = VPNStartFailureTracker()
+     
+     
+     
+    private var startNetwork: Task<NetworkPathInterfaceKind, Never>?
     private var systemVPNProfileResetInFlight = false
     private var startOutcomeWatchdog: Task<Void, Never>?
      
@@ -553,6 +632,16 @@ final class VPNController: ObservableObject {
     private let preferences: UserDefaults
     private let usesUITestFixtures: Bool
     private let systemVPNManagers: @MainActor () async throws -> [NETunnelProviderManager]
+     
+     
+     
+    private let lastDisconnectErrorReader: (@MainActor (NEVPNConnection) async -> NSError?)?
+     
+     
+    private let networkReader: @MainActor () async -> NetworkPathInterfaceKind
+     
+     
+    private let startupRecordReader: () -> StartupOutcomeRecord?
 
      
      
@@ -606,16 +695,24 @@ final class VPNController: ObservableObject {
     }
 
     init(
-        preferences: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.appGroup),
+        preferences: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite),
         usesUITestFixtures: Bool = false,
         systemVPNManagers: (@MainActor () async throws -> [NETunnelProviderManager])? = nil,
-        profileWriter: IPStackProfileWriter? = nil
+        profileWriter: IPStackProfileWriter? = nil,
+        lastDisconnectError: (@MainActor (NEVPNConnection) async -> NSError?)? = nil,
+        networkInterface: (@MainActor () async -> NetworkPathInterfaceKind)? = nil,
+        startupRecord: (() -> StartupOutcomeRecord?)? = nil
     ) {
         let preferences = preferences ?? .standard
         self.preferences = preferences
         self.unrequestedStops = VPNUnrequestedStopLog(defaults: preferences)
         self.usesUITestFixtures = usesUITestFixtures
         self.systemVPNManagers = systemVPNManagers ?? { try await Self.boundedLoadAll() }
+        self.lastDisconnectErrorReader = lastDisconnectError
+        self.networkReader = networkInterface ?? { await NetworkPathProbe.startInterface(timeout: 1) }
+        self.startupRecordReader = startupRecord ?? {
+            StartupOutcomeRecord.read(from: ClashAppIdentifiers.appGroupContainer)
+        }
         self.profileWriter = profileWriter ?? IPStackProfileWriter()
         clearLegacyKillSwitchPreferences()
         tunnelSettings = VPNTunnelSettings.load(from: preferences)
@@ -631,13 +728,175 @@ final class VPNController: ObservableObject {
         manager?.connection as? NETunnelProviderSession
     }
 
+     
+     
+     
+     
+     
+     
     var reportableLastError: String {
-        VPNDisconnectErrorPresentation.reportMessage(lastError)
+        guard lastError == OnDemandStartRefusal.certainMessage || CoreStartRefusal.isLead(lastError) else {
+            return VPNDisconnectErrorPresentation.reportMessage(lastError)
+        }
+        return lastErrorSentence(locale: AppPreferences.language().locale)
+    }
+
+     
+     
+     
+     
+    var recordedLastError: String {
+        lastErrorSentence(locale: Locale(identifier: "en"))
+    }
+
+     
+     
+     
+    var handoverFailureReason: String {
+        reportableLastError
+    }
+
+     
+     
+     
+     
+     
+    var homeLastErrorRow: String {
+         
+         
+         
+        if CoreStartRefusal.isLead(lastError) {
+            return startRefusedByCore == nil ? VPNDisconnectErrorPresentation.providerDisconnectMessage : lastError
+        }
+        guard lastError == OnDemandStartRefusal.certainMessage else {
+            return VPNDisconnectErrorPresentation.reportMessage(lastError)
+        }
+        guard startRefusedByOnDemand?.isCertain == true else {
+            return VPNDisconnectErrorPresentation.genericStartFailureMessage
+        }
+        return lastError
+    }
+
+     
+     
+     
+     
+    func lastErrorSentence(locale: Locale) -> String {
+        if CoreStartRefusal.isLead(lastError) {
+            guard let refusal = startRefusedByCore else { return VPNDisconnectErrorPresentation.providerDisconnectMessage }
+            return ClashCopy.string(for: .format(refusal.message, [refusal.words]), locale: locale)
+        }
+        guard lastError == OnDemandStartRefusal.certainMessage else {
+            return VPNDisconnectErrorPresentation.reportMessage(lastError)
+        }
+        guard startRefusedByOnDemand?.isCertain == true, let names = onDemandRuleNames(locale: locale) else {
+            return VPNDisconnectErrorPresentation.genericStartFailureMessage
+        }
+        return ClashCopy.string(for: .format(OnDemandStartRefusal.certainStatement, [names]), locale: locale)
+    }
+
+     
+     
+     
+    func onDemandRuleNames(locale: Locale) -> String? {
+        startRefusedByOnDemand?.ruleNames(locale: locale)
+    }
+
+     
+     
+     
+    func onDemandNoteForTheReasonSheet(locale: Locale) -> String? {
+        guard startRefusedByOnDemand?.isCertain == false, let names = onDemandRuleNames(locale: locale) else {
+            return nil
+        }
+        return ClashCopy.string(for: .format(OnDemandStartRefusal.possibleMessage, [names]), locale: locale)
+    }
+
+     
+     
+     
+     
+     
+    func sampleTheStartsNetwork() {
+        guard let manager, OnDemandStartRefusal.canStopAStart(on: manager) else {
+            startNetwork = nil
+            return
+        }
+        let read = networkReader
+        startNetwork = Task { @MainActor in await read() }
+    }
+
+     
+     
+     
+    private func publishOnDemandRefusal(_ refusal: OnDemandStartRefusal?) {
+        lastError = refusal?.isCertain == true
+            ? OnDemandStartRefusal.certainMessage
+            : VPNDisconnectErrorPresentation.genericStartFailureMessage
+        startRefusedByOnDemand = refusal
+    }
+
+     
+     
+     
+     
+     
+    private func retireTheOnDemandRefusal() {
+        guard let refusal = startRefusedByOnDemand else { return }
+        if refusal.isCertain, lastError == OnDemandStartRefusal.certainMessage {
+            lastError = ""
+        }
+        if startRefusedByOnDemand != nil { startRefusedByOnDemand = nil }
+    }
+
+     
+     
+    func statusMoved(to status: NEVPNStatus) {
+        if status != .disconnected, status != .invalid { retireTheOnDemandRefusal() }
+    }
+
+     
+     
+    private(set) var onDemandNetworkRecheck: Task<Void, Never>?
+
+     
+     
+     
+     
+     
+     
+     
+    private func recheckTheOnDemandRefusalsNetwork() {
+        guard let refusal = startRefusedByOnDemand, OnDemandStartRefusal.isWeighable(refusal.interface) else { return }
+        let read = networkReader
+        onDemandNetworkRecheck = Task { @MainActor [weak self] in
+            let now = await read()
+            guard let self, OnDemandStartRefusal.isWeighable(now), now != refusal.interface,
+                  self.startRefusedByOnDemand == refusal
+            else { return }
+            self.reweighTheOnDemandRefusal(on: now)
+        }
+    }
+
+     
+     
+     
+     
+     
+    private func reweighTheOnDemandRefusal(on interface: NetworkPathInterfaceKind) {
+        guard let refusal = startRefusedByOnDemand else { return }
+        let answer = manager.flatMap { OnDemandStartRefusal.find(on: $0, interface: interface) }
+        guard let now = answer, now.rules == refusal.rules, now.isCertain == refusal.isCertain else {
+            retireTheOnDemandRefusal()
+            return
+        }
+        if now != refusal { startRefusedByOnDemand = now }
     }
 
     var systemVPNProfileResetAvailable: Bool {
+         
         VPNDisconnectErrorPresentation.allowsSystemVPNProfileReset(
-            forReportMessage: reportableLastError
+            forReportMessage: homeLastErrorRow
         )
     }
 
@@ -671,6 +930,7 @@ final class VPNController: ObservableObject {
      
     func refreshSystemVPNInstallation() async {
         _ = await refreshInstalledManagerIfIdle()
+        recheckTheOnDemandRefusalsNetwork()
     }
 
     private func refreshInstalledManagerIfIdle() async -> Bool {
@@ -710,8 +970,9 @@ final class VPNController: ObservableObject {
              
             systemVPNInstallationKnown = false
             vpnAuthorization = nil
-            lastError = VPNDisconnectErrorPresentation.startMessage(for: error as NSError)
-            installationReadError = lastError
+            let message = VPNDisconnectErrorPresentation.startMessage(for: error as NSError)
+            lastError = message
+            installationReadError = message
             return false
         }
     }
@@ -1373,7 +1634,7 @@ final class VPNController: ObservableObject {
         let issuedAt = Date()
         return await start(origin: .programmatic)
             ? await settleStart(issuedAt: issuedAt, since: stopEpoch, success: .applied(warning: nil))
-            : .failed(lastError)
+            : .failed(handoverFailureReason)
     }
 
     private func restartForHandover(forNewSettings: Bool, stopEpoch: UInt64) async -> TunnelApplyOutcome {
@@ -1382,7 +1643,7 @@ final class VPNController: ObservableObject {
         let issuedAt = Date()
         return await restartTunnel(site: forNewSettings ? .intentRestart : .reloadFallback, since: stopEpoch)
             ? await settleStart(issuedAt: issuedAt, since: stopEpoch, success: .restarted)
-            : .failed(lastError)
+            : .failed(handoverFailureReason)
     }
 
      
@@ -1599,7 +1860,8 @@ final class VPNController: ObservableObject {
         }
         guard let settled = StartupOutcomeRecord.settlement(
             of: record,
-            issuedAt: issuedAt, connected: connected, fallbackReason: lastError) else {
+             
+            issuedAt: issuedAt, connected: connected, fallbackReason: connected ? "" : handoverFailureReason) else {
             configurationNotice = ""
             return success
         }
@@ -1785,11 +2047,13 @@ final class VPNController: ObservableObject {
             lastError = ""
             return .applied
         } catch let error as NETimeoutError {
-            lastError = "on-demand: \(error.localizedDescription)"
-            return .indeterminate(lastError)
+            let message = "on-demand: \(error.localizedDescription)"
+            lastError = message
+            return .indeterminate(message)
         } catch {
-            lastError = "on-demand: \(error.localizedDescription)"
-            return .refused(lastError)
+            let message = "on-demand: \(error.localizedDescription)"
+            lastError = message
+            return .refused(message)
         }
     }
 
@@ -2081,10 +2345,12 @@ final class VPNController: ObservableObject {
                     adoptManager(mgr)
                     updateInstalledRoutingPolicy(from: mgr)
                     routingPolicyNeedsApply = false
+                    sampleTheStartsNetwork()
                     startFailureTracker.beginStart()
                     let before = connectionStatusLabel(mgr.connection.status)
                     try mgr.connection.startVPNTunnel(
                         options: userInitiated ? [Self.userInitiatedStartOption: NSNumber(value: true)] : nil)
+                    systemTookStart()
                     updateStatus()
                     mark("start-vpn-tunnel-returned")
                     let after = connectionStatusLabel(mgr.connection.status)
@@ -2292,6 +2558,7 @@ final class VPNController: ObservableObject {
         if site == .userButton {
             userStopEpoch &+= 1
             preparingStarts.removeAll()
+            stopAwaitingTheSystem()
              
              
              
@@ -2737,6 +3004,16 @@ final class VPNController: ObservableObject {
         manager = mgr
         systemVPNInstallationKnown = true
         observeStatus()
+        retireTheOnDemandRefusalTheProfileNoLongerMakes()
+    }
+
+     
+     
+     
+     
+    private func retireTheOnDemandRefusalTheProfileNoLongerMakes() {
+        guard let refusal = startRefusedByOnDemand else { return }
+        reweighTheOnDemandRefusal(on: refusal.interface)
     }
 
     private func observeStatus() {
@@ -2757,6 +3034,7 @@ final class VPNController: ObservableObject {
             return
         }
         updateStatus()
+        statusMoved(to: connection.status)
         if disconnectNoticeTracker.observe(
             connection.status,
             userInitiated: userStopInFlight,
@@ -2789,6 +3067,7 @@ final class VPNController: ObservableObject {
          
         startOutcomeWatchdog?.cancel()
         startOutcomeWatchdog = nil
+        systemSaid(connection.status)
         if connection.status == .connected || connection.status == .reasserting
             || connection.status == .connecting
         {
@@ -2840,11 +3119,24 @@ final class VPNController: ObservableObject {
         await resolveLastDisconnectError(on: connection)
     }
 
-    private func resolveLastDisconnectError(on connection: NEVPNConnection) async {
+    func resolveLastDisconnectError(on connection: NEVPNConnection) async {
         let intent = profileWriteIntentGeneration
         let statusGeneration = connectionStatusGeneration
+         
+         
+         
+        var onDemandRefusal: OnDemandStartRefusal?
         await VPNStartAuthorization.resolveFailure(
-            fetch: { [self] in await fetchLastDisconnectError(on: connection) },
+            fetch: { [self] in
+                let error: NSError?
+                if let read = lastDisconnectErrorReader {
+                    error = await read(connection)
+                } else {
+                    error = await fetchLastDisconnectError(on: connection)
+                }
+                if error == nil { onDemandRefusal = await onDemandRefusalOfTheStoppedStart() }
+                return error
+            },
             isCurrent: { [self] in
                 manager?.connection === connection
                     && profileWriteIntentGeneration == intent
@@ -2868,14 +3160,44 @@ final class VPNController: ObservableObject {
                             return "vpn disconnect error  domain=\(domain) code=\(code)"
                         }(),
                         stream: .app, level: .warning)
-                    lastError = VPNDisconnectErrorPresentation.message(
-                        for: error,
-                        providerLooksUnlaunched: startFailureTracker.providerLooksUnlaunched
-                    )
+                     
+                     
+                     
+                     
+                    let record = error.domain == ClashTunnelStart.startErrorDomain ? startupRecordReader() : nil
+                    if let refusal = CoreStartRefusal.from(error: error, record: record) {
+                        lastError = refusal.message
+                        startRefusedByCore = refusal
+                    } else {
+                        lastError = VPNDisconnectErrorPresentation.message(
+                            for: error,
+                            providerLooksUnlaunched: startFailureTracker.providerLooksUnlaunched
+                        )
+                    }
                 } else {
-                    lastError = VPNDisconnectErrorPresentation.genericStartFailureMessage
+                    if let onDemandRefusal {
+                        ClashLogStore.shared.append(
+                            #"vpn start stopped with no reason  on-demand disconnect rules=\#(onDemandRefusal.rules.count) certain=\#(onDemandRefusal.isCertain) network=\#(onDemandRefusal.interface.rawValue)"#,
+                            stream: .app, level: .warning)
+                    }
+                     
+                     
+                     
+                    publishOnDemandRefusal(onDemandRefusal)
                 }
             })
+    }
+
+     
+     
+     
+     
+     
+    private func onDemandRefusalOfTheStoppedStart() async -> OnDemandStartRefusal? {
+         
+        guard let manager, OnDemandStartRefusal.canStopAStart(on: manager) else { return nil }
+        let interface = await startNetwork?.value ?? .unknown
+        return OnDemandStartRefusal.find(on: manager, interface: interface)
     }
 
      

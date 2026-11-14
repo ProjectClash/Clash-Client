@@ -83,7 +83,7 @@ enum LegacyGlobalConfigMigrationDryRun {
          
          
         postMergeScript: (String?, String, String) throws -> String = {
-            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2)
+            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2, caller: .silent)
         }
     ) -> LegacyGlobalConfigMigrationDryRunResult {
         guard !isIdentity(legacyGlobalOverride) else { return .notNeeded }
@@ -327,10 +327,10 @@ enum LegacyGlobalConfigMigrationCoordinator {
         workingDirectory: URL,
         defaults: UserDefaults = GlobalConfig.appGroupDefaults,
         profileScript: (String?, String, String) throws -> String = {
-            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2)
+            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2, caller: .silent)
         },
         configScript: (String, String) throws -> String = {
-            try ScriptSettings.apply(toConfigYAML: $0, profileName: $1)
+            try ScriptSettings.apply(toConfigYAML: $0, profileName: $1, caller: .silent)
         }
     ) -> LegacyGlobalConfigMigrationResult {
         let profileStore = ProfileStore(
@@ -770,14 +770,14 @@ enum LegacyGlobalScriptMigrationCoordinator {
         workingDirectory: URL,
         defaults: UserDefaults = ScriptSettings.appGroupDefaults,
         profileScript: (String?, String, String) throws -> String = {
-            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2)
+            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2, caller: .silent)
         },
          
          
          
          
         applyScript: (String, String, String) throws -> String = {
-            try ScriptSettings.apply(body: $0, toConfigYAML: $1, profileName: $2)
+            try ScriptSettings.apply(body: $0, toConfigYAML: $1, profileName: $2, caller: .silent)
         }
     ) -> LegacyGlobalScriptMigrationResult {
         let store = ProfileStore(

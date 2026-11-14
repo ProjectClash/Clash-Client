@@ -70,14 +70,20 @@ final class ClashNotificationCenterDelegate: NSObject, UNUserNotificationCenterD
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        let content = response.notification.request.content
         let tap = ClashNotificationTap(
             identifier: response.notification.request.identifier,
             action: response.actionIdentifier,
-            userInfo: response.notification.request.content.userInfo
+            userInfo: content.userInfo,
+            title: content.title, subtitle: content.subtitle, body: content.body
         )
         DispatchQueue.main.async {
-            MainActor.assumeIsolated { self.deliver(tap) }
+             
+             
+             
+             
             completionHandler()
+            MainActor.assumeIsolated { self.deliver(tap) }
         }
     }
 }
@@ -91,22 +97,34 @@ struct ClashNotificationTap: Equatable, Sendable {
     var action: String
      
     var info: [String: String]
+     
+     
+     
+    var title: String
+    var subtitle: String
+    var body: String
 
-    init(kind: String?, identifier: String, action: String, info: [String: String]) {
+    init(kind: String?, identifier: String, action: String, info: [String: String],
+         title: String = #""#, subtitle: String = #""#, body: String = #""#) {
         self.kind = kind
         self.identifier = identifier
         self.action = action
         self.info = info
+        self.title = title
+        self.subtitle = subtitle
+        self.body = body
     }
 
-    init(identifier: String, action: String, userInfo: [AnyHashable: Any]) {
+    init(identifier: String, action: String, userInfo: [AnyHashable: Any],
+         title: String = #""#, subtitle: String = #""#, body: String = #""#) {
         var info: [String: String] = [:]
         for case let (key as String, value as String) in userInfo where key != ClashNotificationCenterDelegate.kindKey {
             info[key] = value
         }
         self.init(
             kind: userInfo[ClashNotificationCenterDelegate.kindKey] as? String,
-            identifier: identifier, action: action, info: info
+            identifier: identifier, action: action, info: info,
+            title: title, subtitle: subtitle, body: body
         )
     }
 }

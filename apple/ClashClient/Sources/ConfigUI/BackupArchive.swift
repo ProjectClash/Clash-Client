@@ -395,6 +395,12 @@ struct BackupArchive: Codable, Equatable {
          
          
          
+         
+         
+         
+         
+         
+         
         init?(mapping url: URL) {
             guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return nil }
             let start = data.starts(with: [0xEF, 0xBB, 0xBF]) ? 3 : 0
@@ -998,10 +1004,11 @@ struct BackupArchive: Codable, Equatable {
         } else {
             stages = try ProfileRuntimeConfigBuilder.buildProductionStages(
                 raw: raw, profile: profile, runtimeOverride: OverrideSpec(), globalOverride: globalConfig,
-                applyProviderDefinitions: true, applyProxyChain: true, applyLegacyRelayMigration: true
+                applyProviderDefinitions: true, applyProxyChain: true, applyLegacyRelayMigration: true, scripts: .silent
             )
         }
-        return try ProfileRuntimeConfigBuilder.applyingOwnLayer(of: profile, to: stages.afterClientTransforms)
+        return try ProfileRuntimeConfigBuilder.applyingOwnLayer(of: profile, to: stages.afterClientTransforms,
+                                                                 listenerWrittenBack: stages.listenerWrittenBack)
     }
 
     enum LargeEffectiveDocument: Equatable {
@@ -1424,10 +1431,10 @@ struct BackupArchive: Codable, Equatable {
         scope: BackupRestoreScope = .allData,
         defaults: UserDefaults = GlobalConfig.appGroupDefaults,
         profileScript: (String?, String, String) throws -> String = {
-            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2)
+            try ScriptLibrary.apply(id: $0, to: $1, profileName: $2, caller: .silent)
         },
         configScript: (String, String) throws -> String = {
-            try ScriptSettings.apply(toConfigYAML: $0, profileName: $1)
+            try ScriptSettings.apply(toConfigYAML: $0, profileName: $1, caller: .silent)
         },
         credentials: CredentialStore = CredentialStore()
     ) throws -> BackupRestoreResult {
@@ -1908,7 +1915,7 @@ struct BackupArchive: Codable, Equatable {
                 id: id,
                 to: yaml,
                 scripts: preparation.targetScripts,
-                profileName: name
+                profileName: name, caller: .silent
             )
         }
         for (index, profile) in preparation.restoredProfiles.enumerated()

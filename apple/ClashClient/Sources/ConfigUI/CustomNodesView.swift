@@ -1,3 +1,4 @@
+import ClashClientKit
 import ClashClientUI
 import SwiftUI
 
@@ -131,8 +132,17 @@ struct CustomNodesView: View {
      
      
      
+     
+    static func headerName(_ profile: Profile, locale: Locale) -> String {
+        ConfigurationSourceRecord.displayLabel(profile.label, origin: .customNodes, locale: locale)
+    }
+
+     
+     
+     
     @StateObject private var dismiss = ClashDismissHandle()
     @Environment(\.clashPushRoute) private var pushRoute
+    @Environment(\.locale) private var locale
      
      
     @State private var addRequested = false
@@ -288,8 +298,9 @@ struct CustomNodesView: View {
         .clashRegistersDeparture(
             isDirty: hasUnsavedEdits || !pendingRenames.isEmpty,
             isBusy: isBusy,
-            save: { completion in
-                commitEdits(completion: completion)
+             
+            saveAnswering: { answer in
+                commitEdits { answer($0 ? .saved : .refused(nil)) }
             },
             discard: { discardEdits() }
         )
@@ -303,7 +314,7 @@ struct CustomNodesView: View {
 
     private var content: some View {
         ClashClientUI.ClashProfileCollectionPage(
-            profileName: profile.label,
+            profileName: Self.headerName(profile, locale: locale),
             message: ""
         ) {
             ClashSymbolImage(symbol: .profileClipboard)
@@ -608,7 +619,18 @@ struct CustomNodesView: View {
      
      
     private var customFooter: some View {
-        EmptyView()
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        Text(clash: .copy("These nodes are a source of their own. A configuration uses them once it turns this source on, under Node Sources."))
     }
 
     @ViewBuilder
@@ -681,10 +703,13 @@ struct CustomNodesView: View {
                     onDone: { editorSelection = nil }
                 )
             } else {
-                Text(clash: .copy("This node no longer exists."))
-                    .foregroundStyle(.secondary)
-                    .clashPageTitle("Custom Nodes")
-                    .clashDetailPageInsets()
+                VStack(spacing: ClashTheme.Spacing.row) {
+                    Text(clash: .copy("This node no longer exists."))
+                        .foregroundStyle(.secondary)
+                    ClashOpeningCancelButton()
+                }
+                .clashPageTitle("Custom Nodes")
+                .clashDetailPageInsets()
             }
         }
     }

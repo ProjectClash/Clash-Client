@@ -19,12 +19,20 @@ enum ClashWidgetFactsPublisher {
      
     static var countsWired: Bool { ClashWidgetPlatform.countsWired }
 
+     
+     
+     
+     
+     
+     
     static func facts(
-        activeLabel: String?, effectiveYAML: String?, mode: ClashWidgetMode? = nil, now: Date
+        activeLabel: String?, effectiveYAML: String?, mode: ClashWidgetMode? = nil,
+        storedGlobal: ClashTunnelOutboundMode.StoredGlobalChoice? = nil, now: Date
     ) -> ClashWidgetAppFacts {
         guard let effectiveYAML, !effectiveYAML.isEmpty else {
             return ClashWidgetAppFacts(
-                profile: activeLabel, firstGroup: nil, groups: [], mode: mode, countsWired: countsWired, writtenAt: now
+                profile: activeLabel, firstGroup: nil, groups: [], mode: mode, countsWired: countsWired,
+                globalVerdict: storedGlobal.map(ClashTunnelOutboundMode.storedGlobalVerdict), writtenAt: now
             )
         }
          
@@ -42,6 +50,8 @@ enum ClashWidgetFactsPublisher {
         let firstSelector = declared.first {
             ProxiesOverviewModel.canonicalAdapterType($0.type) == "selector"
         }?.name
+        let manualGroups = declared.filter { ProxiesOverviewModel.canonicalAdapterType($0.type) == "selector" }.map(\.name)
+        let globalVerdict = storedGlobal.map { ClashTunnelOutboundMode.storedGlobalVerdict($0.reading(manualGroups: manualGroups)) }
          
          
          
@@ -69,6 +79,7 @@ enum ClashWidgetFactsPublisher {
             selections: selections,
             mode: mode,
             countsWired: countsWired,
+            globalVerdict: globalVerdict,
             writtenAt: now
         )
     }
@@ -101,7 +112,24 @@ enum ClashWidgetFactsPublisher {
     static func takeModeChosenOnACard(store: ClashWidgetMailboxStore = store) -> String? {
         guard let choice = store.readModeChoice() else { return nil }
         store.clearModeChoice()
+         
+         
+        if !(choice.at < (lastModeChoiceTaken?.at ?? .distantPast)) { lastModeChoiceTaken = choice }
         return choice.mode.rawValue
+    }
+
+     
+    static var lastModeChoiceTaken: ClashWidgetModeChoice?
+
+     
+     
+     
+     
+     
+    static func modeChosen(after date: Date, store: ClashWidgetMailboxStore = store) -> Bool {
+        let newest = [store.readModeChoice(), lastModeChoiceTaken].compactMap { $0 }.max { $0.at < $1.at }
+        guard let newest, newest.at > date else { return false }
+        return newest.mode != .global
     }
 
     static func write(_ facts: ClashWidgetAppFacts, to store: ClashWidgetMailboxStore) {
@@ -119,9 +147,13 @@ enum ClashWidgetFactsPublisher {
      
      
      
-    static func publish(activeLabel: String?, mode: ClashWidgetMode? = nil, effectiveYAML: String?) {
+    static func publish(
+        activeLabel: String?, mode: ClashWidgetMode? = nil,
+        storedGlobal: ClashTunnelOutboundMode.StoredGlobalChoice? = nil, effectiveYAML: String?
+    ) {
         Task.detached(priority: .utility) {
-            let facts = facts(activeLabel: activeLabel, effectiveYAML: effectiveYAML, mode: mode, now: Date())
+            let facts = facts(activeLabel: activeLabel, effectiveYAML: effectiveYAML, mode: mode,
+                              storedGlobal: storedGlobal, now: Date())
             write(facts, to: store)
             WidgetCenter.shared.reloadAllTimelines()
         }

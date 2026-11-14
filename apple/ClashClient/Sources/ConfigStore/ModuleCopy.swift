@@ -29,7 +29,7 @@ extension ModuleIgnoredReason {
     var authoredText: AuthoredText {
         switch self {
         case .sectionNotSupported, .settingNotSupported, .mapLocalNotSupported, .unsupportedRewriteType,
-             .unsupportedRuleType, .ruleListNotSupported, .boxJSNotSupported, .newerSyntaxNotSupported:
+             .unsupportedRuleType, .ruleListNotSupported, .newerSyntaxNotSupported:
             return Self.notSupported
         case .unreadableLine, .invalidPattern, .invalidHost, .jqExpressionInvalid:
             return Self.writtenWrong
@@ -65,10 +65,31 @@ extension ModuleIgnoredReason {
              
              
              
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
             switch why {
-            case .app(let key, _) where ModuleStoredSentence.isServerAnswer(key): return ModuleStoredSentence.scriptNotDownloaded
+            case .app(let key, let arguments)
+                where key == ModuleStoredSentence.scriptStatus || ModuleStoredSentence.isServerAnswer(key):
+                return ModuleStoredSentence.scriptDownloadFailure(key: key, arguments: arguments)
             case .app: return ModuleStoredSentence.current(why)
-            case .verbatim: return ModuleStoredSentence.scriptNotDownloaded
+            case .verbatim: return ModuleStoredSentence.scriptNotReached
             }
         case .fileDownloadFailed(let why):
             switch why {
@@ -89,8 +110,6 @@ extension ModuleIgnoredReason {
                 return .app("This device doesn't report its carrier, so this rule was skipped.")
             case .remoteRelativeFile:
                 return .app("The file this line needs isn't on this device, so it was skipped.")
-            case .vpnIcon:
-                return .app("The system decides when the VPN icon shows, so this line was skipped.")
              
              
             case .systemProxy:
@@ -243,6 +262,61 @@ enum ModuleStoredSentence {
         if case .app(let key, _) = error.authoredText { return key }
         return nil
     })
+
+     
+     
+    static func serverStatus(key: String, arguments: [String]) -> Int? {
+        guard case .app(let badStatus, _) = DownloadError.badStatus(404).authoredText,
+              key == badStatus || key == scriptStatus else { return nil }
+        guard let first = arguments.first, let status = Int(first), status > 0 else { return nil }
+        return status
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func scriptDownloadFailure(key: String, arguments: [String]) -> AuthoredText {
+        guard let status = serverStatus(key: key, arguments: arguments) else {
+             
+             
+            return scriptNotReached
+        }
+         
+         
+         
+         
+         
+         
+        return .app("This script couldn't be downloaded: the server returned HTTP %@.", arguments: [String(status)])
+    }
+
+     
+     
+     
+     
+     
+    static var everyScriptDownloadFailure: [AuthoredText] {
+        [scriptDownloadFailure(key: badStatusKey, arguments: ["404"]),
+         scriptNotReached]
+    }
+
+     
+    static var badStatusKey: String {
+        guard case .app(let key, _) = DownloadError.badStatus(404).authoredText else { return "" }
+        return key
+    }
+
+     
+     
+    static let scriptNotReached: AuthoredText = .app("This script couldn't be downloaded: the server couldn't be reached.")
 
      
      

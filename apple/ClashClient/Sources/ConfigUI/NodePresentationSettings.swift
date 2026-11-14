@@ -72,7 +72,7 @@ struct NodePresentationSettings: Equatable {
     }
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
     static func load(from defaults: UserDefaults = appGroupDefaults) -> NodePresentationSettings {
@@ -129,7 +129,7 @@ enum TrafficStatisticsSettings {
     static let key = "traffic.onlyStatisticsProxy"
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
     static func onlyProxy(from defaults: UserDefaults = appGroupDefaults) -> Bool {

@@ -90,6 +90,8 @@ public enum UpstreamBoolDefault {
          
          
          
+         
+         
         "profile.store-fake-ip": .init(true, owner: .clash, upstreamValue: false),
          
         "dns.prefer-h3": .init(false),

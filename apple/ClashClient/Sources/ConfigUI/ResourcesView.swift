@@ -205,7 +205,9 @@ final class GeoResourcesModel: ObservableObject {
         recordBatchItem(
             resource: resource,
             state: .failed,
-            message: failure.message,
+             
+             
+            message: nil,
             failure: failure
         )
     }
@@ -318,7 +320,7 @@ struct ResourcesView: View {
                 RunningCoreDeviations.activeProfileReport()
             }.value
         }
-        .sheet(isPresented: Binding(
+        .clashSheet(isPresented: Binding(
             get: { model.batchReport != nil },
             set: { if !$0 { model.dismissBatchReport() } }
         )) {

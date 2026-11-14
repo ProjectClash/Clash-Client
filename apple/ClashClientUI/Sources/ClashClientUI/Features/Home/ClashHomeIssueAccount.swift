@@ -36,7 +36,11 @@ struct ClashHomeIssueLineLabel: View {
     let isAccessibilitySize: Bool
     @Environment(\.clashHomeIssueOpensAccount) private var opensAccount
 
-    var showsReason: Bool { offersReason && opensAccount }
+     
+     
+    var choosesNode = false
+
+    var showsReason: Bool { choosesNode || (offersReason && opensAccount) }
 
     var body: some View {
         if isAccessibilitySize {
@@ -70,7 +74,7 @@ struct ClashHomeIssueLineLabel: View {
 
     private var reason: some View {
         HStack(spacing: 2) {
-            Text(clash: .copy("View Reason"))
+            Text(clash: .copy(choosesNode ? "Choose Node" : "View Reason"))
             Image(systemName: ClashSymbol.chevronForward.rawValue)
                 .font(.footnote.weight(.semibold))
                 .imageScale(.small)
@@ -83,15 +87,21 @@ struct ClashHomeIssueLineLabel: View {
 
  
  
+ 
 struct ClashHomeIssueLineHint: ViewModifier {
-    let resetsVPNProfile: Bool
+    let kind: ClashHomeConnectionIssue.Kind
     @Environment(\.clashHomeIssueOpensAccount) private var opensAccount
 
     func body(content: Content) -> some View {
-        content.accessibilityHint(
-            resetsVPNProfile
-                ? Text(clash: .copy("Reinstalls the VPN profile"))
-                : opensAccount ? Text(clash: .copy("Shows why")) : Text("")
-        )
+        content.accessibilityHint(hint)
+    }
+
+    private var hint: Text {
+        switch kind.lineTapCommand {
+        case .resetVPNProfile: return Text(clash: .copy("Reinstalls the VPN profile"))
+        case .openOnDemand: return Text(clash: .copy("Opens On Demand"))
+        case .openProxies where kind == .globalOnDirect: return Text(clash: .copy("Choose Node"))
+        default: return opensAccount ? Text(clash: .copy("Shows why")) : Text("")
+        }
     }
 }

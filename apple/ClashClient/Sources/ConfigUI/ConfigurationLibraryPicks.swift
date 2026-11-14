@@ -370,8 +370,6 @@ enum ConfigurationEmptyList {
 import SwiftUI
 
 extension ConfigurationEditorSession {
-     
-    @MainActor static var libraryProvidersBeingAdded: Set<String> = []
 
      
      
@@ -396,20 +394,52 @@ extension ConfigurationEditorSession {
 
      
      
-    func addLibraryProvider(_ source: ConfigurationLibraryPicks.Source) async {
+     
+     
+    func refusesSwitchingOff(_ source: ConfigurationLibraryPicks.Source) -> Bool {
+        let shown = shownDocument ?? .object([])
+        guard let there = ConfigurationLibraryPicks.addedSetName(source, in: shown) else { return false }
+        let places = OriginalListEdits.uses(ofProvider: there, in: shown)
+        guard !places.isEmpty else { return false }
+        refuseDeleting(there, usedBy: places)
+        return true
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    @discardableResult
+    func setLibraryLink(_ source: ConfigurationLibraryPicks.Source, on: Bool) async -> Bool {
          
          
          
-        guard !Self.libraryProvidersBeingAdded.contains(source.id),
-              ConfigurationLibraryPicks.addedSetName(source, in: page?.document ?? .object([])) == nil else { return }
-        Self.libraryProvidersBeingAdded.insert(source.id)
-        defer { Self.libraryProvidersBeingAdded.remove(source.id) }
-        let written = value(at: ["proxy-providers"])
-        let taken = ConfigurationLibraryPicks.takenNodeSetNames(in: page?.document ?? .object([]))
-        guard let made = ConfigurationLibraryPicks.provider(for: source, taken: taken) else { return }
-        let step = OriginalListEdits.adding(made.name, made.value, toMappingAt: "proxy-providers", exists: written != nil)
-        guard await editOriginal(steps: [step]), made.name != source.label else { return }
-        notice = .format("Added as “%@”: this configuration already uses the name “%@”.", [made.name, source.label])
+         
+        if !on, refusesSwitchingOff(source) { return false }
+        let there = ConfigurationLibraryPicks.addedSetName(source, in: shownDocument ?? .object([]))
+        let saved = await queueOriginal { document in
+            let written = ConfigurationLibraryPicks.addedSetName(source, in: document)
+            if on {
+                guard written == nil else { return .write([]) }
+                let taken = ConfigurationLibraryPicks.takenNodeSetNames(in: document)
+                guard let made = ConfigurationLibraryPicks.provider(for: source, taken: taken) else { return .cannot }
+                return .write([OriginalListEdits.adding(made.name, made.value, toMappingAt: "proxy-providers",
+                                                        exists: document.topLevelValue("proxy-providers") != nil)])
+            }
+            guard let written else { return .write([]) }
+            let places = OriginalListEdits.uses(ofProvider: written, in: document)
+            if !places.isEmpty { return .refuseDeleting(written, usedBy: places) }
+            return .write(OriginalListEdits.deleting([written], fromMappingAt: "proxy-providers"))
+        }
+        if saved, on, there == nil,
+           let added = ConfigurationLibraryPicks.addedSetName(source, in: page?.document ?? .object([])), added != source.label {
+            notice = .format("Added as “%@”: this configuration already uses the name “%@”.", [added, source.label])
+        }
+        return saved
     }
 }
 
@@ -512,7 +542,7 @@ struct ConfigurationLibraryNodePicker: View {
                                         types: types)
                                 }
                             } header: {
-                                Text(verbatim: source.label)
+                                Text(clash: ClashConfigurationSourceCopy.name(source.record))
                             } footer: {
                                  
                                 if isLink, !inNodeSets.contains(source.id) {
@@ -621,7 +651,7 @@ struct ConfigurationNewListItemButton: View {
             Label { Text(clash: title) } icon: { Image(systemName: ClashSymbol.plus.name) }
         }
         .accessibilityIdentifier(identifier)
-        .sheet(isPresented: $adding) {
+        .clashSheet(isPresented: $adding) {
             ConfigurationNewListItemForm(session: session, location: location) { item in
                 session.edit([location.edit(writing: location.items(in: session.settingsDocument) + [item],
                                             in: session.settingsDocument)])

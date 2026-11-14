@@ -59,7 +59,7 @@ extension ClashTVRemoteControlCore {
 struct ClashTVExternalControllerScreen: View {
     @Binding var state: ClashTVProductState
     let core: ClashTVRemoteControlCore
-    var defaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.appGroup)
+    var defaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
      
     var hosts: () -> [String] = {
         ProxyShareModel.dialable(LANAddressInventory.current(), keepingSelfAssignedWhenAlone: false)

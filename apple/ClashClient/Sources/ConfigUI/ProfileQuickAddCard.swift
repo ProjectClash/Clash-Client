@@ -12,15 +12,34 @@ struct ProfileQuickAddState: Equatable {
     enum Phase: Equatable {
         case idle
         case busy(host: String)
+         
+         
+         
+        case busyNodes
         case failed(String)
         case notice(Notice)
     }
 
-    var text = ""
+    var text = "" {
+         
+         
+         
+        didSet { if text != unwrappedRules?.address { unwrappedRules = nil } }
+    }
     var phase: Phase = .idle
      
      
     private(set) var pending: ProfileQuickAddInput?
+     
+     
+     
+     
+     
+    struct UnwrappedRules: Equatable {
+        let address: String
+        let rules: InstallLinkRuleScheme
+    }
+    private(set) var unwrappedRules: UnwrappedRules?
      
      
      
@@ -37,8 +56,10 @@ struct ProfileQuickAddState: Equatable {
     private(set) var failure: ConfigurationFailure?
 
     var isBusy: Bool {
-        if case .busy = phase { return true }
-        return false
+        switch phase {
+        case .busy, .busyNodes: return true
+        case .idle, .failed, .notice: return false
+        }
     }
 
     var canSubmit: Bool {
@@ -53,10 +74,19 @@ struct ProfileQuickAddState: Equatable {
             phase = .idle
         case .nodeShareLink:
             phase = .notice(.nodeBelongsInCustomNodes)
-        case .link(let url):
+        case .link(let url, let rules):
+             
+             
+            let kept = unwrappedRules.flatMap { $0.address == url && text == url ? $0.rules : nil }
             text = url
-            pending = input
+            if let named = rules ?? kept {
+                unwrappedRules = UnwrappedRules(address: url, rules: named)
+                pending = .link(url, rules: named)
+            } else {
+                pending = input
+            }
         case .document, .nodes:
+            unwrappedRules = nil
             pending = input
         }
     }
@@ -66,13 +96,13 @@ struct ProfileQuickAddState: Equatable {
         nodesOnly = nil
         failure = nil
         switch input {
-        case .link(let url):
+        case .link(let url, _):
             text = url
             phase = .busy(host: URL(string: url)?.host ?? url)
-        case let .document(fileName, _):
+        case let .document(fileName, _, _):
             phase = .busy(host: fileName)
         case .nodes:
-            phase = .busy(host: "Custom Nodes")
+            phase = .busyNodes
         case .nodeShareLink, .nothing:
             phase = .idle
         }
@@ -427,19 +457,25 @@ struct ProfileQuickAddCard: View {
             .accessibilityIdentifier(identifiers.linkIdentifier)
     }
 
+    private func busyRow(_ host: String) -> some View {
+        HStack(spacing: ClashTheme.Spacing.compact) {
+            ProgressView().controlSize(.small)
+            Text(clash: .format("Downloading %@…", [host]))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier(identifiers.statusIdentifier)
+    }
+
     @ViewBuilder
     private var statusRow: some View {
         switch controller.state.phase {
         case .idle:
             EmptyView()
         case .busy(let host):
-            HStack(spacing: ClashTheme.Spacing.compact) {
-                ProgressView().controlSize(.small)
-                Text(clash: .format("Downloading %@…", [host]))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityIdentifier(identifiers.statusIdentifier)
+            busyRow(host)
+        case .busyNodes:
+            busyRow(ConfigurationSourceRecord.displayLabel(ConfigurationBuiltins.customNodesName, origin: .customNodes, locale: locale))
         case .failed(let message):
             ClashStatusMessage(
                 text: .verbatim(controller.state.failure.map { ProfileSwitchFailureText.cardText(for: $0, locale: locale) } ?? message),

@@ -1,0 +1,461 @@
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+import SwiftASN1
+import Crypto
+import _CryptoExtras
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
+import Foundation
+#endif
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public struct Signature {
+        @usableFromInline
+        var backing: BackingSignature
+
+        @inlinable
+        internal init(backing: BackingSignature) {
+            self.backing = backing
+        }
+
+        @inlinable
+        internal init(signatureAlgorithm: SignatureAlgorithm, signatureBytes: ASN1BitString) throws {
+            switch signatureAlgorithm {
+            case .ecdsaWithSHA256, .ecdsaWithSHA384, .ecdsaWithSHA512:
+                let signature = try ECDSASignature(derEncoded: signatureBytes.bytes)
+                self.backing = .ecdsa(signature)
+            case .sha1WithRSAEncryption, .sha256WithRSAEncryption, .sha384WithRSAEncryption, .sha512WithRSAEncryption:
+                let signature = _RSA.Signing.RSASignature(rawRepresentation: signatureBytes.bytes)
+                self.backing = .rsa(signature)
+            case .ed25519:
+                guard signatureBytes.paddingBits == 0 else {
+                    throw CertificateError.invalidSignatureForCertificate(
+                        reason: "No padding bits are allowed on Ed25519 signatures"
+                    )
+                }
+                let signature = Data(signatureBytes.bytes)
+                self.backing = .ed25519(signature)
+            default:
+                throw CertificateError.unsupportedSignatureAlgorithm(reason: "\(signatureAlgorithm)")
+            }
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.Signature: Hashable {}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.Signature: Sendable {}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.Signature: CustomStringConvertible {
+    public var description: String {
+        switch backing {
+        case .ecdsa:
+            return "ECDSA"
+        case .rsa:
+            return "RSA"
+        case .ed25519:
+            return "Ed25519"
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.Signature {
+    @usableFromInline
+    enum BackingSignature: Hashable, Sendable {
+        case ecdsa(ECDSASignature)
+        case rsa(_CryptoExtras._RSA.Signing.RSASignature)
+        case ed25519(Data)
+
+        @inlinable
+        static func == (lhs: BackingSignature, rhs: BackingSignature) -> Bool {
+            switch (lhs, rhs) {
+            case (.ecdsa(let l), .ecdsa(let r)):
+                return l == r
+            case (.rsa(let l), .rsa(let r)):
+                return l.rawRepresentation == r.rawRepresentation
+            case (.ed25519(let l), .ed25519(let r)):
+                return l == r
+            default:
+                return false
+            }
+        }
+
+        @inlinable
+        func hash(into hasher: inout Hasher) {
+            switch self {
+            case .ecdsa(let sig):
+                hasher.combine(0)
+                hasher.combine(sig)
+            case .rsa(let digest):
+                hasher.combine(1)
+                hasher.combine(digest.rawRepresentation)
+            case .ed25519(let sig):
+                hasher.combine(2)
+                hasher.combine(sig)
+            }
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension ASN1BitString {
+    @inlinable
+    init(_ signature: Certificate.Signature) {
+        switch signature.backing {
+        case .ecdsa(let sig):
+            var serializer = DER.Serializer()
+            try! serializer.serialize(sig)
+            self = ASN1BitString(bytes: serializer.serializedBytes[...])
+        case .rsa(let sig):
+            self = ASN1BitString(bytes: ArraySlice(sig.rawRepresentation))
+        case .ed25519(let sig):
+            self = ASN1BitString(bytes: ArraySlice(sig))
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension ASN1OctetString {
+    @inlinable
+    init(_ signature: Certificate.Signature) {
+        switch signature.backing {
+        case .ecdsa(let sig):
+            var serializer = DER.Serializer()
+            try! serializer.serialize(sig)
+            self = ASN1OctetString(contentBytes: serializer.serializedBytes[...])
+        case .rsa(let sig):
+            self = ASN1OctetString(contentBytes: ArraySlice(sig.rawRepresentation))
+        case .ed25519(let sig):
+            self = ASN1OctetString(contentBytes: ArraySlice(sig))
+        }
+    }
+}
+
+ 
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P256.Signing.PublicKey {
+    @inlinable
+    internal func isValidSignature<Bytes: DataProtocol>(
+        _ signature: Certificate.Signature,
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) -> Bool {
+        guard case .ecdsa(let rawInnerSignature) = signature.backing,
+            let innerSignature = P256.Signing.ECDSASignature(rawInnerSignature)
+        else {
+             
+            return false
+        }
+
+        switch signatureAlgorithm {
+        case .ecdsaWithSHA256:
+            return self.isValidSignature(innerSignature, for: SHA256.hash(data: bytes))
+        case .ecdsaWithSHA384:
+            return self.isValidSignature(innerSignature, for: SHA384.hash(data: bytes))
+        case .ecdsaWithSHA512:
+            return self.isValidSignature(innerSignature, for: SHA512.hash(data: bytes))
+        default:
+            return false
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P384.Signing.PublicKey {
+    @inlinable
+    internal func isValidSignature<Bytes: DataProtocol>(
+        _ signature: Certificate.Signature,
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) -> Bool {
+        guard case .ecdsa(let rawInnerSignature) = signature.backing,
+            let innerSignature = P384.Signing.ECDSASignature(rawInnerSignature)
+        else {
+             
+            return false
+        }
+
+        switch signatureAlgorithm {
+        case .ecdsaWithSHA256:
+            return self.isValidSignature(innerSignature, for: SHA256.hash(data: bytes))
+        case .ecdsaWithSHA384:
+            return self.isValidSignature(innerSignature, for: SHA384.hash(data: bytes))
+        case .ecdsaWithSHA512:
+            return self.isValidSignature(innerSignature, for: SHA512.hash(data: bytes))
+        default:
+            return false
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P521.Signing.PublicKey {
+    @inlinable
+    internal func isValidSignature<Bytes: DataProtocol>(
+        _ signature: Certificate.Signature,
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) -> Bool {
+        guard case .ecdsa(let rawInnerSignature) = signature.backing,
+            let innerSignature = P521.Signing.ECDSASignature(rawInnerSignature)
+        else {
+             
+            return false
+        }
+
+        switch signatureAlgorithm {
+        case .ecdsaWithSHA256:
+            return self.isValidSignature(innerSignature, for: SHA256.hash(data: bytes))
+        case .ecdsaWithSHA384:
+            return self.isValidSignature(innerSignature, for: SHA384.hash(data: bytes))
+        case .ecdsaWithSHA512:
+            return self.isValidSignature(innerSignature, for: SHA512.hash(data: bytes))
+        default:
+            return false
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension _RSA.Signing.PublicKey {
+    @inlinable
+    internal func isValidSignature<Bytes: DataProtocol>(
+        _ signature: Certificate.Signature,
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) -> Bool {
+        guard case .rsa(let innerSignature) = signature.backing else {
+             
+            return false
+        }
+         
+        let padding = _RSA.Signing.Padding.insecurePKCS1v1_5
+
+        switch signatureAlgorithm {
+        case .sha1WithRSAEncryption:
+            return self.isValidSignature(innerSignature, for: Insecure.SHA1.hash(data: bytes), padding: padding)
+        case .sha256WithRSAEncryption:
+            return self.isValidSignature(innerSignature, for: SHA256.hash(data: bytes), padding: padding)
+        case .sha384WithRSAEncryption:
+            return self.isValidSignature(innerSignature, for: SHA384.hash(data: bytes), padding: padding)
+        case .sha512WithRSAEncryption:
+            return self.isValidSignature(innerSignature, for: SHA512.hash(data: bytes), padding: padding)
+        default:
+            return false
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Curve25519.Signing.PublicKey {
+    @inlinable
+    internal func isValidSignature<Bytes: DataProtocol>(
+        _ signature: Certificate.Signature,
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) -> Bool {
+        guard case .ed25519(let rawInnerSignature) = signature.backing else {
+             
+            return false
+        }
+
+        switch signatureAlgorithm {
+        case .ed25519:
+            return self.isValidSignature(rawInnerSignature, for: bytes)
+        default:
+            return false
+        }
+    }
+}
+
+ 
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P256.Signing.PrivateKey {
+    @inlinable
+    func signature<Bytes: DataProtocol>(
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) throws -> Certificate.Signature {
+        let signature: P256.Signing.ECDSASignature
+
+        switch signatureAlgorithm {
+        case .ecdsaWithSHA256:
+            signature = try self.signature(for: SHA256.hash(data: bytes))
+        case .ecdsaWithSHA384:
+            signature = try self.signature(for: SHA384.hash(data: bytes))
+        case .ecdsaWithSHA512:
+            signature = try self.signature(for: SHA512.hash(data: bytes))
+        default:
+            throw CertificateError.unsupportedSignatureAlgorithm(
+                reason: "Cannot use \(signatureAlgorithm) with ECDSA key"
+            )
+        }
+
+        return Certificate.Signature(backing: .ecdsa(.init(signature)))
+    }
+}
+
+#if canImport(Darwin)
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension SecureEnclave.P256.Signing.PrivateKey {
+    @inlinable
+    func signature<Bytes: DataProtocol>(
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) throws -> Certificate.Signature {
+        let signature: P256.Signing.ECDSASignature
+
+        switch signatureAlgorithm {
+        case .ecdsaWithSHA256:
+            signature = try self.signature(for: SHA256.hash(data: bytes))
+        case .ecdsaWithSHA384:
+            signature = try self.signature(for: SHA384.hash(data: bytes))
+        case .ecdsaWithSHA512:
+            signature = try self.signature(for: SHA512.hash(data: bytes))
+        default:
+            throw CertificateError.unsupportedSignatureAlgorithm(
+                reason: "Cannot use \(signatureAlgorithm) with ECDSA key"
+            )
+        }
+
+        return Certificate.Signature(backing: .ecdsa(.init(signature)))
+    }
+}
+#endif
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P384.Signing.PrivateKey {
+    @inlinable
+    func signature<Bytes: DataProtocol>(
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) throws -> Certificate.Signature {
+        let signature: P384.Signing.ECDSASignature
+
+        switch signatureAlgorithm {
+        case .ecdsaWithSHA256:
+            signature = try self.signature(for: SHA256.hash(data: bytes))
+        case .ecdsaWithSHA384:
+            signature = try self.signature(for: SHA384.hash(data: bytes))
+        case .ecdsaWithSHA512:
+            signature = try self.signature(for: SHA512.hash(data: bytes))
+        default:
+            throw CertificateError.unsupportedSignatureAlgorithm(
+                reason: "Cannot use \(signatureAlgorithm) with ECDSA key"
+            )
+        }
+
+        return Certificate.Signature(backing: .ecdsa(.init(signature)))
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension P521.Signing.PrivateKey {
+    @inlinable
+    func signature<Bytes: DataProtocol>(
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) throws -> Certificate.Signature {
+        let signature: P521.Signing.ECDSASignature
+
+        switch signatureAlgorithm {
+        case .ecdsaWithSHA256:
+            signature = try self.signature(for: SHA256.hash(data: bytes))
+        case .ecdsaWithSHA384:
+            signature = try self.signature(for: SHA384.hash(data: bytes))
+        case .ecdsaWithSHA512:
+            signature = try self.signature(for: SHA512.hash(data: bytes))
+        default:
+            throw CertificateError.unsupportedSignatureAlgorithm(
+                reason: "Cannot use \(signatureAlgorithm) with ECDSA key"
+            )
+        }
+
+        return Certificate.Signature(backing: .ecdsa(.init(signature)))
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension _RSA.Signing.PrivateKey {
+    @inlinable
+    func signature<Bytes: DataProtocol>(
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) throws -> Certificate.Signature {
+        let signature: _RSA.Signing.RSASignature
+         
+        let padding = _RSA.Signing.Padding.insecurePKCS1v1_5
+
+        switch signatureAlgorithm {
+        case .sha1WithRSAEncryption:
+            signature = try self.signature(for: Insecure.SHA1.hash(data: bytes), padding: padding)
+        case .sha256WithRSAEncryption:
+            signature = try self.signature(for: SHA256.hash(data: bytes), padding: padding)
+        case .sha384WithRSAEncryption:
+            signature = try self.signature(for: SHA384.hash(data: bytes), padding: padding)
+        case .sha512WithRSAEncryption:
+            signature = try self.signature(for: SHA512.hash(data: bytes), padding: padding)
+        default:
+            throw CertificateError.unsupportedSignatureAlgorithm(
+                reason: "Cannot use \(signatureAlgorithm) with RSA key"
+            )
+        }
+
+        return Certificate.Signature(backing: .rsa(signature))
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Curve25519.Signing.PrivateKey {
+    @inlinable
+    func signature<Bytes: DataProtocol>(
+        for bytes: Bytes,
+        signatureAlgorithm: Certificate.SignatureAlgorithm
+    ) throws -> Certificate.Signature {
+        let signature: Data
+
+        switch signatureAlgorithm {
+        case .ed25519:
+            signature = try self.signature(for: bytes)
+        default:
+            throw CertificateError.unsupportedSignatureAlgorithm(
+                reason: "Cannot use \(signatureAlgorithm) with Ed25519 key"
+            )
+        }
+
+        return Certificate.Signature(backing: .ed25519(.init(signature)))
+    }
+}

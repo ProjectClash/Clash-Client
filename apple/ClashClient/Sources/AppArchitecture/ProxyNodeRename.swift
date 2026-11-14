@@ -251,26 +251,21 @@ enum ProxyNodeRename {
      
      
      
+     
+     
+     
+     
     static func renamingRulePolicy(
         in rule: String, from old: String, to new: String
     ) -> String {
-        let modifiers: Set<String> = ["no-resolve", "src"]
         var parts = rule.components(separatedBy: ",")
-        guard parts.count >= 2 else { return rule }
          
          
          
         if parts[0].trimmingCharacters(in: .whitespaces).uppercased() == "SUB-RULE" {
             return rule
         }
-        var index = parts.count - 1
-        while index > 0,
-              modifiers.contains(
-                parts[index].trimmingCharacters(in: .whitespaces).lowercased()
-              ) {
-            index -= 1
-        }
-        guard index > 0 else { return rule }
+        guard let index = StructuredRule.coreTargetIndex(head: parts[0], fieldCount: parts.count) else { return rule }
         let policy = parts[index].trimmingCharacters(in: .whitespaces)
         guard policy == old else { return rule }
          

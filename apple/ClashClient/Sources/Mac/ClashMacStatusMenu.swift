@@ -56,6 +56,10 @@ struct ClashMacStatusMenuActions {
      
      
     var openGroup: (_ group: String) -> Void = { _ in }
+     
+     
+     
+    var currentMember: (_ group: String) -> String? = { _ in nil }
     var setShowsSpeedInMenuBar: (Bool) -> Void = { _ in }
     var setHidesDockIcon: (Bool) -> Void = { _ in }
     var openSettings: () -> Void = {}
@@ -102,7 +106,8 @@ enum ClashMacStatusMenuBuilder {
     static func makeMenu(
         _ snapshot: ClashMacStatusMenuSnapshot,
         actions: ClashMacStatusMenuActions,
-        locale: Locale = .current
+        locale: Locale = .current,
+        showsIconImages: Bool? = nil
     ) -> NSMenu {
         let menu = plainMenu()
 
@@ -141,7 +146,7 @@ enum ClashMacStatusMenuBuilder {
          
          
          
-        let mode = NSMenuItem(title: copy("Mode"), action: nil, keyEquivalent: "")
+        let mode = ClashMacTrailingMenuItem(title: copy("Mode"))
         mode.setAccessibilityIdentifier("menu-bar.outbound-mode")
         setTrailing(copy(snapshot.outboundMode.menuTitle), on: mode)
         let modes = plainMenu()
@@ -155,7 +160,8 @@ enum ClashMacStatusMenuBuilder {
         menu.addItem(mode)
 
         if let route = snapshot.selectedRouteName {
-            menu.addItem(label(route))
+             
+            menu.addItem(label(ClashMacMenuRowMetrics.middleTruncated(route, width: ClashMacMenuRowMetrics.routeNameCap)))
         }
 
          
@@ -163,12 +169,19 @@ enum ClashMacStatusMenuBuilder {
          
          
          
+         
+         
+         
+        let connected = snapshot.phase == .connected
+        let justConnected = connected && !Self.lastBuiltConnected
+        Self.lastBuiltConnected = connected
         if !snapshot.proxies.groups.isEmpty {
             menu.addItem(.separator())
+            let drawsImages = showsIconImages ?? Self.proxiesPageDrawsIconImages()
             for group in snapshot.proxies.groups {
-                let item = NSMenuItem(title: group.name, action: nil, keyEquivalent: "")
+                let item = ClashMacTrailingMenuItem(title: group.name)
                 item.setAccessibilityIdentifier("menu-bar.proxy-group")
-                item.attributedTitle = groupTitle(name: group.name, type: group.type)
+                setGroupTitle(group, on: item, showsIconImages: drawsImages, forgetsRefusal: justConnected)
                 if group.isEmpty {
                      
                     setTrailing(copy("No nodes"), on: item)
@@ -176,7 +189,9 @@ enum ClashMacStatusMenuBuilder {
                     menu.addItem(item)
                     continue
                 }
-                setTrailing(group.checked ?? "", on: item)
+                setGroupTrailing(
+                    member: group.checked, reading: group.checked.map(group.orderReading(of:)), on: item,
+                    reserving: reservedTrailingWidth(group, live: actions.currentMember(group.name)))
                 let submenu = plainMenu()
                 let lazy = ClashMacProxySubmenuController(
                     group: { group }, actions: actions, locale: locale
@@ -245,6 +260,8 @@ enum ClashMacStatusMenuBuilder {
             ))
         }
         menu.addItem(row(copy("Quit Clash"), identifier: "menu-bar.quit", actions.quit))
+         
+        layOutTrailing(menu)
         return menu
     }
 
@@ -257,29 +274,255 @@ enum ClashMacStatusMenuBuilder {
     }
 
      
+
+     
+    static func readingSuffix(_ reading: ClashProxyLatencyState?) -> String {
+        let text = reading.map(ClashMacMenuRowModel.latencyText) ?? ""
+        return text.isEmpty ? "" : "  \(text)"
+    }
+
+    private static func trailingWidth(_ text: String) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: ClashMacMenuRowMetrics.trailingFont]).width
+    }
+
      
      
      
      
-    private static func setTrailing(_ text: String, on item: NSMenuItem) {
-        guard !text.isEmpty else { return }
-        if #available(macOS 14, *) {
-            item.badge = NSMenuItemBadge(string: text)
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func reservedTrailingWidth(_ group: ClashMacMenuProxyCatalog.Group, live: String? = nil) -> CGFloat {
+        let held = group.latency.values.compactMap { state -> Int? in
+            if case .measured(let milliseconds) = state { return milliseconds } else { return nil }
+        }.max() ?? 0
+        let digits = max(4, String(held).count)
+        let attributes: [NSAttributedString.Key: Any] = [.font: ClashMacMenuRowMetrics.trailingFont]
+        func width(_ text: String) -> CGFloat { (text as NSString).size(withAttributes: attributes).width }
+        let reading = width(readingSuffix(.measured(milliseconds: Int(String(repeating: "8", count: digits)) ?? 8_888)))
+        let picked = [group.checked, live].compactMap { $0 }
+        let members = group.pinsOnRepick ? group.members + picked : picked
+        var widest: CGFloat = 0
+        for member in members {
+            widest = max(widest, width(member))
+            if widest + reading >= ClashMacMenuRowMetrics.menuWidthCap { break }
+        }
+        return widest == 0 ? 0 : widest + reading
+    }
+
+     
+    static func setTrailing(_ text: String, on item: NSMenuItem) {
+        guard let row = item as? ClashMacTrailingMenuItem else { return }
+        row.plain = text
+        row.reserved = trailingWidth(text)
+        row.compose()
+    }
+
+     
+     
+     
+    static func setGroupTrailing(
+        member: String?, reading: ClashProxyLatencyState?, on item: NSMenuItem, reserving reserved: CGFloat? = nil
+    ) {
+        guard let row = item as? ClashMacTrailingMenuItem else { return }
+        row.member = member
+        row.reading = reading
+        if let reserved { row.reserved = reserved }
+        row.compose()
+    }
+
+     
+     
+    static func setName(_ name: NSAttributedString, on item: NSMenuItem) {
+        guard let row = item as? ClashMacTrailingMenuItem else {
+            item.attributedTitle = name
+            return
+        }
+        row.name = name
+        row.compose(rewriting: true)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func layOutTrailing(_ menu: NSMenu) {
+        let rows = menu.items.compactMap { $0 as? ClashMacTrailingMenuItem }
+        guard !rows.isEmpty else { return }
+        let needed = rows.map { $0.name.size().width + ClashMacMenuRowMetrics.trailingGap + $0.reserved }.max() ?? 0
+        let widestOther = menu.items.filter { !($0 is ClashMacTrailingMenuItem) && !$0.isSeparatorItem }.map { item in
+            (item.attributedTitle ?? NSAttributedString(string: item.title, attributes: [.font: ClashMacMenuRowMetrics.font])).size().width
+        }.max() ?? 0
+        func lay(_ stop: CGFloat) {
+            for row in rows {
+                row.stop = stop
+                row.compose(rewriting: true)
+            }
+        }
+        var stop = max(min(needed, ClashMacMenuRowMetrics.menuWidthCap), widestOther).rounded(.up)
+        lay(stop)
+        let over = menu.size.width - ClashMacMenuRowMetrics.menuWidthCap
+        guard over > 0 else { return }
+        let widestName = rows.map { $0.name.size().width }.max() ?? 0
+        let least = max(widestOther, widestName + ClashMacMenuRowMetrics.trailingGap + ClashMacMenuRowMetrics.leastTrailingRoom)
+        stop = max(stop - over, least).rounded(.down)
+        lay(stop)
+    }
+
+     
+     
+     
+    static func trailingText(member: String?, reading: ClashProxyLatencyState?, room: CGFloat) -> String {
+        guard let member, !member.isEmpty else { return "" }
+        let suffix = readingSuffix(reading)
+        let cut = ClashMacMenuRowMetrics.middleTruncated(
+            member, width: room - trailingWidth(suffix), font: ClashMacMenuRowMetrics.trailingFont, keepsTail: true
+        )
+        return (trailingWidth(cut) < trailingWidth(member) ? cut : member) + suffix
+    }
+
+     
+     
+    enum GroupIcon {
+        case text(String)
+        case image(NSImage)
+    }
+
+     
+     
+    static var groupIconSide: CGFloat { (ClashMacMenuRowMetrics.pointSize + 2).rounded() }
+
+     
+     
+     
+     
+     
+    static func groupIcon(_ icon: String?, showsIconImages: Bool) -> GroupIcon? {
+        switch ClashProxyGroupIconKind.of(icon) {
+        case .emoji(let text):
+            return .text(text)
+        case .symbol(let symbol):
+             
+             
+            let configuration = NSImage.SymbolConfiguration(pointSize: ClashMacMenuRowMetrics.pointSize, weight: .regular)
+                .applying(.init(hierarchicalColor: .secondaryLabelColor))
+            let image = symbol.isCustom
+                ? NSImage(named: symbol.rawValue)
+                : NSImage(systemSymbolName: ClashSymbol.platformName(symbol), accessibilityDescription: nil)
+            return image?.withSymbolConfiguration(configuration).map(GroupIcon.image)
+        case .remote where showsIconImages:
+            return .image(roundedIcon(nil))
+        case .remote, .unrecognized, .none:
+            return nil
+        }
+    }
+
+     
+     
+    static func roundedIcon(_ image: CGImage?) -> NSImage {
+        let side = groupIconSide
+        return NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            let corner = side * ClashClientUI.ClashTheme.Layout.proxyGroupIconCornerRadius
+                / ClashClientUI.ClashTheme.Layout.proxyGroupIconSize
+            NSBezierPath(roundedRect: rect, xRadius: corner, yRadius: corner).addClip()
+            if let image {
+                 
+                let scale = min(rect.width / CGFloat(image.width), rect.height / CGFloat(image.height))
+                let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
+                NSGraphicsContext.current?.cgContext.draw(image, in: CGRect(
+                    x: rect.midX - size.width / 2, y: rect.midY - size.height / 2,
+                    width: size.width, height: size.height))
+            } else {
+                NSColor.quaternaryLabelColor.setFill()
+                rect.fill()
+            }
+            return true
         }
     }
 
      
      
      
-    static func groupTitle(name: String, type: String) -> NSAttributedString {
+     
+    static func groupTitle(name: String, icon: GroupIcon? = nil) -> NSAttributedString {
         let font = ClashMacMenuRowMetrics.font
-        let title = NSMutableAttributedString(string: name, attributes: [.font: font])
-        guard !type.isEmpty else { return title }
-        title.append(NSAttributedString(string: " · \(type)", attributes: [
-            .font: NSFont.menuFont(ofSize: font.pointSize - 2),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]))
+        let title = NSMutableAttributedString()
+        switch icon {
+        case .text(let text):
+             
+             
+            let icon = ClashMacMenuRowMetrics.middleTruncated(text, width: ClashMacMenuRowMetrics.groupNameCap / 4, font: font)
+            title.append(NSAttributedString(string: icon + " ", attributes: [.font: font]))
+        case .image(let image):
+            let attachment = NSTextAttachment()
+            attachment.image = image
+             
+             
+            let side = groupIconSide
+            let width = image.size.height > 0 ? (side * image.size.width / image.size.height).rounded() : side
+            attachment.bounds = CGRect(x: 0, y: (font.capHeight - side) / 2, width: width, height: side)
+            title.append(NSAttributedString(attachment: attachment))
+            title.append(NSAttributedString(string: " ", attributes: [.font: font]))
+        case nil:
+            break
+        }
+        let room = ClashMacMenuRowMetrics.groupNameCap - title.size().width
+        title.append(NSAttributedString(string: ClashMacMenuRowMetrics.middleTruncated(name, width: room, font: font),
+                                        attributes: [.font: font]))
         return title
+    }
+
+     
+     
+     
+    private static func setGroupTitle(
+        _ group: ClashMacMenuProxyCatalog.Group,
+        on item: NSMenuItem,
+        showsIconImages: Bool,
+        forgetsRefusal: Bool
+    ) {
+        let icon = groupIcon(group.icon, showsIconImages: showsIconImages)
+        setName(groupTitle(name: group.name, icon: icon), on: item)
+        guard case .remote = ClashProxyGroupIconKind.of(group.icon), showsIconImages, let address = group.icon else { return }
+        let name = group.name
+         
+         
+        let key = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { @MainActor [weak item] in
+            if forgetsRefusal { await ProxyGroupIconStore.shared.forgetRefusal(for: key) }
+            let image = await ProxyGroupIconStore.shared.image(for: key)
+            guard let item else { return }
+             
+             
+            setName(groupTitle(name: name, icon: image.map { .image(roundedIcon($0)) }), on: item)
+        }
+    }
+
+     
+    private static var lastBuiltConnected = false
+
+     
+     
+    static func proxiesPageDrawsIconImages() -> Bool {
+        (ClashProxiesDisplayPreferences.uiTestOverride() ?? ClashProxiesDisplayPreferences.load()).groupIconImages
     }
 
      
@@ -381,6 +624,9 @@ final class ClashMacStatusMenuController: NSObject, NSMenuDelegate {
      
      
     var isListening: Bool { !listening.isEmpty }
+     
+     
+    private var latestLatency: [String: [String: ClashProxyLatencyState]] = [:]
 
     init(
         snapshot: @escaping () -> ClashMacStatusMenuSnapshot,
@@ -421,6 +667,10 @@ final class ClashMacStatusMenuController: NSObject, NSMenuDelegate {
         for item in built.items {
             built.removeItem(item)
             menu.addItem(item)
+            if let submenu = item.representedObject as? ClashMacProxySubmenuController,
+               let name = submenu.groupName {
+                submenu.latestReadings = { [weak self] in self?.latestLatency[name] }
+            }
         }
     }
 
@@ -463,8 +713,18 @@ final class ClashMacStatusMenuController: NSObject, NSMenuDelegate {
         item.isEnabled = current.offersShellCommand
     }
 
+     
+     
+     
+    func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
+        for case let row as ClashMacTrailingMenuItem in menu.items {
+            row.isUnderHighlight = row === item
+        }
+    }
+
     func menuDidClose(_ menu: NSMenu) {
         listening.removeAll()
+        latestLatency = [:]
         menu.removeAllItems()
     }
 
@@ -473,10 +733,18 @@ final class ClashMacStatusMenuController: NSObject, NSMenuDelegate {
      
      
     func apply(latency: [String: [String: ClashProxyLatencyState]]) {
+        latestLatency = latency
         for item in menu.items {
             guard let submenu = item.representedObject as? ClashMacProxySubmenuController,
                   let name = submenu.groupName else { continue }
             submenu.apply(latency: latency[name] ?? [:])
+             
+             
+             
+            let member = actions.currentMember(name) ?? submenu.checkedName
+            if let member, let fresh = latency[name]?[member], fresh != .testing {
+                ClashMacStatusMenuBuilder.setGroupTrailing(member: member, reading: fresh, on: item)
+            }
         }
     }
 
@@ -551,3 +819,87 @@ extension ClashMacStatusMenuSnapshot {
     )
 }
 
+
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@MainActor
+final class ClashMacTrailingMenuItem: NSMenuItem {
+     
+    let spokenName: String
+    var name: NSAttributedString
+    var plain: String?
+    var member: String?
+    var reading: ClashProxyLatencyState?
+     
+    var reserved: CGFloat = 0
+     
+    var stop: CGFloat = 0
+    var isUnderHighlight = false {
+        didSet { if isUnderHighlight != oldValue { compose(rewriting: true) } }
+    }
+
+    init(title: String) {
+        spokenName = title
+        name = NSAttributedString(string: title, attributes: [.font: ClashMacMenuRowMetrics.font])
+        super.init(title: title, action: nil, keyEquivalent: "")
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) {
+        fatalError("not archived")
+    }
+
+     
+    var trailingText: String {
+        if let plain { return plain }
+        let room = stop - ClashMacMenuRowMetrics.trailingGap - name.size().width
+        return ClashMacStatusMenuBuilder.trailingText(member: member, reading: reading, room: room)
+    }
+
+    func compose(rewriting: Bool = false) {
+         
+        guard stop > 0 else {
+            attributedTitle = name
+            return
+        }
+        let text = trailingText
+         
+        let spokenTrailing = plain ?? ((member ?? "") + ClashMacStatusMenuBuilder.readingSuffix(reading))
+        setAccessibilityTitle(spokenTrailing.isEmpty ? spokenName : "\(spokenName), \(spokenTrailing)")
+         
+        if !rewriting, attributedTitle?.string == name.string + (text.isEmpty ? "" : "\t" + text) { return }
+        guard !text.isEmpty else {
+            attributedTitle = name
+            return
+        }
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [NSTextTab(textAlignment: .right, location: stop)]
+        style.lineBreakMode = .byClipping
+        let title = NSMutableAttributedString(attributedString: name)
+        let font = ClashMacMenuRowMetrics.trailingFont
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+             
+            .baselineOffset: (ClashMacMenuRowMetrics.font.capHeight - font.capHeight) / 2,
+        ]
+         
+         
+        if isEnabled, !isUnderHighlight { attributes[.foregroundColor] = NSColor.secondaryLabelColor }
+        title.append(NSAttributedString(string: "\t" + text, attributes: attributes))
+        title.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: title.length))
+        attributedTitle = title
+    }
+}

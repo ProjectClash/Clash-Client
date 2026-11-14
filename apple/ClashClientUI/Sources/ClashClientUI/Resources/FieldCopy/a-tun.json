@@ -63,9 +63,9 @@
       "zh-Hant": "處理 TUN 流量的網路堆疊，沒有問題就保持預設。"
     },
     "unset": {
-      "en": "gVisor",
-      "zh-Hans": "gVisor",
-      "zh-Hant": "gVisor"
+      "en": "sing-box stack (Go)",
+      "zh-Hans": "sing-box 协议栈（Go）",
+      "zh-Hant": "sing-box 協定堆疊（Go）"
     },
     "presets": [
       {
@@ -95,16 +95,24 @@
       {
         "value": "mips",
         "label": {
-          "en": "mipstack",
-          "zh-Hans": "mipstack",
-          "zh-Hant": "mipstack"
+          "en": "mihomo stack (MIPS)",
+          "zh-Hans": "mihomo 协议栈（MIPS）",
+          "zh-Hant": "mihomo 協定堆疊（MIPS）"
+        }
+      },
+      {
+        "value": "go",
+        "label": {
+          "en": "sing-box stack (Go)",
+          "zh-Hans": "sing-box 协议栈（Go）",
+          "zh-Hant": "sing-box 協定堆疊（Go）"
         }
       }
     ],
     "platform": {
-      "en": "While Include All Networks is on, System and Mixed run as gVisor; gVisor and MIPS run as written.",
-      "zh-Hans": "开启「包含所有网络」时，System 和 Mixed 按 gVisor 运行；gVisor 和 MIPS 照写的运行。",
-      "zh-Hant": "開啟「包含所有網路」時，System 和 Mixed 以 gVisor 執行；gVisor 和 MIPS 依寫的執行。"
+      "en": "The tunnel always runs the sing-box (Go) stack, whatever stack the file names.",
+      "zh-Hans": "隧道一律运行 sing-box 协议栈（Go），不管文件写的是哪个栈。",
+      "zh-Hant": "隧道一律執行 sing-box 協定堆疊（Go），不管檔案寫的是哪個堆疊。"
     }
   },
   "tun.congestion-controller": {
@@ -114,9 +122,9 @@
       "zh-Hant": "TCP 壅塞控制"
     },
     "summary": {
-      "en": "The congestion control for TCP inside the tunnel; only mipstack uses it.",
-      "zh-Hans": "隧道内 TCP 的拥塞控制算法，只有 mipstack 使用。",
-      "zh-Hant": "隧道內 TCP 的壅塞控制演算法，只有 mipstack 使用。"
+      "en": "The congestion control for TCP inside the tunnel.",
+      "zh-Hans": "隧道内 TCP 的拥塞控制算法。",
+      "zh-Hant": "隧道內 TCP 的壅塞控制演算法。"
     },
     "unset": {
       "en": "CUBIC",
@@ -1091,9 +1099,9 @@
       "zh-Hant": "在 macOS 上批次讀取 TUN 封包。"
     },
     "platform": {
-      "en": "Off here: the tunnel receives packets the normal way.",
-      "zh-Hans": "这里固定关闭，隧道用普通方式收包。",
-      "zh-Hant": "這裡固定關閉，通道用一般方式收封包。"
+      "en": "Decided here when the tunnel starts: on where it reads its own network interface, off where it cannot find one.",
+      "zh-Hans": "这里由隧道启动时自己决定：读到自己的虚拟网卡就开启，读不到才关。",
+      "zh-Hant": "這裡由通道啟動時自己決定：讀到自己的虛擬網卡就開啟，讀不到才關。"
     }
   },
   "tun.sendmsgx": {

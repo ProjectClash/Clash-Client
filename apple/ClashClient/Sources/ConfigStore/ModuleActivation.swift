@@ -149,7 +149,7 @@ struct ModuleActivationInput: Equatable, Sendable {
         var input = ModuleActivationInput(manifest: manifest, engine: engine,
                                            geodataDirectory: locations.container.appendingPathComponent("working", isDirectory: true))
         input.ruleSetCopiesDirectory = locations.ruleSetCopiesDirectory
-        input.lanPermitted = LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+        input.lanPermitted = LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
         return input
     }
 }
@@ -188,6 +188,15 @@ enum ModuleDegradeReason: Equatable, Sendable {
     case engineNameTaken
      
     case notApplied(AuthoredText)
+     
+     
+     
+     
+    case snifferWrittenOff(String)
+     
+     
+     
+    case snifferNotCompleted
 
      
      
@@ -226,18 +235,53 @@ enum ModuleDegradeReason: Equatable, Sendable {
             return .app("The certificate page can't open with the current configuration.")
          
          
-        case .groupsNotAdjustable, .sectionNotAdjustable, .alreadyPublished:
-            return .app("With the current configuration, only the rules in your modules work.")
+         
+         
+         
+        case .groupsNotAdjustable, .sectionNotAdjustable:
+            return .app("Rewrites and scripts can't work with how this configuration is written, so only the rules in your modules work; Clash can't change this.")
+        case .alreadyPublished:
+            return .app("This configuration was exported from Clash, so only the rules in your modules work; import the original configuration to use rewrites and scripts too.")
         case .moduleRulesLeftOut:
+             
+             
             return .app("Some rules don't fit the current configuration, so they were skipped.")
         case .moduleEntriesLeftOut:
             return .app("Some module lines could not be read, so they were skipped.")
         case .moduleSettingsLeftOut:
-            return .app("Some module settings can't be used with this configuration, so they were skipped.")
+             
+             
+            return .app("Some module settings can't be used with this configuration and were skipped; a module's details list them.")
         case .engineNameTaken:
              
              
             return .app("A proxy in the current configuration is named “%@”, so HTTPS Decryption is off; rename that proxy to turn HTTPS Decryption back on.", arguments: [ModuleActivationStep.engineProxyName])
+        case .snifferWrittenOff(let keys):
+             
+             
+             
+             
+             
+             
+             
+            let names = Self.snifferSwitchNames(keys)
+             
+             
+            guard !names.isEmpty else {
+                return .app(Self.snifferWrittenOffInSectionSentence, arguments: [Self.snifferSwitchName])
+            }
+            return .app(Self.snifferWrittenOffSentence(count: names.count), arguments: names)
+        case .snifferNotCompleted:
+             
+             
+             
+             
+             
+             
+             
+             
+            return .app("Clash couldn't add what modules need to your configuration's “%@”, so they may not work in some apps; choose On in its menu, not Follow profile, and save.",
+                        arguments: [Self.snifferSwitchName])
         case .notApplied(let text):
              
             return ModuleStoredSentence.current(text)
@@ -250,6 +294,73 @@ enum ModuleDegradeReason: Equatable, Sendable {
      
     static let refusedWithModules = ModuleDegradeReason.notApplied(
         .app("Modules cannot be used with this configuration, so it runs without them."))
+
+     
+     
+     
+     
+     
+     
+    static let snifferSwitchName = "Sniffer"
+    static let snifferSwitchNames: [(key: String, name: String)] = [
+        ("enable", snifferSwitchName),
+        ("force-dns-mapping", "Sniff DNS-mapped traffic"),
+        ("parse-pure-ip", "Sniff pure-IP traffic"),
+    ]
+
+     
+     
+    static func snifferSwitchNames(_ keys: String) -> [String] {
+        let needed = Set(snifferKeys(keys))
+        return snifferSwitchNames.filter { needed.contains($0.key) }.map(\.name)
+    }
+
+     
+     
+     
+    static func snifferKeys(_ keys: String) -> [String] {
+        let written = Set(keys.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+        return snifferSwitchNames.map(\.key).filter(written.contains)
+    }
+
+     
+     
+     
+     
+     
+    static func macSnifferWrittenOffSentence(count: Int) -> String {
+        switch count {
+        case ...1:
+            return "Your configuration turns off “%@”, so modules may not work in some apps; turn it on to fix this."
+        case 2:
+            return "Your configuration turns off “%@” and “%@”, so modules may not work in some apps; turn them on to fix this."
+        default:
+            return "Your configuration turns off “%@”, “%@” and “%@”, so modules may not work in some apps; turn them on to fix this."
+        }
+    }
+    static let macSnifferWrittenOffInSectionSentence =
+        "Your configuration turns off a setting modules need in “%@”, so they may not work in some apps; turn it on there to fix this."
+    static let macSnifferNotCompletedSentence =
+        "Clash couldn't add what modules need to your configuration, so they may not work in some apps; turn on “%@”, or if it's already on, turn it off and back on."
+
+     
+     
+     
+    static let snifferWrittenOffInSectionSentence =
+        "Your configuration turns off a setting modules need in “%@”, so they may not work in some apps; set it to On there to fix this."
+
+     
+     
+    static func snifferWrittenOffSentence(count: Int) -> String {
+        switch count {
+        case ...1:
+            return "Your configuration turns off “%@”, so modules may not work in some apps; set it to On to fix this."
+        case 2:
+            return "Your configuration turns off “%@” and “%@”, so modules may not work in some apps; set them to On to fix this."
+        default:
+            return "Your configuration turns off “%@”, “%@” and “%@”, so modules may not work in some apps; set them to On to fix this."
+        }
+    }
 }
 
  
@@ -653,9 +764,6 @@ enum ModuleActivationStep {
         var namesANodeLibrary = false
          
         var namesARuleIndex = false
-         
-         
-        var readerSnifferGaps: [String]?
     }
 
     static func ipv4(_ text: String) -> UInt32? {
@@ -775,9 +883,6 @@ enum ModuleActivationStep {
             facts.routeSetsDeclared = ["route-address-set", "route-exclude-address-set"].contains { !((tun[$0] as? [Any]) ?? []).isEmpty }
         }
         facts.geodataMode = (root["geodata-mode"] as? Bool) ?? false
-        if let sniffer = root["sniffer"] {
-            facts.readerSnifferGaps = snifferGaps(sniffer as? [String: Any] ?? [:])
-        }
         return facts
     }
 
@@ -800,44 +905,6 @@ enum ModuleActivationStep {
             out.append(contentsOf: min(low, high)...max(low, high))
         }
         return out
-    }
-
-     
-     
-     
-     
-     
-     
-    static func snifferGaps(_ sniffer: [String: Any]) -> [String] {
-        guard (sniffer["enable"] as? Bool) == true else { return [#"it is turned off"#] }
-        func covers(_ ports: Any?, _ port: UInt16) -> Bool {
-            let list = ports as? [Any] ?? []
-            if list.isEmpty { return true }
-            return list.contains { item in
-                if let number = item as? NSNumber { return number.intValue == Int(port) }
-                guard let text = item as? String else { return false }
-                let bounds = text.split(separator: "-", maxSplits: 1).map { Int($0.trimmingCharacters(in: .whitespaces)) }
-                guard let low = bounds.first ?? nil else { return false }
-                let high = bounds.count == 2 ? (bounds[1] ?? low) : low
-                return (low...max(low, high)).contains(Int(port))
-            }
-        }
-         
-        var sniffs: [String: Any?] = [:]
-        if let sniff = sniffer["sniff"] as? [String: Any], !sniff.isEmpty {
-            for (name, config) in sniff { sniffs.updateValue((config as? [String: Any])?["ports"], forKey: name.uppercased()) }
-        } else {
-            for name in sniffer["sniffing"] as? [Any] ?? [] {
-                if let name = name as? String { sniffs.updateValue(sniffer["port-whitelist"], forKey: name.uppercased()) }
-            }
-        }
-        var gaps: [String] = []
-        for (name, port) in [("TLS", UInt16(443)), ("HTTP", UInt16(80)), ("QUIC", UInt16(443))] {
-            guard let ports = sniffs[name] else { gaps.append("no \(name) on \(port)"); continue }
-            if !covers(ports, port) { gaps.append("no \(name) on \(port)") }
-        }
-        if (sniffer["parse-pure-ip"] as? Bool) != true { gaps.append(#"parse-pure-ip is off"#) }
-        return gaps
     }
 
      
@@ -2307,10 +2374,21 @@ enum ModuleActivationStep {
         }
         do {
             let text = try ModuleGroupExclusion.apply(to: injected.text, engineName: engineName)
-            if !injected.snifferInjected, let gaps = cachedFacts?.readerSnifferGaps, !gaps.isEmpty {
-                 
-                 
-                notes.append(#"the configuration's own sniffer is kept: "# + gaps.joined(separator: ", "))
+             
+             
+             
+            var degraded = degraded
+            if !injected.snifferAdded.isEmpty {
+                notes.append(#"the configuration's own sniffer gets what modules need: "# + injected.snifferAdded.joined(separator: ", "))
+            }
+            if !injected.snifferWrittenOff.isEmpty {
+                notes.append(#"the configuration's own sniffer writes off what modules need, left as written: "#
+                             + injected.snifferWrittenOff.joined(separator: ", "))
+                degraded.append(.snifferWrittenOff(injected.snifferWrittenOff.joined(separator: ",")))
+            }
+            if injected.snifferNotCompleted {
+                notes.append(#"the configuration's own sniffer needs what modules need and is left as written: it holds an anchor, an alias or a merge key, or does not read alone"#)
+                degraded.append(.snifferNotCompleted)
             }
             let record = ModuleActivationRecord(engineProxyName: engineName, listenerName: listener,
                                                  listen: "127.0.0.1", port: ports.reinject,

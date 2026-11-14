@@ -163,6 +163,8 @@ public struct ProviderRefreshState: Decodable, Equatable, Sendable {
          
          
          
+         
+         
         case appWhenOpen
          
         case appWhenAsked
@@ -214,7 +216,7 @@ public struct ProviderRefreshState: Decodable, Equatable, Sendable {
     public static func displayLine(result: Result?, error: String?, countBefore: Int?, countAfter: Int?,
                                    taker: PendingTaker, reason: String? = nil) -> (key: String, arguments: [String])? {
         switch result {
-        case .pendingApp?: return (pendingLine(taker, reason: reason, countBefore: countBefore), [])
+        case .pendingApp?: return pendingLine(taker, reason: reason, countBefore: countBefore).map { ($0, []) }
          
         case .failed?: return error.map { ("Update failed: %@", [$0]) } ?? ("Update failed", [])
         case .updated?:
@@ -235,14 +237,28 @@ public struct ProviderRefreshState: Decodable, Equatable, Sendable {
      
      
      
-    public static func pendingLine(_ taker: PendingTaker, reason: String? = nil, countBefore: Int? = nil) -> String {
+     
+     
+     
+     
+     
+    public static func pendingLine(_ taker: PendingTaker, reason: String? = nil, countBefore: Int? = nil) -> String? {
         switch taker {
         case .appWhenOpen where reason == "routes": return "Applies after you reconnect"
-        case .tunnelRetries where countBefore == 0: return "Not loaded yet — try reconnecting"
-        case .appWhenOpen: return "Applies when you open Clash"
+        case .appWhenOpen: return nil
         case .appWhenAsked: return "Downloaded — tap Update to use it"
-        case .tunnelRetries: return "Using the saved copy — updates after you reconnect"
+        case .tunnelRetries, .tunnelKeepsOld: return keptLine(taker, countBefore: countBefore)
+        }
+    }
+
+     
+     
+     
+    public static func keptLine(_ taker: PendingTaker, countBefore: Int? = nil) -> String {
+        switch taker {
+        case .tunnelRetries where countBefore == 0: return "Not loaded yet — try reconnecting"
         case .tunnelKeepsOld: return "Using the saved copy until there's new content"
+        case .tunnelRetries, .appWhenOpen, .appWhenAsked: return "Using the saved copy — updates after you reconnect"
         }
     }
 }

@@ -683,8 +683,10 @@ actor ModuleStore {
 
      
      
-    func downloadsFromVerifiedServers() -> Bool {
-        (fetcher as? ResourceDownloader)?.serverTrust == .verified
+     
+     
+    func downloadsWithoutDirectFallback() -> Bool {
+        (fetcher as? ResourceDownloader).map { !$0.fallsBackDirect } ?? false
     }
 
      
@@ -1090,7 +1092,7 @@ actor ModuleStore {
          
         if let existing = try state().modules.first(where: { $0.origin == .url(link) }) { return existing }
         var record = ModuleRecord(
-            id: id, origin: .url(link), enabled: true, name: Self.name(of: prepared.ir, fallback: address.host ?? link),
+            id: id, origin: .url(link), enabled: true, name: Self.name(of: prepared.ir, fallback: Self.fallbackName(forLink: link)),
             updateInterval: Self.defaultUpdateInterval, lastCheckedAt: fetchedAt, lastUpdatedAt: fetchedAt,
             lastFailure: nil, scriptFetchedAt: prepared.scriptFetchedAt, sourceSHA256: ModuleJSON.sha256(data))
         record.absorb(prepared)
@@ -1221,12 +1223,38 @@ actor ModuleStore {
      
     static func scriptFailureText(for error: Error) -> AuthoredText {
         switch error as? DownloadError {
-        case .badStatus(let status)? where status >= 0:
+        case .badStatus(let status)? where status >= 0, .refusedAuthorization(let status)?,
+             .linkRefused(let status, _)?:
+             
+             
              
             return .app(ModuleStoredSentence.scriptStatus, arguments: [String(status)])
-        default:
+        case .badStatus?:
+             
+             
+             
+             
+             
+            return ModuleStoredSentence.scriptNotDownloaded
+        case .tooLarge?, .invalidLimit?, .invalidPayload?, nil:
+             
+             
+             
+             
+             
+             
+            if Self.reachedNoAnswer(error) { return ModuleStoredSentence.scriptNotReached }
             return authoredText(for: error)
         }
+    }
+
+     
+     
+     
+    static func reachedNoAnswer(_ error: Error) -> Bool {
+        if case ModuleStoreError.serverNotVerified? = error as? ModuleStoreError { return true }
+        if error is URLError { return true }
+        return (error as NSError).domain == NSURLErrorDomain
     }
 
      
@@ -1285,6 +1313,47 @@ actor ModuleStore {
 
     static func name(of ir: ModuleIR, fallback: String) -> String {
         ir.manifest.name.flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func fallbackName(forLink link: String) -> String {
+        guard let url = URL(string: link) else { return link }
+        let file = url.lastPathComponent as NSString
+        if moduleFileExtensions.contains(file.pathExtension.lowercased()) {
+            let stem = file.deletingPathExtension.trimmingCharacters(in: .whitespaces)
+            if !stem.isEmpty, !genericFileNames.contains(stem.lowercased()) { return stem }
+        }
+        return url.host.flatMap { $0.isEmpty ? nil : $0 } ?? link
+    }
+
+     
+    static let moduleFileExtensions: Set<String> = ["conf", "js", "sgmodule", "module", "plugin", "lpx", "snippet",
+                                                    "yaml", "yml", "stoverride", "list", "txt"]
+
+     
+     
+    static let genericFileNames: Set<String> = ["raw", "download", "file", "files", "get", "index", "main", "master",
+                                                "default", "module", "modules", "plugin", "plugins", "script", "scripts",
+                                                "rewrite", "rule", "rules", "config", "configuration", "content", "latest",
+                                                "export", "view"]
+
+     
+     
+     
+    static func fallbackName(of record: ModuleRecord) -> String {
+        guard case .url(let link) = record.origin else { return record.name }
+        return fallbackName(forLink: link)
     }
 
      
@@ -2406,11 +2475,17 @@ actor ModuleStore {
 
      
      
+     
+     
+     
+     
     func note(_ record: ModuleRecord) throws {
         var state = try loadForWrite()
         guard let index = state.modules.firstIndex(where: { $0.id == record.id }) else { return }
+        let published = state.modules[index].displayName
         state.modules[index].adopt(refreshOwnedFieldsOf: record)
         try save(state)
+        if state.modules[index].displayName != published { try publish(state) }
         announce(Self.recordsDidChange)
     }
 
@@ -3028,6 +3103,9 @@ extension ModuleStore {
                 updated.linkFailureCount = 0
             }
             updated.absorb(prepared)
+             
+             
+            updated.name = Self.name(of: prepared.ir, fallback: Self.fallbackName(of: record))
             if let previous, Self.sameContent(previous, prepared.ir) {
                  
                  
@@ -3050,7 +3128,6 @@ extension ModuleStore {
                 return .unchanged
             }
             if movingClocks { updated.lastUpdatedAt = checkedAt }
-            updated.name = Self.name(of: prepared.ir, fallback: record.name)
             updated.sourceSHA256 = ModuleJSON.sha256(data)
             guard try commit(updated, ir: prepared.ir, source: data, bodies: prepared.bodies, isNew: false) else {
                 log("module \(id) was gone when its update came to be written; nothing was written")
@@ -3261,6 +3338,7 @@ extension ModuleStore {
         if published.ignored.contains(where: { entry in
             entry.reason == .ruleSetNotDownloadedYet && !retrying.contains(Self.listAddress(entry.text))
         }) { sets = true }
+         
          
          
          

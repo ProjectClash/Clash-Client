@@ -47,7 +47,7 @@ struct ClashTVProxyShareScreen: View {
         state: Binding<ClashTVProductState>,
         tunnel: ClashTVTunnelController,
         model: ProxyShareModel? = nil,
-        permissionDefaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.appGroup)
+        permissionDefaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
     ) {
         _state = state
         self.tunnel = tunnel

@@ -115,18 +115,23 @@ struct ClashRulesSystemOverview<Icon: View>: View {
     private var overviewSections: some View {
          
          
-        if !overview.buckets.isEmpty || overview.inlineCount > overview.fallback.count {
+         
+        if overview.hasRulesGroup {
             Section {
                 ForEach(overview.buckets.map { ClashRuleBucketFrozenRow(target: $0.target, count: $0.ruleCount) }) { row in
                     ClashRuleBucketListRow(row: row)
                         .equatable()
                 }
-                if overview.buckets.isEmpty || overview.rulesAreCounted, overview.inapplicableCount > 0 {
+                if overview.inapplicableCount > 0 {
                      
                      
-                    Text(clash: .verbatim(ClashCopy.format(
-                        "%1$@ rules will not take effect on %2$@", locale: locale,
-                        ClashCopy.count(overview.inapplicableCount, locale: locale), overview.platformTitle)))
+                     
+                     
+                     
+                     
+                     
+                     
+                    Text(clash: .verbatim(overview.inapplicableLine(locale: locale)))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("rules.inapplicable")
@@ -134,7 +139,10 @@ struct ClashRulesSystemOverview<Icon: View>: View {
             } header: {
                 Text(clash: .format("Rules (%@)", [ClashCopy.count(overview.inlineCount, locale: locale)]))
             } footer: {
-                Text("Grouped by destination. What the tunnel runs: the profile's rules with your custom rules and the override script applied.")
+                 
+                if !overview.buckets.isEmpty {
+                    Text("Grouped by destination. What the tunnel runs: the profile's rules with your custom rules and the override script applied.")
+                }
             }
         }
         if !overview.ruleSets.isEmpty {
@@ -158,7 +166,8 @@ struct ClashRulesSystemOverview<Icon: View>: View {
                 Text("Traffic that matches nothing above.")
             }
         }
-        if overview.buckets.isEmpty && overview.ruleSets.isEmpty && overview.fallback.isEmpty {
+         
+        if !overview.hasRulesGroup && overview.ruleSets.isEmpty && overview.fallback.isEmpty {
             Section {
                 ClashEmptyState(
                     title: "No Rules",
@@ -187,7 +196,7 @@ struct ClashRulesSystemOverview<Icon: View>: View {
                         .equatable()
                 }
                 if searchHitCount > 50 {
-                    Text("\(searchHitCount - 50) more matches…")
+                    Text(clash: .verbatim(ClashRulesCountCopy.moreMatches(searchHitCount - 50, locale: locale)))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -201,7 +210,10 @@ struct ClashRulesSystemOverview<Icon: View>: View {
  
  
 struct ClashRuleBucketListRow: View, Equatable {
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row }
+
     let row: ClashRuleBucketFrozenRow
+    @Environment(\.locale) private var locale
 
     var body: some View {
         let _ = ClashPerf.count("rules.list.bucket")
@@ -214,7 +226,7 @@ struct ClashRuleBucketListRow: View, Equatable {
                 label
             }
         }
-        .accessibilityLabel("\(row.count) rules to \(row.target)")
+        .accessibilityLabel(ClashRulesCountCopy.rulesTo(row.count, target: row.target, locale: locale))
         .accessibilityIdentifier("rules.bucket.\(row.target)")
     }
 
@@ -280,6 +292,13 @@ struct ClashRuleSetListRow: View {
             Text(clash: .verbatim(ruleSet.subtitle(locale: locale)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let note = ruleSet.localFileNote(locale: locale) {
+                Text(clash: .verbatim(note))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("rules.rule-set.local-file.\(ruleSet.name)")
+            }
             if let reason = ruleSet.blockedReason {
                 Text(clash: .copy("Not in the runtime"))
                     .font(.caption.weight(.semibold))
@@ -316,7 +335,7 @@ struct ClashRuleBucketSystemPage: View {
                         .equatable()
                 }
             } header: {
-                Text(clash: .format("%@ rules", [ClashCopy.count(bucket.ruleCount, locale: locale)]))
+                Text(clash: .verbatim(ClashRulesCountCopy.rules(bucket.ruleCount, locale: locale)))
             }
         }
     }

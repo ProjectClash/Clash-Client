@@ -345,13 +345,10 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
             }
              
              
-            .clashDeleteConfirmation(pendingDeletion?.label ?? "", isPresented: Binding(
-                get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
+            .clashDeleteConfirmation(presenting: $pendingDeletion, name: \.label,
                 actionTitle: .copy("Delete Profile"),
-                message: .copy("This profile will be deleted. Sources and rule schemes in the library will remain."),
-                identifier: "profile-center.delete.confirm") {
-                if let doomed = pendingDeletion { send(.delete(id: doomed.id)) }
-            }
+                message: { _ in .copy("This profile will be deleted. Sources and rule schemes in the library will remain.") },
+                identifier: "profile-center.delete.confirm") { doomed in performDeletion(doomed) }
         .clashCapturesDismiss(dismiss)
     }
 
@@ -426,6 +423,8 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
                             .environment(\.clashPopRoute, popRoute)
                             .modifier(ClashSetterRoutedBack())
                              
+                            .clashDeparturePage()
+                             
                              
                              
                             .environment(
@@ -438,6 +437,39 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
                 }
         } else {
             rootPage
+        }
+    }
+
+     
+     
+     
+     
+     
+    private func performDeletion(_ profile: ClashProfileSnapshot) {
+        selectionFailure = nil
+        Task { @MainActor in
+            do {
+                let result = try await actions.performForResult(
+                    .profiles(.delete(id: profile.id)),
+                    allowedBy: snapshot
+                )
+                switch result {
+                case .profileDeleted(let id) where id == profile.id:
+                    break
+                case .profileActionRefused(let reason):
+                    selectionFailure = ClashProfileSelectionFailure(profileID: profile.id, message: reason, outlivesTheList: true)
+                default:
+                     
+                     
+                    selectionFailure = ClashProfileSelectionFailure(
+                        profileID: profile.id, message: .copy("The profile was not deleted."), outlivesTheList: true)
+                }
+            } catch is CancellationError {
+                 
+            } catch {
+                selectionFailure = ClashProfileSelectionFailure(
+                    profileID: profile.id, message: .copy(error.localizedDescription), outlivesTheList: true)
+            }
         }
     }
 
@@ -567,7 +599,12 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
              
              
              
-            selectionFailure = nil
+            if let failure = selectionFailure, failure.outlivesTheList, Date().timeIntervalSince(failure.said) < 3,
+               profiles.contains(where: { $0.id == failure.profileID }) {
+                 
+            } else {
+                selectionFailure = nil
+            }
             displayedProfiles = profiles
         }
          
@@ -1381,10 +1418,22 @@ enum ClashProfileRoute: Hashable {
 }
 
  
+ 
 private struct ClashProfileSelectionFailure: Equatable {
     let profileID: Profile.ID
      
     let message: ClashDisplayText
+     
+     
+     
+     
+     
+    let outlivesTheList: Bool
+    let said = Date()
+
+    init(profileID: Profile.ID, message: ClashDisplayText, outlivesTheList: Bool = false) {
+        self.profileID = profileID; self.message = message; self.outlivesTheList = outlivesTheList
+    }
 }
 
  
@@ -1448,7 +1497,7 @@ private struct ClashProfileRow<
                             ClashSheetCloseButton { showsDetail = false }
                         }
                     }
-                    .clashProductModalRoot(title: profile.label)
+                    .clashProductModalRoot(title: .verbatim(profile.label))
             }
             .environment(\.clashProductModalDismiss, { showsDetail = false })
         }
@@ -1794,17 +1843,24 @@ private struct ClashProfileDetailView<
      
      
     @StateObject private var dismiss = ClashDismissHandle()
-    @State private var isSavingSourceUpdates = false
      
      
      
-    @State private var pressedSourceUpdates = ClashPressedSwitches<ClashProfileSnapshot.ID>()
+     
+     
+     
+    @State private var sourceUpdatesSwitch = ClashStoredSwitch<ClashProfileSnapshot.ID>()
      
      
     @State private var confirmsFollowingLink = false
      
     @State private var asksForFollowedLink = false
-    @State private var isSavingOriginalConfiguration = false
+     
+     
+     
+     
+     
+    @State private var originalConfigurationSwitch = ClashStoredSwitch<ClashProfileSnapshot.ID>()
     @State private var isDuplicating = false
      
      
@@ -1817,7 +1873,7 @@ private struct ClashProfileDetailView<
     @State private var showsActionFailure: ActionFailure?
 
     struct ActionFailure: Equatable {
-        enum Action { case duplicate, delete, sourceUpdates, originalConfiguration }
+        enum Action { case duplicate, delete }
         let action: Action
         let message: ClashDisplayText
     }
@@ -1825,14 +1881,19 @@ private struct ClashProfileDetailView<
     @ViewBuilder
     private func actionFailureLine(for action: ActionFailure.Action) -> some View {
         if let showsActionFailure, showsActionFailure.action == action {
-            Text(clash: showsActionFailure.message)
+            failureLine(showsActionFailure.message)
+        }
+    }
+
+     
+    private func failureLine(_ message: ClashDisplayText) -> some View {
+            Text(clash: message)
                 .font(.caption)
                 .foregroundStyle(.red)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, ClashTheme.Spacing.standard)
                 .padding(.bottom, ClashTheme.Spacing.tight)
                 .accessibilityIdentifier("profile-detail.action-failure")
-        }
     }
      
      
@@ -2146,13 +2207,16 @@ private struct ClashProfileDetailView<
     private func nativeSourceUpdatesRow(_ profile: ClashProfileSnapshot) -> some View {
         if let state = profile.sourceUpdatesState {
             if ClashProfileSnapshot.offersSourceUpdatesSwitch(state, canPickLink: !profile.linksToPick.isEmpty) {
-                Toggle("Follow Link Updates", isOn: sourceUpdatesBinding(profile, state: state))
-                    .disabled(isSavingSourceUpdates || profile.isBusy)
-                    .onChange(of: state) { _ in pressedSourceUpdates.read(profile.id) }
-                    .accessibilityIdentifier("profile-detail.configuration-source-updates")
+                sourceUpdatesToggle(profile, state: state)
             }
             sourceUpdatesNote(state, canPickLink: !profile.linksToPick.isEmpty)
-            nativeFailureRow(for: .sourceUpdates)
+             
+            ClashStoredFailure(sourceUpdatesSwitch, key: profile.id) { failure in
+                Text(clash: .copy(failure))
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("profile-detail.action-failure")
+            }
         }
     }
 
@@ -2169,52 +2233,49 @@ private struct ClashProfileDetailView<
 
      
      
-    private func sourceUpdatesBinding(_ profile: ClashProfileSnapshot, state: ConfigurationUpdateFollowing) -> Binding<Bool> {
-        Binding(get: { pressedSourceUpdates.shown(profile.id, else: state == .following) }, set: { value in
-            if value, state == .copyWithoutOrigin {
-                asksForFollowedLink = true
-                return
-            }
-            if value, ClashProfileSnapshot.turningOnReplacesChanges(state) {
-                confirmsFollowingLink = true
-                return
+     
+     
+     
+    private func sourceUpdatesToggle(_ profile: ClashProfileSnapshot, state: ConfigurationUpdateFollowing) -> some View {
+        ClashStoredToggle(sourceUpdatesSwitch, key: profile.id, stored: state == .following,
+                          identifier: "profile-detail.configuration-source-updates", set: { value in
+             
+             
+             
+            if value, !sourceUpdatesSwitch.isPending(profile.id) {
+                if state == .copyWithoutOrigin {
+                    asksForFollowedLink = true
+                    return
+                }
+                if ClashProfileSnapshot.turningOnReplacesChanges(state) {
+                    confirmsFollowingLink = true
+                    return
+                }
             }
             saveSourceUpdates(profile, enabled: value)
-        })
+        }) {
+            Text("Follow Link Updates")
+        }
+         
+         
+        .disabled(profile.isBusy)
+        .onChange(of: state) { sourceUpdatesSwitch.read(profile.id, stored: $0 == .following) }
     }
 
     private func saveSourceUpdates(_ profile: ClashProfileSnapshot, enabled value: Bool) {
-        performSourceUpdates(.setConfigurationSourceUpdates(id: profile.id, enabled: value), pressing: (profile.id, value))
+        sourceUpdatesSwitch.press(profile.id, value, readBack: .whenRead) { [actions, snapshot] value in
+            _ = try await actions.perform(.profiles(.setConfigurationSourceUpdates(id: profile.id, enabled: value)),
+                                          allowedBy: snapshot)
+        }
     }
 
      
+     
     private func followLink(_ profile: ClashProfileSnapshot, link: String) {
-        performSourceUpdates(.followConfigurationLink(id: profile.id, linkID: link))
-    }
-
-    private func performSourceUpdates(_ command: ClashProfilesCommand, pressing: (id: ClashProfileSnapshot.ID, value: Bool)? = nil) {
-            guard !isSavingSourceUpdates else { return }
-            isSavingSourceUpdates = true
-            showsActionFailure = nil
-            let press = pressing.map { pressedSourceUpdates.press($0.id, $0.value) }
-            Task { @MainActor in
-                var succeeded = false
-                do {
-                    _ = try await actions.perform(.profiles(command), allowedBy: snapshot)
-                    succeeded = true
-                } catch {
-                    showsActionFailure = ActionFailure(action: .sourceUpdates, message: .copy(error.localizedDescription))
-                }
-                isSavingSourceUpdates = false
-                guard let pressing, let press else { return }
-                guard succeeded else { return pressedSourceUpdates.settle(pressing.id, press: press) }
-                 
-                 
-                 
-                pressedSourceUpdates.written(pressing.id, press: press)
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                pressedSourceUpdates.settle(pressing.id, press: press)
-            }
+        sourceUpdatesSwitch.press(profile.id, true, readBack: .whenRead) { [actions, snapshot] _ in
+            _ = try await actions.perform(.profiles(.followConfigurationLink(id: profile.id, linkID: link)),
+                                          allowedBy: snapshot)
+        }
     }
 
      
@@ -2777,19 +2838,15 @@ private struct ClashProfileDetailView<
         return ClashProfileGroup(title: "Configuration", palette: palette, presentationClass: presentationClass) {
             if offersSwitch {
                 VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
-                    Toggle(isOn: Binding(get: { usesOriginal }, set: { value in
-                        guard !isSavingOriginalConfiguration else { return }
-                        isSavingOriginalConfiguration = true
-                        showsActionFailure = nil
-                        Task { @MainActor in
-                            defer { isSavingOriginalConfiguration = false }
-                            do {
-                                _ = try await actions.perform(.profiles(.setUsesOriginalConfiguration(id: profile.id, enabled: value)), allowedBy: snapshot)
-                            } catch {
-                                showsActionFailure = ActionFailure(action: .originalConfiguration, message: .copy(error.localizedDescription))
-                            }
-                        }
-                    })) {
+                     
+                     
+                     
+                    ClashStoredToggle(originalConfigurationSwitch, key: profile.id, stored: usesOriginal,
+                                      identifier: "profile-detail.uses-original-configuration", readBack: .whenRead,
+                                      write: { [actions, snapshot] value in
+                        _ = try await actions.perform(.profiles(.setUsesOriginalConfiguration(id: profile.id, enabled: value)),
+                                                      allowedBy: snapshot)
+                    }) {
                          
                          
                          
@@ -2806,9 +2863,12 @@ private struct ClashProfileDetailView<
                             }
                         }
                     }
-                    .disabled(isSavingOriginalConfiguration || profile.isBusy)
-                    .accessibilityIdentifier("profile-detail.uses-original-configuration")
-                    actionFailureLine(for: .originalConfiguration)
+                    .disabled(profile.isBusy)
+                    .onChange(of: usesOriginal) { originalConfigurationSwitch.read(profile.id, stored: $0) }
+                     
+                    ClashStoredFailure(originalConfigurationSwitch, key: profile.id) { failure in
+                        failureLine(.copy(failure))
+                    }
                 }
                 .padding(.vertical, ClashMacSettingsMetrics.rowVerticalInset(touch: ClashTheme.Spacing.row))
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2849,13 +2909,13 @@ private struct ClashProfileDetailView<
                 if offersSwitch || !usesOriginal { ClashRowDivider() }
                 VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
                 if ClashProfileSnapshot.offersSourceUpdatesSwitch(state, canPickLink: !profile.linksToPick.isEmpty) {
-                    Toggle("Follow Link Updates", isOn: sourceUpdatesBinding(profile, state: state))
-                    .disabled(isSavingSourceUpdates || profile.isBusy)
-                    .onChange(of: state) { _ in pressedSourceUpdates.read(profile.id) }
-                    .accessibilityIdentifier("profile-detail.configuration-source-updates")
+                    sourceUpdatesToggle(profile, state: state)
                 }
                 sourceUpdatesNote(state, canPickLink: !profile.linksToPick.isEmpty)
-                actionFailureLine(for: .sourceUpdates)
+                 
+                ClashStoredFailure(sourceUpdatesSwitch, key: profile.id) { failure in
+                    failureLine(.copy(failure))
+                }
                 }
                 .padding(.vertical, ClashMacSettingsMetrics.rowVerticalInset(touch: ClashTheme.Spacing.row))
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3495,7 +3555,7 @@ private struct ClashProfileBatchReportView<Icon: View>: View {
                 }
             }
             .clashProductModalRoot(
-                title: report.title
+                title: .copy(report.title)
                  
                  
                  

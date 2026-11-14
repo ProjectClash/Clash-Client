@@ -153,22 +153,33 @@ public struct ConfigurationPlatformDecision: Decodable, Equatable, Sendable {
      
      
     public let unwritten: String?
+     
+     
+     
+     
+     
+    public let onlyWhere: [String: [String]]?
 
      
      
      
     public var overridesTheFile: Bool { when == .always }
 
+     
+     
+     
+    public func applies(to entry: OrderedJSON) -> Bool { entry.meets(onlyWhere) }
+
     public init(when: When, condition: String? = nil, category: String? = nil, effective: String? = nil,
                 reason: String? = nil, alternative: String? = nil, value: String? = nil, replaces: [String]? = nil,
-                unwritten: String? = nil) {
+                unwritten: String? = nil, onlyWhere: [String: [String]]? = nil) {
         self.when = when; self.condition = condition; self.category = category; self.effective = effective
         self.reason = reason; self.alternative = alternative; self.value = value; self.replaces = replaces
-        self.unwritten = unwritten
+        self.unwritten = unwritten; self.onlyWhere = onlyWhere
     }
 
     private enum CodingKeys: String, CodingKey {
-        case when, condition, category, effective, reason, alternative, value, replaces, unwritten
+        case when, condition, category, effective, reason, alternative, value, replaces, unwritten, onlyWhere
     }
 
     public init(from decoder: Decoder) throws {
@@ -188,6 +199,9 @@ public struct ConfigurationPlatformDecision: Decodable, Equatable, Sendable {
                 .flatMap(\.text).map { [$0] }
         }
         unwritten = (try? container.decodeIfPresent(ConfigurationField.LenientScalar.self, forKey: .unwritten))?.flatMap(\.text)
+         
+         
+        onlyWhere = try? container.decodeIfPresent([String: [String]].self, forKey: .onlyWhere)
     }
 }
 
@@ -207,9 +221,35 @@ public struct ConfigurationPlatformKey: Decodable, Equatable, Sendable {
     public let honoured: Bool?
      
     public let defaultOnly: Bool?
+     
+     
+     
+    public let onlyWhere: [String: [String]]?
 
      
     public var overridesTheFile: Bool { honoured != true && defaultOnly != true }
+
+     
+    public func applies(to entry: OrderedJSON) -> Bool { entry.meets(onlyWhere) }
+
+    private enum CodingKeys: String, CodingKey {
+        case path, category, effective, reason, alternative, value, honoured, defaultOnly, onlyWhere
+    }
+
+     
+     
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        path = try container.decode(String.self, forKey: .path)
+        category = try container.decode(String.self, forKey: .category)
+        effective = try container.decode(String.self, forKey: .effective)
+        reason = try container.decode(String.self, forKey: .reason)
+        alternative = try container.decodeIfPresent(String.self, forKey: .alternative)
+        value = try container.decodeIfPresent(String.self, forKey: .value)
+        honoured = try container.decodeIfPresent(Bool.self, forKey: .honoured)
+        defaultOnly = try container.decodeIfPresent(Bool.self, forKey: .defaultOnly)
+        onlyWhere = try? container.decodeIfPresent([String: [String]].self, forKey: .onlyWhere)
+    }
 }
 
  
@@ -297,10 +337,21 @@ public struct ConfigurationField: Decodable, Equatable, Sendable {
      
      
     public let unavailableValues: [ConfigurationUnavailableValue]
+     
+     
+     
+    public let zeroMeansUnset: Bool
+     
+     
+     
+     
+     
+    public let requiredOneOf: [String]?
 
     private enum CodingKeys: String, CodingKey {
         case path, kind, values, separator, caseInsensitive, ordered, min, max, unit, format, refers, unknownValue
         case platformDecided, platformDecision, required, key, value, source, valuesSource, unavailableValues
+        case zeroMeansUnset, requiredOneOf
         case defaultValue = "default"
     }
 
@@ -339,6 +390,10 @@ public struct ConfigurationField: Decodable, Equatable, Sendable {
          
         unavailableValues = ((try? container.decodeIfPresent([LenientUnavailable].self, forKey: .unavailableValues)) ?? nil)?
             .compactMap(\.value) ?? []
+         
+        zeroMeansUnset = ((try? container.decodeIfPresent(Bool.self, forKey: .zeroMeansUnset)) ?? nil) ?? false
+        let group = (try? container.decodeIfPresent([String].self, forKey: .requiredOneOf)) ?? nil
+        requiredOneOf = group?.isEmpty == false ? group : nil
     }
 
     private struct LenientUnavailable: Decodable {
@@ -404,6 +459,7 @@ public struct ConfigurationField: Decodable, Equatable, Sendable {
         key = nil; value = nil
         source = map.source; valuesSource = nil
         unavailableValues = []
+        zeroMeansUnset = false; requiredOneOf = nil
     }
 
      
@@ -425,7 +481,8 @@ public struct ConfigurationField: Decodable, Equatable, Sendable {
                                                          reason: decision?.reason ?? entry.reason,
                                                          alternative: decision?.alternative ?? entry.alternative,
                                                          value: decision?.value ?? entry.value,
-                                                         unwritten: decision?.unwritten)
+                                                         unwritten: decision?.unwritten,
+                                                         onlyWhere: decision?.onlyWhere ?? entry.onlyWhere)
             }
         }
         var defaultText = self.defaultText
@@ -450,6 +507,7 @@ public struct ConfigurationField: Decodable, Equatable, Sendable {
         unknownValue = field.unknownValue; self.platformReason = platformReason; self.isPlatformDecided = isPlatformDecided
         isRequired = field.isRequired; self.platformDecision = platformDecision; key = field.key; value = field.value
         source = field.source; valuesSource = field.valuesSource; unavailableValues = field.unavailableValues
+        zeroMeansUnset = field.zeroMeansUnset; requiredOneOf = field.requiredOneOf
     }
 
      
@@ -482,6 +540,36 @@ public struct ConfigurationField: Decodable, Equatable, Sendable {
         switch kind {
         case .select, .multiSelect: return canonical(value) != nil
         default: return true
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    public func isWritten(_ value: OrderedJSON?) -> Bool {
+        Self.isWritten(value, asNumber: kind == .number || zeroMeansUnset)
+    }
+
+     
+     
+    static func isWritten(_ value: OrderedJSON?, asNumber: Bool?) -> Bool {
+        switch value {
+        case nil: return false
+        case .object(let entries)?: return !entries.isEmpty
+        case .array(let items)?: return !items.isEmpty
+        case .string(let text)?:
+            if asNumber == true, let number = Double(text.trimmingCharacters(in: .whitespaces)) { return number != 0 }
+            return !text.isEmpty
+        case .scalar(let token)?:
+             
+            if token == "null" { return false }
+            if asNumber != false, let number = Double(token) { return number != 0 }
+            return true
         }
     }
 }
@@ -626,6 +714,21 @@ public struct ConfigurationFieldCatalog: Sendable {
     }
 
      
+     
+     
+     
+     
+    public func requiredOneOfHolds(for field: ConfigurationField, in entry: OrderedJSON) -> Bool {
+        guard let group = field.requiredOneOf else { return true }
+        let parent = field.path.lastIndex(of: ".").map { String(field.path[...$0]) } ?? ""
+        return group.contains { key in
+            let value = entry.member(readAs: key)
+            guard let sibling = byPath[parent + key] else { return ConfigurationField.isWritten(value, asNumber: nil) }
+            return sibling.isWritten(value)
+        }
+    }
+
+     
     public func children(of steps: [ConfigurationDocumentStep], in document: OrderedJSON) -> [ConfigurationField] {
         let base: String
         if steps.isEmpty { base = "" } else {
@@ -726,6 +829,33 @@ extension OrderedJSON {
         case .string(let text): return text
         case .scalar(let token): return token
         default: return nil
+        }
+    }
+
+     
+     
+     
+     
+    func member(readAs key: String) -> OrderedJSON? {
+        if let exact = child(key) { return exact }
+        guard case .object(let entries) = self else { return nil }
+        let folded = Self.decoderFolded(key)
+        return entries.first { Self.decoderFolded($0.key) == folded }?.value
+    }
+
+    private static func decoderFolded(_ key: String) -> String {
+        key.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
+
+     
+     
+     
+     
+    func meets(_ onlyWhere: [String: [String]]?) -> Bool {
+        guard let onlyWhere else { return true }
+        return onlyWhere.allSatisfy { key, values in
+            guard let written = member(readAs: key)?.scalarText else { return false }
+            return values.contains(written)
         }
     }
 }

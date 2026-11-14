@@ -135,21 +135,44 @@ public enum ClashCopy {
      
      
     nonisolated(unsafe) private static let languageBundles = NSCache<NSString, Bundle>()
+    nonisolated(unsafe) private static let tableNames = NSCache<NSString, NSString>()
 
     private static func languageBundle(for locale: Locale) -> Bundle? {
         let code = locale.identifier.replacingOccurrences(of: "_", with: "-")
         if let cached = languageBundles.object(forKey: code as NSString) {
             return cached
         }
-         
-         
-        var candidate = code
+        guard let name = tableName(for: locale),
+              let path = Bundle.main.path(forResource: name, ofType: "lproj"),
+              let bundle = Bundle(path: path)
+        else { return nil }
+        languageBundles.setObject(bundle, forKey: code as NSString)
+        return bundle
+    }
+
+     
+     
+     
+     
+     
+    static func tableName(for locale: Locale) -> String? {
+        let code = locale.identifier.replacingOccurrences(of: "_", with: "-")
+        if let cached = tableNames.object(forKey: code as NSString) {
+            return cached.length == 0 ? nil : cached as String
+        }
+        let name = tableName(for: locale, has: { Bundle.main.path(forResource: $0, ofType: "lproj") != nil })
+        tableNames.setObject((name ?? "") as NSString, forKey: code as NSString)
+        return name
+    }
+
+     
+     
+     
+     
+    static func tableName(for locale: Locale, has: (String) -> Bool) -> String? {
+        var candidate = locale.identifier.replacingOccurrences(of: "_", with: "-")
         while !candidate.isEmpty {
-            if let path = Bundle.main.path(forResource: candidate, ofType: "lproj"),
-               let bundle = Bundle(path: path) {
-                languageBundles.setObject(bundle, forKey: code as NSString)
-                return bundle
-            }
+            if has(candidate) { return candidate }
             guard let cut = candidate.lastIndex(of: "-") else { break }
             candidate = String(candidate[candidate.startIndex..<cut])
         }

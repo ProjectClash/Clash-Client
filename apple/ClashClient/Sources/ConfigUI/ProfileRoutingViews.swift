@@ -919,6 +919,10 @@ struct ProfileProxyChainsView: View {
     struct PreparationKey: Equatable {
         let profile: Profile
         let rawYAML: String?
+         
+         
+         
+        var scripts: ScriptEngine.Caller = .silent
     }
 
      
@@ -931,39 +935,92 @@ struct ProfileProxyChainsView: View {
     static let lastPreparation =
         ClashLastPreparation<PreparationKey, ProfileProxyChainPreparation>()
 
+     
+    typealias Maker = @Sendable (Profile, String?, ScriptEngine.Caller) -> ProfileProxyChainPreparation
+
     @MainActor
-    static func prewarm(profile: Profile, rawYAML: String?) async {
-        _ = await prepared(profile: profile, rawYAML: rawYAML)
+    static func prewarm(
+        profile: Profile, rawYAML: String?,
+        make: @escaping Maker = { ProfileProxyChainPreparation.make(profile: $0, rawYAML: $1, scripts: $2) }
+    ) async {
+         
+         
+        guard lastPreparation.value(for: readersKey(profile: profile, rawYAML: rawYAML)) == nil else { return }
+        _ = await prepared(PreparationKey(profile: profile, rawYAML: rawYAML), make: make)
     }
+
+    private static func readersKey(profile: Profile, rawYAML: String?) -> PreparationKey {
+        PreparationKey(profile: profile, rawYAML: rawYAML, scripts: .surfaced)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @MainActor
+    static func preparedForTheReader(
+        profile: Profile, rawYAML: String?,
+        make: @escaping Maker = { ProfileProxyChainPreparation.make(profile: $0, rawYAML: $1, scripts: $2) }
+    ) async -> ProfileProxyChainPreparation {
+        let own = readersKey(profile: profile, rawYAML: rawYAML)
+        if let settled = lastPreparation.value(for: own) { return settled }
+        let quiet = await prepared(PreparationKey(profile: profile, rawYAML: rawYAML), make: make)
+        guard quiet.scriptTimedOut else { return quiet }
+        if let asking = readersAsk, asking.key == own { return await asking.answer.value }
+        let answer = Task { @MainActor in await built(own, make: make) }
+        readersAsk = (own, answer)
+        let mine = await answer.value
+        if readersAsk?.key == own { readersAsk = nil }
+        if !mine.scriptTimedOut { lastPreparation.store(mine, for: own) }
+        return mine
+    }
+
+     
+     
+    @MainActor
+    private static var readersAsk: (key: PreparationKey, answer: Task<ProfileProxyChainPreparation, Never>)?
 
     @MainActor
     private static func prepared(
-        profile: Profile, rawYAML: String?
+        _ key: PreparationKey, make: @escaping Maker
     ) async -> ProfileProxyChainPreparation {
-        let key = PreparationKey(profile: profile, rawYAML: rawYAML)
-        return await lastPreparation.value(for: key) {
-            let began = DispatchTime.now().uptimeNanoseconds
-            let made = await Task.detached(priority: .userInitiated) {
-                ProfileProxyChainPreparation.make(
-                    profile: profile,
-                    rawYAML: rawYAML
-                )
-            }.value
-            ClashPerf.span(
-                "chains.prepare",
-                milliseconds: Double(
-                    DispatchTime.now().uptimeNanoseconds - began
-                ) / 1_000_000,
-                detail: "yamlBytes=\(rawYAML?.utf8.count ?? 0)"
-            )
-            return made
-        }
+        await lastPreparation.value(for: key) { await built(key, make: make) }
+    }
+
+     
+    @MainActor
+    private static func built(
+        _ key: PreparationKey, make: @escaping Maker
+    ) async -> ProfileProxyChainPreparation {
+        let (profile, rawYAML, scripts) = (key.profile, key.rawYAML, key.scripts)
+        let began = DispatchTime.now().uptimeNanoseconds
+        let made = await Task.detached(priority: .userInitiated) {
+            make(profile, rawYAML, scripts)
+        }.value
+        ClashPerf.span(
+            "chains.prepare",
+            milliseconds: Double(
+                DispatchTime.now().uptimeNanoseconds - began
+            ) / 1_000_000,
+            detail: "yamlBytes=\(rawYAML?.utf8.count ?? 0)"
+        )
+        return made
     }
 
     @MainActor
     private func prepare() async {
         guard preparation == nil else { return }
-        preparation = await Self.prepared(profile: profile, rawYAML: rawYAML)
+        preparation = await Self.preparedForTheReader(profile: profile, rawYAML: rawYAML)
     }
 
      

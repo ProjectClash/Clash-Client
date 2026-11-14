@@ -538,7 +538,7 @@ struct MetricKitInboxView: View {
             }
         }
         .onAppear(perform: refresh)
-        .sheet(item: $selected) { report in
+        .clashSheet(item: $selected) { report in
             MetricKitReportDetailView(
                 report: report,
                 exportURL: {

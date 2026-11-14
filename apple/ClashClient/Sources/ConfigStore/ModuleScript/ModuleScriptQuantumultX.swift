@@ -97,7 +97,7 @@ enum ModuleScriptQuantumultX {
           });
         })
         """#)
-        _ = installer?.call(withArguments: [object, make])
+        _ = installer?.call(withArguments: [object, ModuleScriptValues.function(make, in: context)])
     }
 
      
@@ -185,7 +185,7 @@ enum ModuleScriptQuantumultX {
           };
         })
         """#)
-        if let task = installer?.call(withArguments: [fetch]), task.isObject {
+        if let task = installer?.call(withArguments: [ModuleScriptValues.function(fetch, in: context)]), task.isObject {
             context.setObject(task, forKeyedSubscript: "$task" as NSString)
         }
     }
@@ -257,7 +257,7 @@ enum ModuleScriptQuantumultX {
           };
         })
         """#)
-        if let configuration = installer?.call(withArguments: [send]), configuration.isObject {
+        if let configuration = installer?.call(withArguments: [ModuleScriptValues.function(send, in: context)]), configuration.isObject {
             context.setObject(configuration, forKeyedSubscript: "$configuration" as NSString)
         }
     }
@@ -352,6 +352,10 @@ enum ModuleScriptQuantumultX {
             let wanted = content.flatMap { ModuleScriptValues.string($0.objectForKeyedSubscript("running_mode")) }
             guard let mode = runningModes.first(where: { $0.value == wanted })?.key else {
                 return error(#"running_mode is filter, all_proxy or all_direct"#)
+            }
+            if mode == #"global"#, let refusal = access.globalRefusal() {
+                session.log(#"$configuration.sendMessage(set_running_mode) global: \#(refusal)"#)
+                return error(refusal)
             }
             let changed = access.setMode(mode)
             session.log(#"$configuration.sendMessage(set_running_mode) \#(mode): \#(changed)"#)

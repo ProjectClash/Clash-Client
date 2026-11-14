@@ -30,6 +30,10 @@ struct ProxiesOverviewHost: View {
     let sourceModel: ProxiesOverviewModel
     let initiallyExpandedGroup: String?
     var ownsNavigationContainer = true
+     
+     
+     
+    var opening: ProxyBrowsingVisibility.Opening = .browsing
     @Environment(\.locale) private var locale
     @State private var providerUpdateFailure: ClashDisplayText?
      
@@ -152,24 +156,8 @@ struct ProxiesOverviewHost: View {
                     return saved.rawValue
                 }()
             ),
-            runtime: ProxiesRuntimeFacts(
-                delays: nodes.delays,
-                defaultDelayTestURL: nodes.defaultDelayTestURL,
-                failureReasons: nodes.failureReasons,
-                coreFailureReasons: nodes.coreFailureReasons,
-                 
-                 
-                nowByGroup: nodes.nowByGroup,
-                resolvedNowByGroup: nodes.resolvedNowByGroup,
-                fixedByGroup: nodes.fixedByGroup,
-                 
-                 
-                 
-                catalog: isConnected || nodes.offlineGroupsProfileID == profile.id ? nodes.groups : [],
-                runtimeNodes: nodes.runtimeProxies,
-                providerCatalog: nodes.runtimeProviderCatalog,
-                isAuthoritative: nodes.isRuntimeAvailable
-            ),
+            opening: opening,
+            runtime: Self.runtimeFacts(of: nodes, isConnected: isConnected, profileID: profile.id),
             isConnected: isConnected,
             testingNames: nodes.testingNames,
             isTestingLatency: nodes.isTestingLatency,
@@ -218,12 +206,9 @@ struct ProxiesOverviewHost: View {
                     level: .info
                 )
                 if command.isConnected {
-                    Task {
-                        await nodes.select(
-                            group: group,
-                            name: member
-                        )
-                    }
+                     
+                     
+                    nodes.pickFromPage(group: group, member: member)
                 } else {
                     do {
                         try profiles.updateProxySelection(
@@ -333,7 +318,7 @@ struct ProxiesOverviewHost: View {
             operation: operation)
         let profileID = profile.id
         let report = await ProviderUpdater.update([name], in: .live(
-            profile: profile, store: store, container: container, vpn: vpn,
+            profile: profile, store: store, container: container, vpn: vpn, scripts: .surfaced,
             stillInUse: { store.activeIdentityOrNil()?.profileID == profileID }))
         let outcome = report.outcomes[name] ?? .skipped
         let line = ProvidersModel.statusLine(outcome, for: name, locale: locale)
@@ -427,16 +412,18 @@ struct RulesOverviewHost: View {
              
             if presentedYAML == nil, profiles.hasLargeSource(profile) {
                 if pagesReadFor == pagesTaskID {
-                    ClashEmptyState(
-                        title: "Rules Unavailable",
-                        message: "Clash couldn’t read this configuration’s rules.",
-                        symbol: .exclamationmarkTriangle
-                    )
+                    VStack(spacing: ClashTheme.Spacing.row) {
+                        ClashEmptyState(
+                            title: "Rules Unavailable",
+                            message: "Clash couldn’t read this configuration’s rules.",
+                            symbol: .exclamationmarkTriangle
+                        )
+                        .accessibilityIdentifier("rules.overview.unavailable")
+                        ClashOpeningCancelButton()
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .accessibilityIdentifier("rules.overview.unavailable")
                 } else {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ClashOpeningProgress()
                 }
             } else {
                  
@@ -553,6 +540,9 @@ struct SessionProxiesRailRoot: View {
      
     let avoidsLiveProviderStore: Bool
     @Binding var stagedGroup: String?
+     
+     
+    @Binding var stagedOpening: ProxyBrowsingVisibility.Opening
 
     @State private var preparedModel: ProxiesOverviewModel?
     @State private var preparedProfileID: Profile.ID?
@@ -570,6 +560,18 @@ struct SessionProxiesRailRoot: View {
      
      
     @State private var openedGroup: String?
+     
+     
+     
+     
+    @State private var opening: ProxyBrowsingVisibility.Opening
+     
+     
+     
+    @Environment(\.clashRegularRootOpenGroup) private var openRequest
+     
+     
+    @Environment(\.clashRegularRootIsActive) private var isShown
 
     @MainActor
     init(
@@ -579,7 +581,8 @@ struct SessionProxiesRailRoot: View {
         profiles: ProfilesViewModel,
         profileRefreshToken: Int,
         avoidsLiveProviderStore: Bool,
-        stagedGroup: Binding<String?>
+        stagedGroup: Binding<String?>,
+        stagedOpening: Binding<ProxyBrowsingVisibility.Opening> = .constant(.browsing)
     ) {
         self.vpn = vpn
         self.command = command
@@ -598,6 +601,8 @@ struct SessionProxiesRailRoot: View {
          
          
         _openedGroup = State(initialValue: stagedGroup.wrappedValue)
+        self._stagedOpening = stagedOpening
+        _opening = State(initialValue: stagedOpening.wrappedValue)
          
          
          
@@ -665,8 +670,23 @@ struct SessionProxiesRailRoot: View {
                          
                          
                          
-                        initiallyExpandedGroup: openedGroup,
-                        ownsNavigationContainer: false
+                         
+                         
+                         
+                        initiallyExpandedGroup: HomeProxiesEntryPolicy.railEntry(
+                            openedGroup: openedGroup,
+                            groups: preparedModel.groups,
+                            name: \.name,
+                            isHidden: \.hidden,
+                            coreMode: command.mode,
+                             
+                             
+                            liveCatalog: command.isConnected && nodes.isRuntimeAvailable,
+                            readerFoldedAll: nodes.readerFoldedAllGroups,
+                            opening: opening
+                        ),
+                        ownsNavigationContainer: false,
+                        opening: opening
                     )
                 } else {
                     ProgressView()
@@ -740,6 +760,9 @@ struct SessionProxiesRailRoot: View {
             if openedGroup != staged {
                 openedGroup = staged
             }
+            if opening != stagedOpening {
+                opening = stagedOpening
+            }
              
              
              
@@ -747,8 +770,41 @@ struct SessionProxiesRailRoot: View {
              
             Task { @MainActor in
                 stagedGroup = nil
+                stagedOpening = .browsing
             }
         }
+         
+         
+         
+        .onChange(of: openRequest) { request in take(request) }
+         
+         
+         
+        .onChange(of: command.mode) { mode in settleOpening(.modeChanged(.init(coreValue: mode))) }
+        .onChange(of: isShown) { shown in settleOpening(.shownChanged(shown)) }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    private func take(_ request: ClashRootOpenGroupSignal) {
+        openedGroup = request.group
+        opening = ProxyBrowsingVisibility.opening(opening, after: .request(.init(request.opening)))
+        Task { @MainActor in
+            stagedGroup = nil
+            stagedOpening = .browsing
+        }
+    }
+
+     
+     
+    private func settleOpening(_ event: ProxyBrowsingVisibility.OpeningEvent) {
+        let settled = ProxyBrowsingVisibility.opening(opening, after: event)
+        if settled != opening { opening = settled }
     }
 
     fileprivate struct PreparationKey: Hashable {
@@ -1079,12 +1135,41 @@ extension ProxiesOverviewHost: @MainActor Equatable {
             && a.sourceModel == b.sourceModel
             && a.initiallyExpandedGroup == b.initiallyExpandedGroup
             && a.ownsNavigationContainer == b.ownsNavigationContainer
+            && a.opening == b.opening
         ClashPerf.count(equal ? "proxies.host.eq.hit" : "proxies.host.eq.miss")
         return equal
     }
 }
 
 extension ProxiesOverviewHost {
+     
+     
+    @MainActor
+    static func runtimeFacts(of nodes: NodesModel, isConnected: Bool, profileID: String) -> ProxiesRuntimeFacts {
+        ProxiesRuntimeFacts(
+            delays: nodes.delays,
+            defaultDelayTestURL: nodes.defaultDelayTestURL,
+            failureReasons: nodes.failureReasons,
+            coreFailureReasons: nodes.coreFailureReasons,
+             
+             
+            nowByGroup: nodes.nowByGroup,
+            resolvedNowByGroup: nodes.resolvedNowByGroup,
+            fixedByGroup: nodes.fixedByGroup,
+             
+             
+             
+            groupsAreTheCores: nodes.groupsAreTheCores,
+             
+             
+             
+            catalog: isConnected || nodes.offlineGroupsProfileID == profileID ? nodes.groups : [],
+            runtimeNodes: nodes.runtimeProxies,
+            providerCatalog: nodes.runtimeProviderCatalog,
+            isAuthoritative: nodes.isRuntimeAvailable
+        )
+    }
+
      
      
     fileprivate var offeredNodeScripts: [ClashProxyNodeScript] {
@@ -1171,5 +1256,16 @@ extension ProxiesOverviewHost {
             failureMessage: nodes.coreFailureMessages[inspection.name],
             profiles: profiles
         )
+    }
+}
+
+extension ProxyBrowsingVisibility.Opening {
+     
+     
+    init(_ requested: ClashRootOpenGroupSignal.Opening) {
+        switch requested {
+        case .browsing: self = .browsing
+        case .choosingInGlobal: self = .choosingInGlobal
+        }
     }
 }

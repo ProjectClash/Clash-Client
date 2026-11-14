@@ -99,7 +99,7 @@ struct ClashTVMoreHub: View {
 
      
      
-    static func externalControllerValue(defaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.appGroup)) -> String {
+    static func externalControllerValue(defaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)) -> String {
         ClashTVFeedback.text(ClashRemoteControlSettings.load(from: defaults).mode.title)
     }
 
@@ -111,7 +111,7 @@ struct ClashTVMoreHub: View {
 
      
      
-    static func proxyShareValue(defaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.appGroup)) -> String {
+    static func proxyShareValue(defaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)) -> String {
         ClashTVProxySharePresentation.rowValue(permitted: LocalNetworkPermission.isPermitted(defaults))
     }
 
@@ -198,7 +198,7 @@ struct ClashTVMoreHub: View {
                  
                 Section("Throughput") {
                     row(.speedUnit, value: Self.speedUnitValue(throughputUnit)) {
-                        Self.switchSpeedUnit(in: UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+                        Self.switchSpeedUnit(in: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
                     }
                 }
                 Section("System") {

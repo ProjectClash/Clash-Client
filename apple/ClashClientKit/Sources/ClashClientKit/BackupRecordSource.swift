@@ -64,7 +64,7 @@ public struct DirectoryBackupRecordSource: BackupRecordSource {
             guard let data = try? Data(contentsOf: directory.appendingPathComponent(name)),
                   let envelope = try? BackupEnvelope.decode(data) else { continue }
             let summary = BackupRecordSummary(installID: installID, sourceDevice: envelope.sourceDevice, exportedAt: envelope.exportedAt)
-            if let held = newest[installID], (held.exportedAt ?? .distantPast) >= (summary.exportedAt ?? .distantPast) { continue }
+            if let held = newest[installID], (held.exportedAt ?? .distantPast).timeIntervalSince(summary.exportedAt ?? .distantPast) >= 0 { continue }
             newest[installID] = summary
         }
         return newest.values.sorted { ($0.exportedAt ?? .distantPast) > ($1.exportedAt ?? .distantPast) }

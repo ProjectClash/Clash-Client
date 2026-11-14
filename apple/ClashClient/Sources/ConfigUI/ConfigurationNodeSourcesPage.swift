@@ -96,8 +96,9 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
             let records = snapshot.sources.filter {
                 $0.suppliesNodes && ($0.isListedInLibrary || selected.contains($0.id))
             }
+            let locale = AppPreferences.language().locale
             var rows = records.map { record in
-                SourceRow(id: record.id, label: record.label,
+                SourceRow(id: record.id, label: record.displayLabel(locale: locale),
                           detail: Self.summary(nodes: record.nodeCount, providers: record.providerCount),
                           isOn: selected.contains(record.id), kind: Kind.of(record))
             }
@@ -130,13 +131,6 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
 
      
      
-    func canTurnOff(_ id: String) -> Bool {
-        guard rows.first(where: { $0.id == id })?.isOn == true else { return true }
-        return rows.filter(\.isOn).count > 1
-    }
-
-     
-     
      
     func isOn(_ id: String) -> Bool { pressed.shown(id, else: rows.first { $0.id == id }?.isOn ?? false) }
 
@@ -145,9 +139,23 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
 
     func record(of id: String) -> ConfigurationSourceRecord? { library.sources.first { $0.id == id } }
 
+     
+     
+     
     func set(_ id: String, on: Bool) async {
-        if !on, !canTurnOff(id) { return }
+        await set(id, on: on, press: pressed.press(id, on))
+    }
+
+     
+     
+     
+     
+    func pressSource(_ id: String, on: Bool) {
         let press = pressed.press(id, on)
+        Task { await set(id, on: on, press: press) }
+    }
+
+    private func set(_ id: String, on: Bool, press: Int) async {
          
         defer { pressed.settle(id, press: press) }
         if on, let payload = legacy[id] {
@@ -163,10 +171,6 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
      
      
     func setScope(_ id: String, _ scope: ConfigurationNodeScope?) async {
-        if scope?.isEmpty == true, !canTurnOff(id) {
-            failure = ClashCopy.string("At least one node source stays on.", locale: AppPreferences.language().locale)
-            return
-        }
         await edit { draft in
             var scopes = draft.nodeScopes ?? [:]
             scopes[id] = scope?.isEmpty == true ? nil : scope
@@ -178,28 +182,82 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
 
      
      
+     
+     
     func add(_ payload: ConfigurationSourcePayload) async throws {
-        try await perform { draft in draft.add(payload, rule: nil) }
-        await load()
-    }
-
-     
-
-    private func edit(_ change: @escaping (inout ConfigurationCreationDraft) -> Void) async {
-        do { try await perform(change) } catch {
-            failure = error.localizedDescription
-            clashLogConfigurationWriteFailure(error)
-        }
-        await load()
-    }
-
-     
-     
-    private func perform(_ change: @escaping (inout ConfigurationCreationDraft) -> Void) async throws {
-        guard !busy else { throw ConfigurationLibraryError.busy }
-        busy = true
+        while writing { await withCheckedContinuation { idle.append($0) } }
+        writing = true
         failure = nil
-        defer { busy = false }
+        var thrown: Error?
+        do { try await perform { draft in draft.add(payload, rule: nil) } } catch { thrown = error }
+        await load()
+        await drive()
+        if let thrown { throw thrown }
+    }
+
+     
+
+    typealias Change = (inout ConfigurationCreationDraft) -> Void
+
+     
+     
+     
+     
+     
+    private func edit(_ change: @escaping Change) async {
+        await withCheckedContinuation { answer in
+            waiting.append((change, answer))
+            guard !writing else { return }
+            writing = true
+            failure = nil
+            Task { await self.drive() }
+        }
+    }
+
+     
+    private func drive() async {
+        while !waiting.isEmpty {
+            let batch = waiting
+            waiting = []
+            await apply(batch.map(\.change))
+            await load()
+            batch.forEach { $0.answer.resume() }
+        }
+        writing = false
+        let waiters = idle
+        idle = []
+        waiters.forEach { $0.resume() }
+    }
+
+     
+     
+     
+    private func apply(_ changes: [Change]) async {
+        do {
+            try await perform { draft in for change in changes { change(&draft) } }
+        } catch {
+            guard changes.count > 1 else { return refused(error) }
+            for change in changes {
+                do { try await perform(change) } catch { refused(error) }
+            }
+        }
+    }
+
+    private func refused(_ error: Error) {
+        failure = error.localizedDescription
+        clashLogConfigurationWriteFailure(error)
+    }
+
+     
+     
+     
+    private var writing = false { didSet { busy = writing } }
+    private var waiting: [(change: Change, answer: CheckedContinuation<Void, Never>)] = []
+    private var idle: [CheckedContinuation<Void, Never>] = []
+
+     
+     
+    private func perform(_ change: @escaping Change) async throws {
         guard let store = model.configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
         let snapshot = try await Task.detached(priority: .userInitiated) { try store.snapshot() }.value
         guard let recipe = snapshot.recipes.first(where: { $0.id == profileID }) else { return }
@@ -239,7 +297,7 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
     nonisolated static func group(of record: ConfigurationSourceRecord, scope: ConfigurationNodeScope?,
                                   in store: ConfigurationLibraryStore) throws -> NodeGroup {
         let group = try ConfigurationSourceContents.group(of: record, scope: scope, in: store)
-        return NodeGroup(id: group.id, label: group.label,
+        return NodeGroup(id: group.id, label: record.displayLabel(locale: AppPreferences.language().locale),
                          nodes: group.nodes.map { Node(name: $0.name, type: $0.type) },
                          providers: group.providers.map { Node(name: $0.name, type: $0.type) })
     }
@@ -258,8 +316,6 @@ struct ConfigurationNodeSourcesPage: View {
     @State private var adding = false
     @State private var managing = false
     @State private var scoping: ScopeTarget?
-     
-    @State private var keepsOneSource = false
     @Environment(\.configurationFieldCopy) private var fieldCopy
     @Environment(\.locale) private var locale
 
@@ -298,11 +354,10 @@ struct ConfigurationNodeSourcesPage: View {
             }
             Section {
                 Button { managing = true } label: { Text(clash: .copy("Manage Node Sources")) }
+                     
+                     
+                    .disabled(sources.busy)
                     .accessibilityIdentifier("configuration-editor.sources.manage")
-            } footer: {
-                if sources.rows.filter(\.isOn).count == 1 {
-                    Text(clash: .copy("At least one node source stays on."))
-                }
             }
             ForEach(sources.groups) { group in
                 Section {
@@ -322,6 +377,8 @@ struct ConfigurationNodeSourcesPage: View {
                         Button { scoping = ScopeTarget(record: record, scope: sources.scope(of: group.id)) } label: {
                             Text(clash: .copy("Select Nodes"))
                         }
+                         
+                        .disabled(sources.busy)
                         .accessibilityIdentifier("configuration-editor.sources.scope.\(group.id)")
                     }
                 } header: {
@@ -329,12 +386,14 @@ struct ConfigurationNodeSourcesPage: View {
                 }
             }
         }
-        .disabled(sources.busy)
+         
+         
         .navigationTitle(Text(clash: .copy(ConfigurationEditorCopy.title(of: section))))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 ControlGroup {
                     Button { adding = true } label: { Image(systemName: ClashSymbol.plus.name) }
+                        .disabled(sources.busy)
                         .accessibilityLabel(Text(clash: .copy("Add Source")))
                         .accessibilityIdentifier("configuration-editor.sources.add")
                 }
@@ -342,24 +401,19 @@ struct ConfigurationNodeSourcesPage: View {
             }
         }
         .task { await sources.load() }
-        .alert(Text(clash: .copy("Keep at least one node source")), isPresented: $keepsOneSource) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(clash: .copy("A configuration needs a source for its nodes. Turn on another source first."))
-        }
-        .sheet(isPresented: $adding, onDismiss: { Task { await sources.load() } }) {
+        .clashSheet(isPresented: $adding, onDismiss: { Task { await sources.load() } }) {
             ConfigurationSourceImportAdapter(model: model, kind: .subscription, choosesKind: true,
                                              finishImport: { adding = false }) { payload in
                 try await sources.add(payload)
             }
             .clashModalPresentation(.page)
         }
-        .sheet(isPresented: $managing, onDismiss: { Task { await sources.load() } }) {
+        .clashSheet(isPresented: $managing, onDismiss: { Task { await sources.load() } }) {
             ConfigurationSourceLibraryAdapter(model: model, library: sources.library,
                                               changed: { _ in }, close: { managing = false })
                 .clashModalPresentation(.page)
         }
-        .sheet(item: $scoping) { target in
+        .clashSheet(item: $scoping) { target in
             ConfigurationNodeScopeAdapter(model: model, source: target.record, staged: nil, initial: target.scope,
                                           save: { scope in
                                               scoping = nil
@@ -373,10 +427,7 @@ struct ConfigurationNodeSourcesPage: View {
          
          
          
-        Toggle(isOn: Binding(get: { sources.isOn(row.id) }, set: { on in
-            if !on, !sources.canTurnOff(row.id) { keepsOneSource = true; return }
-            Task { await sources.set(row.id, on: on) }
-        })) {
+        Toggle(isOn: Binding(get: { sources.isOn(row.id) }, set: { sources.pressSource(row.id, on: $0) })) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: row.label)
                 if let detail = row.detail {

@@ -19,7 +19,8 @@ enum ClashTVOverrideScript {
 
     static func apply(script: String, toYAML yaml: String, profileName: String) throws -> String {
         let json = try ConfigTransforms.yamlToJSON(yaml)
-        let scripted = try ScriptEngine.run(script: script, configJSON: json, profileName: profileName)
+        let scripted = try ScriptEngine.run(script: script, configJSON: json, profileName: profileName, caller: .surfaced,
+                                            name: ScriptEngine.LogName.tvOverride)
         return try ConfigTransforms.jsonToYAML(scripted)
     }
 }

@@ -407,6 +407,10 @@ fileprivate final class ModuleCarriedRegexes {
         self.table = table
     }
 
+     
+    static let forMemoryReason = "left out for memory: what was left as the rules were built holds no more regexes "
+        + "for header and body rewrites"
+
     func runs(_ carrier: Carrier) -> Bool { leftOut[carrier] == nil }
 
      
@@ -441,16 +445,21 @@ fileprivate final class ModuleCarriedRegexes {
         }
         let keys = pairs.map { ModuleRegexTable.CarriedKey(pattern: $0.pattern, options: $0.options.rawValue) }
          
-        guard held + Set(keys.filter { !table.carries($0) }).count <= budget else {
+         
+        let fresh = Set(keys.filter { !table.carries($0) }).count
+         
+         
+        let compiled = Set(keys.filter { !table.carries($0) && !table.holdsPinned($0) }).count
+        guard held + fresh <= budget, table.room.take(Int64(compiled) * ModuleEngineBudget.chargedPerCompiledRegex) else {
             overBudget += 1
-            leftOut[carrier] = "over budget: the engine holds at most \(budget) regexes for header and body rewrites, "
-                + "and the rules before it took them"
+            leftOut[carrier] = Self.forMemoryReason
             return nil
         }
         switch table.carry(keys) {
         case .success(let regexes):
             return zip(regexes, pairs).map { ($0, $1.template) }
         case .failure(let error):
+            table.room.give(Int64(compiled) * ModuleEngineBudget.chargedPerCompiledRegex)
             leftOutAtLoad += 1
             leftOut[carrier] = "a regex it carries does not compile: \(error.localizedDescription)"
             return nil
@@ -1127,11 +1136,8 @@ final class ModuleRewriteProgram {
      
      
      
-    #if os(macOS)
+     
     static let maximumCarriedRegexes = Int.max
-    #else
-    static let maximumCarriedRegexes = 256
-    #endif
 
      
      
@@ -1191,12 +1197,12 @@ final class ModuleRewriteProgram {
      
      
     convenience init(modules: [(module: ModuleGlobalManifest.Module, ir: ModuleIR)], leavingOut runLeftOut: Set<RunLeftOut> = [],
-                     grownTooLarge: Set<RunLeftOut> = [],
+                     grownTooLarge: Set<RunLeftOut> = [], room: Int64? = nil,
                      scriptFile: (String, String) -> URL?, moduleFile: (String, String) -> URL? = { _, _ in nil }) {
         self.init(inputs: modules.map { Input(module: $0.module, format: $0.ir.manifest.format, rewriteRules: $0.ir.rewriteRules,
                                                 scripts: $0.ir.scripts,
                                                 writtenFor: ModuleScriptFamily(format: $0.ir.manifest.format, sourceURL: $0.ir.manifest.sourceURL)) },
-                  leavingOut: runLeftOut, grownTooLarge: grownTooLarge, scriptFile: scriptFile, moduleFile: moduleFile)
+                  leavingOut: runLeftOut, grownTooLarge: grownTooLarge, scriptFile: scriptFile, moduleFile: moduleFile, room: room)
     }
 
      
@@ -1204,10 +1210,12 @@ final class ModuleRewriteProgram {
      
     convenience init(published: [ModulePublishedModule], leavingOut runLeftOut: Set<RunLeftOut> = [],
                      grownTooLarge: Set<RunLeftOut> = [],
-                     scriptFile: (String, String) -> URL?, moduleFile: (String, String) -> URL? = { _, _ in nil }) {
+                     scriptFile: (String, String) -> URL?, moduleFile: (String, String) -> URL? = { _, _ in nil },
+                     room: Int64? = nil) {
         self.init(inputs: published.map { Input(module: $0.module, format: $0.ir.format, rewriteRules: $0.ir.rewriteRules,
                                                   scripts: $0.ir.scripts, writtenFor: $0.ir.writtenFor) },
-                  leavingOut: runLeftOut, grownTooLarge: grownTooLarge, scriptFile: scriptFile, moduleFile: moduleFile)
+                  leavingOut: runLeftOut, grownTooLarge: grownTooLarge, scriptFile: scriptFile, moduleFile: moduleFile,
+                  room: room)
     }
 
      
@@ -1268,8 +1276,20 @@ final class ModuleRewriteProgram {
         }
     }
 
+     
+     
+     
     init(inputs: [Input], leavingOut runLeftOut: Set<RunLeftOut> = [], grownTooLarge: Set<RunLeftOut> = [],
-         scriptFile: (String, String) -> URL?, moduleFile: (String, String) -> URL? = { _, _ in nil }) {
+         scriptFile: (String, String) -> URL?, moduleFile: (String, String) -> URL? = { _, _ in nil },
+         room roomBytes: Int64? = nil) {
+         
+         
+         
+        #if os(iOS)
+        let room = ModuleProgramRoom(roomBytes, probe: { ModuleEngineBudget.onADevice ? ModuleEngineBudget.headroomForShare() : nil })
+        #else
+        let room = ModuleProgramRoom(roomBytes)
+        #endif
         var rules: [Rule] = []
         var drafts = Drafts(capacity: inputs.reduce(0) { $0 + $1.rewriteRules.count })
         var modules: [(id: String, name: String, family: ModuleFormat, writtenFor: ModuleScriptFamily)] = []
@@ -1316,7 +1336,7 @@ final class ModuleRewriteProgram {
          
          
          
-        let table = ModuleRegexTable(maximumPinned: ModuleGatedMatcher.maximumPinned)
+        let table = ModuleRegexTable(maximumPinned: ModuleGatedMatcher.maximumPinned, room: room)
         func matcher(_ patterns: [String]) -> ModuleGatedMatcher {
             ModuleGatedMatcher(patterns: patterns, table: table)
         }
@@ -1469,7 +1489,7 @@ final class ModuleRewriteProgram {
          
          
          
-        var jq = JQBuild()
+        var jq = JQBuild(room: room)
         for index in rules.indices {
             var draft = drafts[index]
             let steps = draft.extras.bodies.compactMap { action -> (expression: String, sha256: String?)? in
@@ -1588,15 +1608,13 @@ final class ModuleRewriteProgram {
      
      
      
-    #if os(macOS)
     static let maximumHeldJQBytes = Int.max
-    #else
-    static let maximumHeldJQBytes = 768 << 10
-    #endif
 
      
-    static let jqOverBudgetReason = "over budget: the engine holds at most \(maximumHeldJQBytes >> 10) KiB of jq programs, "
-        + "and the rules before it took them"
+    static var carriedForMemoryReason: String { ModuleCarriedRegexes.forMemoryReason }
+
+     
+    static let jqOverBudgetReason = "left out for memory: what was left as the rules were built holds no more jq programs"
 
      
      
@@ -1618,6 +1636,8 @@ final class ModuleRewriteProgram {
         private var unreadable: [String: String] = [:]
         private var charged = Set<String>()
         private(set) var bytes = 0
+         
+        let room: ModuleProgramRoom
 
         private enum Found {
             case program(ModuleJQ.Program)
@@ -1663,7 +1683,7 @@ final class ModuleRewriteProgram {
                 case .source(let text): cost += ModuleRewriteProgram.heldBytes(ofJQ: text)
                 }
             }
-            guard bytes + cost <= ModuleRewriteProgram.maximumHeldJQBytes else {
+            guard bytes + cost <= ModuleRewriteProgram.maximumHeldJQBytes, room.take(Int64(cost)) else {
                 return .failure(JQRefusal(reason: ModuleRewriteProgram.jqOverBudgetReason, overBudget: true))
             }
             var programs: [ModuleJQ.Program] = []
@@ -1684,6 +1704,8 @@ final class ModuleRewriteProgram {
                     } catch {
                         let why = sha256.map { "its jq file \($0) does not read: \(error)" } ?? "its jq expression does not read: \(error)"
                         unreadable[sha256 ?? key] = why
+                         
+                        room.give(Int64(cost))
                         return .failure(JQRefusal(reason: why))
                     }
                 }
@@ -2060,6 +2082,10 @@ final class ModuleRewriteProgram {
     var compiledRegexesAtMost: Int {
         carried.held + table.compiledAtMost
     }
+
+     
+     
+    var roomTaken: Int64 { table.room.taken }
 
      
      

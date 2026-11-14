@@ -119,6 +119,12 @@ public enum ClashLogRetention: String, CaseIterable, Sendable {
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
 public enum ClashLogSettings {
     public static let recordingKey = "logs.recording"
 
@@ -414,6 +420,11 @@ public final class ClashLogStore: @unchecked Sendable {
      
     private var preparedDirectory = false
     private var lastPruneKey: [ClashLogStream: String] = [:]
+#if os(macOS)
+     
+     
+    private let queueKey = DispatchSpecificKey<Void>()
+#endif
 
     public init(
         directory: URL? = ClashLogStore.defaultDirectory(),
@@ -427,6 +438,9 @@ public final class ClashLogStore: @unchecked Sendable {
         self.clock = clock
         self.settings = settings
         self.queue = writeQueue ?? DispatchQueue(label: "network.clash.logstore")
+#if os(macOS)
+        queue.setSpecific(key: queueKey, value: ())
+#endif
     }
 
      
@@ -441,7 +455,7 @@ public final class ClashLogStore: @unchecked Sendable {
     }
 
     public static func defaultSettings() -> UserDefaults? {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup)
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
     }
 
     public static func defaultDirectory() -> URL? {
@@ -458,6 +472,44 @@ public final class ClashLogStore: @unchecked Sendable {
          
          
         if let settings, !ClashLogSettings.isRecording(from: settings) { return }
+        appendLine(message, stream: stream, level: level)
+    }
+
+#if os(macOS)
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public func appendDiagnostic(
+        _ message: String,
+        stream: ClashLogStream = .app,
+        level: ClashLogLevel = .error
+    ) {
+        appendLine(message, stream: stream, level: level, budgeted: false, waitable: false)
+        guard DispatchQueue.getSpecific(key: queueKey) == nil else { return }
+        let written = DispatchSemaphore(value: 0)
+        queue.async { written.signal() }
+        _ = written.wait(timeout: .now() + .seconds(1))
+    }
+#endif
+
+    private func appendLine(
+        _ message: String,
+        stream: ClashLogStream,
+        level: ClashLogLevel,
+        budgeted: Bool = true,
+        waitable: Bool = true
+    ) {
          
          
          
@@ -490,17 +542,18 @@ public final class ClashLogStore: @unchecked Sendable {
          
         let budget = stream == .core ? coreBudget : appBudget
         let size = stamped.utf8.count
-        guard budget.reserve(size) else { return }
+        if budgeted { guard budget.reserve(size) else { return } }
         let operation: @Sendable () -> Void = { [weak self] in
             self?.write(stamped, stream: stream, on: day)
             self?.pruneExpired(stream, now: now)
+            guard budgeted else { return }
             let lost = budget.release(size)
             if lost > 0 {
                 self?.write("\(Self.timestamp(now))  WARNING  Log queue full; dropped \(lost) lines.\n",
                             stream: stream, on: day)
             }
         }
-        if isStartingUp() { queue.sync(execute: operation) }
+        if waitable, isStartingUp() { queue.sync(execute: operation) }
         else { queue.async(execute: operation) }
     }
 

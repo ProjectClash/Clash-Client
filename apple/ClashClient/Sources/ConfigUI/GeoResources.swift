@@ -59,7 +59,7 @@ enum GeoResource: String, CaseIterable, Identifiable {
  
 enum GeoResourceSettings {
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
     private static let lastSyncKey = "geo.lastSyncAt"
@@ -90,7 +90,7 @@ enum GeoResourceSettings {
                                 lastSync: Date?, now: Date) -> Bool {
         guard enabled else { return false }
         guard let lastSync else { return true }
-        return lastSync.addingTimeInterval(TimeInterval(intervalHours) * 3600) <= now
+        return lastSync.addingTimeInterval(TimeInterval(intervalHours) * 3600).timeIntervalSince(now) <= 0
     }
 }
 

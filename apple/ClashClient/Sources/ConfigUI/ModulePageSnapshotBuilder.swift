@@ -11,6 +11,9 @@ struct ModulePageFacts {
     var platform: ModulePlatform
     var state: ModuleState
      
+     
+    var locations: ModuleLocations? = nil
+     
     var modules: [String: ModuleIR] = [:]
      
      
@@ -49,10 +52,6 @@ struct ModulePageFacts {
     var isConnected = false
     var isBusy = false
      
-    var switching: [String: Bool] = [:]
-     
-    var decryptionSwitching: Bool?
-     
      
     var storedValues: [String: String] = [:]
      
@@ -65,6 +64,10 @@ struct ModulePageFacts {
      
     var panelsRefreshing: Set<String> = []
     var panelsFailed: Set<String> = []
+     
+     
+     
+    var counted: [String: ModulePageSnapshotBuilder.Counted] = [:]
 }
 
  
@@ -83,11 +86,8 @@ enum ModulePageSnapshotBuilder {
         let decryption = decryption(facts)
         let rows = facts.state.modules.map { record in
              
-            let ir = facts.modules[record.id]
-            let lines = ir.flatMap { ModuleDetailBuilder.writtenLines(facts.sources[record.id], of: $0) }
-            return row(record, ir: ir.map {
-                ModuleDetailBuilder.published($0, record: record, publication: facts.summary, written: lines)
-            }, locale: locale, decryption: decryption, written: lines)
+            let counted = facts.modules[record.id].map { counted(facts, record: record, ir: $0) }
+            return row(record, ir: counted?.published, locale: locale, decryption: decryption, written: counted?.written)
         }
         let install = install(facts)
         guard facts.state.enabled else {
@@ -98,12 +98,68 @@ enum ModulePageSnapshotBuilder {
              
             return ClashModulesSnapshot(isOn: false, isBusy: facts.isBusy,
                                         certificate: install == nil ? nil : certificate(facts, locale: locale), install: install,
-                                        notices: notices(facts, decryptionOn: false, locale: locale), modules: rows,
-                                        switching: facts.switching, decryptionSwitching: facts.decryptionSwitching)
+                                        notices: notices(facts, decryptionOn: false, locale: locale), modules: rows)
         }
         return ClashModulesSnapshot(isOn: true, isBusy: facts.isBusy, certificate: certificate(facts, locale: locale),
-                                    install: install, notices: notices(facts, decryptionOn: true, locale: locale), modules: rows,
-                                    switching: facts.switching, decryptionSwitching: facts.decryptionSwitching)
+                                    install: install, notices: notices(facts, decryptionOn: true, locale: locale), modules: rows)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    struct Counted: Sendable {
+         
+        var enabled: Bool
+        var ir: ModuleIR
+        var summary: ModulePublicationSummary?
+         
+        var written: [Substring]?
+        var published: ModuleIR
+
+         
+        func holds(_ record: ModuleRecord, ir: ModuleIR, summary: ModulePublicationSummary?) -> Bool {
+            enabled == record.enabled && self.summary == summary && self.ir == ir
+        }
+    }
+
+    static func counted(_ record: ModuleRecord, ir: ModuleIR, source: Data?, summary: ModulePublicationSummary?) -> Counted {
+        if Thread.isMainThread { CountedOnTheMainThread.note() }
+        let written = ModuleDetailBuilder.writtenLines(source, of: ir)
+        return Counted(enabled: record.enabled, ir: ir, summary: summary, written: written,
+                       published: ModuleDetailBuilder.published(ir, record: record, publication: summary, written: written))
+    }
+
+     
+    static func counted(_ records: [ModuleRecord], modules: [String: ModuleIR], sources: [String: Data],
+                        summary: ModulePublicationSummary?) -> [String: Counted] {
+        var out: [String: Counted] = [:]
+        for record in records {
+            guard let ir = modules[record.id] else { continue }
+            out[record.id] = counted(record, ir: ir, source: sources[record.id], summary: summary)
+        }
+        return out
+    }
+
+     
+    static func counted(_ facts: ModulePageFacts, record: ModuleRecord, ir: ModuleIR) -> Counted {
+        if let kept = facts.counted[record.id], kept.holds(record, ir: ir, summary: facts.summary) { return kept }
+        return counted(record, ir: ir, source: facts.sources[record.id], summary: facts.summary)
+    }
+
+     
+     
+     
+    enum CountedOnTheMainThread {
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var count = 0
+        static func note() { lock.lock(); count += 1; lock.unlock() }
+        static var total: Int { lock.lock(); defer { lock.unlock() }; return count }
     }
 
      
@@ -145,25 +201,40 @@ enum ModulePageSnapshotBuilder {
      
      
      
+     
     static func decryption(_ facts: ModulePageFacts) -> ModuleDetailBuilder.Decryption {
         guard facts.state.enabled else { return .off }
         if facts.certificateUnreadable || facts.certificate != .ready { return .notReady(.certificate) }
         if let summary = facts.summary {
             if summary.notApplied != nil { return .notReady(.unavailable) }
             for reason in summary.reasons where kind(of: reason) == .decryption {
-                return reason == .portsTaken ? .notReady(.preparing) : .notReady(.unavailable)
+                switch reason {
+                case .portsTaken: return .notReady(.preparing)
+                 
+                case .stoppedForMemory: return .notReady(.onHold)
+                default: return .notReady(.unavailable)
+                }
             }
              
              
             if !summary.engineInjected { return .notReady(.preparing) }
         }
         if facts.isConnected, let report = facts.report {
+             
+             
+             
+             
+             
+            var unusable = false
+            if case .certificateUnreadable? = report.failure { unusable = true }
+            if report.rung == .engineStopped, !unusable, [.starting, .running, .passThrough].contains(report.state) {
+                return .notReady(.onHold)
+            }
             switch report.state {
             case .starting: return .notReady(.preparing)
             case .passThrough, .failed: return .notReady(.unavailable)
             case .running:
-                if report.rung == .engineStopped { return .notReady(.unavailable) }
-                if case .certificateUnreadable? = report.failure { return .notReady(.unavailable) }
+                if unusable { return .notReady(.unavailable) }
             case .stopped:
                 break  
             }
@@ -324,7 +395,7 @@ enum ModulePageSnapshotBuilder {
              
              
             return nil
-        case .moduleRulesLeftOut, .moduleEntriesLeftOut, .moduleSettingsLeftOut, .notApplied:
+        case .moduleRulesLeftOut, .moduleEntriesLeftOut, .moduleSettingsLeftOut, .notApplied, .snifferWrittenOff, .snifferNotCompleted:
             return .modules
         case .engineUnavailable, .portsTaken, .groupsNotAdjustable, .sectionNotAdjustable, .alreadyPublished, .engineNameTaken:
             return .decryption
@@ -342,7 +413,8 @@ enum ModulePageSnapshotBuilder {
     static func notices(_ facts: ModulePageFacts, decryptionOn: Bool, locale: Locale) -> [ClashModulesSnapshot.Notice] {
         var out: [ClashModulesSnapshot.Notice] = []
         var said: [AuthoredText: Int] = [:]
-        func add(_ kind: NoticeKind, _ id: String, _ text: AuthoredText, action: ClashModulesSnapshot.NoticeAction? = nil) {
+        func add(_ kind: NoticeKind, _ id: String, _ text: AuthoredText, action: ClashModulesSnapshot.NoticeAction? = nil,
+                 shown: ClashDisplayText? = nil, place: ClashModulesSnapshot.NoticePlace? = nil) {
             guard decryptionOn || kind == .modules else { return }
             if let index = said[text] {
                  
@@ -355,8 +427,8 @@ enum ModulePageSnapshotBuilder {
             }
             said[text] = out.count
              
-            out.append(.init(id: id, text: text.displayText, action: action, actionTitle: action.map(title(for:)),
-                             tone: ModuleEngineInsight.Copy.onHold.contains(text) ? .onHold : .attention))
+            out.append(.init(id: id, text: shown ?? text.displayText, action: action, actionTitle: action.map(title(for:)),
+                             tone: ModuleEngineInsight.Copy.onHold.contains(text) ? .onHold : .attention, place: place))
         }
          
         if let failure = facts.actionFailure { add(.modules, "action", actionNotice(failure, facts, locale: locale)) }
@@ -372,7 +444,8 @@ enum ModulePageSnapshotBuilder {
                 guard !decrypting else { continue }
                 decrypting = true
             }
-            add(about, "reason-" + reason.spelling, reason.authoredText, action: tryAgain(reason) ? .retryAfterMemoryStop : nil)
+            add(about, "reason-" + reason.spelling, reason.authoredText, action: tryAgain(reason) ? .retryAfterMemoryStop : nil,
+                shown: shown(reason, on: facts.platform, locale: locale), place: place(of: reason, profileID: facts.summary?.profileID))
         }
          
          
@@ -392,6 +465,93 @@ enum ModulePageSnapshotBuilder {
      
      
      
+    static func shown(_ reason: ModuleDegradeReason) -> ClashDisplayText {
+        switch reason {
+        case .snifferWrittenOff, .snifferNotCompleted:
+            guard case .app(let key, let names) = reason.authoredText else { return reason.authoredText.displayText }
+            return .formatCopy(key, names)
+        case .engineUnavailable, .certificateNotTrusted, .certificateMissing, .certificateUnusable, .stoppedForMemory,
+             .portsTaken, .noCertificateAddress, .groupsNotAdjustable, .sectionNotAdjustable, .alreadyPublished,
+             .moduleRulesLeftOut, .moduleEntriesLeftOut, .moduleSettingsLeftOut, .engineNameTaken, .notApplied:
+            return reason.authoredText.displayText
+        }
+    }
+
+     
+     
+     
+    static func shown(_ reason: ModuleDegradeReason, on platform: ModulePlatform, locale: Locale,
+                      copy: ConfigurationFieldCopy = .shared) -> ClashDisplayText {
+        guard platform == .mac, let words = macSnifferNotice(reason, locale: locale, copy: copy) else { return shown(reason) }
+        return words
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func macSnifferNotice(_ reason: ModuleDegradeReason, locale: Locale,
+                                 copy: ConfigurationFieldCopy) -> ClashDisplayText? {
+         
+         
+         
+        let language = ConfigurationFieldCopy.Language.shown(in: locale)
+        let chapter = "sniffer"
+        func title(_ path: String) -> String? { copy.entry(forPath: path, language: language)?.title }
+        switch reason {
+        case .snifferWrittenOff(let keys):
+            let needed = ModuleDegradeReason.snifferKeys(keys)
+            let order = copy.layout(forPath: chapter, language: language)?.flatMap(\.keys) ?? []
+            var seen = Set<String>()
+            let names = (order.filter { needed.contains($0) && seen.insert($0).inserted } + needed.filter { !seen.contains($0) })
+                .compactMap { title(chapter + "." + $0) }
+            guard !names.isEmpty else {
+                guard let section = title(chapter) else { return nil }
+                return .format(ModuleDegradeReason.macSnifferWrittenOffInSectionSentence, [section])
+            }
+            return .format(ModuleDegradeReason.macSnifferWrittenOffSentence(count: names.count), names)
+        case .snifferNotCompleted:
+            guard let enable = title(chapter + ".enable") else { return nil }
+            return .format(ModuleDegradeReason.macSnifferNotCompletedSentence, [enable])
+        case .engineUnavailable, .certificateNotTrusted, .certificateMissing, .certificateUnusable, .stoppedForMemory,
+             .portsTaken, .noCertificateAddress, .groupsNotAdjustable, .sectionNotAdjustable, .alreadyPublished,
+             .moduleRulesLeftOut, .moduleEntriesLeftOut, .moduleSettingsLeftOut, .engineNameTaken, .notApplied:
+            return nil
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    static func place(of reason: ModuleDegradeReason, profileID: String?) -> ClashModulesSnapshot.NoticePlace? {
+        switch reason {
+        case .snifferWrittenOff, .snifferNotCompleted:
+            return profileID.map { .snifferSettings(profileID: $0) }
+        case .engineUnavailable, .certificateNotTrusted, .certificateMissing, .certificateUnusable, .stoppedForMemory,
+             .portsTaken, .noCertificateAddress, .groupsNotAdjustable, .sectionNotAdjustable, .alreadyPublished,
+             .moduleRulesLeftOut, .moduleEntriesLeftOut, .moduleSettingsLeftOut, .engineNameTaken, .notApplied:
+            return nil
+        }
+    }
+
+     
+     
+     
+     
      
      
     static func tryAgain(_ reason: ModuleDegradeReason) -> Bool {
@@ -400,7 +560,7 @@ enum ModulePageSnapshotBuilder {
             return true
         case .stoppedForMemory, .certificateNotTrusted, .certificateMissing, .portsTaken, .noCertificateAddress,
              .groupsNotAdjustable, .sectionNotAdjustable, .alreadyPublished, .moduleRulesLeftOut, .moduleEntriesLeftOut,
-             .moduleSettingsLeftOut, .engineNameTaken, .notApplied:
+             .moduleSettingsLeftOut, .engineNameTaken, .notApplied, .snifferWrittenOff, .snifferNotCompleted:
             return false
         }
     }
@@ -460,7 +620,7 @@ enum ModulePageSnapshotBuilder {
          
         case .unknown: source = .unknown
         }
-        let name = record.displayName.isEmpty ? ownName(record, locale: locale) : record.displayName
+        let name = shownName(record, locale: locale)
          
         let failed = record.lastFailure != nil || record.failureFromALaterBuild
         let failure: ClashDisplayText? = failed && source != .local ? "Update failed" : nil
@@ -474,6 +634,12 @@ enum ModulePageSnapshotBuilder {
             ignoredCount: ir?.ignoredCount ?? 0, enabled: record.enabled,
             failure: failure, link: link,
             waitingCount: waiting, waitsFor: waiting > 0 ? decryption.wait : nil)
+    }
+
+     
+     
+    static func shownName(_ record: ModuleRecord, locale: Locale) -> String {
+        record.displayName.isEmpty ? ownName(record, locale: locale) : record.displayName
     }
 
      

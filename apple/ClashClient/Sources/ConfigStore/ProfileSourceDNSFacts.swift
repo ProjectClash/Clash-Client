@@ -35,7 +35,7 @@ enum ProfileSourceDNSFacts {
         let generated = try? ProfileRuntimeConfigBuilder.buildProduction(
             raw: sourceYAML,
             profile: profile,
-            applyProxyChain: false
+            applyProxyChain: false, scripts: .silent
         )
         return read(sourceYAML: generated ?? sourceYAML)
     }

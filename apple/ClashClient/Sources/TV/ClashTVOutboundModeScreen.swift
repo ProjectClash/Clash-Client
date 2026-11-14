@@ -135,3 +135,19 @@ struct ClashTVOutboundModeScreen: View {
         return String(localized: "\(mode.title) · applies when you connect")
     }
 }
+
+ 
+ 
+ 
+ 
+ 
+enum ClashTVGlobalModeQuestion {
+    static let title = "Switch to Global Mode?"
+
+    static func message(_ exit: ClashTunnelOutboundMode.GlobalExit) -> String {
+        ClashTunnelOutboundMode.questionKey(exit)
+    }
+
+     
+    static let groupName = "GLOBAL"
+}

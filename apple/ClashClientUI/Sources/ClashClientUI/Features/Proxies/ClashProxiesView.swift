@@ -74,23 +74,57 @@ enum ClashProxyMemberSlicePlan {
             start..<min(start + stripe, count)
         }
     }
+
+     
+     
+    static func rowAnchor(slice: String, row: Int) -> String {
+        "\(slice).row.\(row)"
+    }
 }
 
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 struct ClashProxyLocatePlan: Equatable {
+     
+    let slice: String
+     
+    let row: Int
+     
+     
+     
+    let offset: Int
+     
     let anchor: String
     let revealsAll: Bool
+     
+     
+    let awaitsWhole: Bool
+
+     
+     
+     
+    static let wait: TimeInterval = 10
 
     static func make(group: String, ordered: [String], selection: String?, isRevealed: Bool,
-                     renderCap: Int, columns: Int) -> Self? {
+                     carriesSelection: Bool = false, renderCap: Int, columns: Int) -> Self? {
         guard let selection, let position = ordered.firstIndex(of: selection) else { return nil }
-        let revealsAll = !isRevealed && position >= renderCap
+        let revealsAll = !isRevealed && (position >= renderCap || carriesSelection)
         let shown = isRevealed || revealsAll ? ordered.count : min(ordered.count, renderCap)
-        guard let slice = ClashProxyMemberSlicePlan.make(count: shown, columns: columns)
+        guard let range = ClashProxyMemberSlicePlan.make(count: shown, columns: columns)
             .first(where: { $0.contains(position) }) else { return nil }
-        return Self(anchor: "group.\(group).members.\(slice.lowerBound)", revealsAll: revealsAll)
+        let slice = "group.\(group).members.\(range.lowerBound)"
+        let row = (position - range.lowerBound) / max(columns, 1)
+        return Self(slice: slice, row: row, offset: position - range.lowerBound,
+                    anchor: ClashProxyMemberSlicePlan.rowAnchor(slice: slice, row: row),
+                    revealsAll: revealsAll, awaitsWhole: carriesSelection)
     }
 }
 
@@ -256,6 +290,12 @@ struct ProxyIndexPreparationKey: Equatable {
      
      
     let hiddenGroups: [ClashProxyGroupSnapshot]
+     
+     
+     
+     
+     
+     
     let latencyByName: [String: ClashProxyLatencyState]
     let isConnected: Bool
     let sort: ClashProxiesDisplayPreferences.Sort
@@ -272,7 +312,7 @@ struct ProxyIndexPreparationKey: Equatable {
     ) {
         groups = proxies.groups
         hiddenGroups = proxies.hiddenGroups
-        latencyByName = proxies.latencyByName
+        latencyByName = sort == .delay ? proxies.latencyByName : [:]
         isConnected = proxies.isConnected
         self.sort = sort
         self.orderingGroupNames = orderingGroupNames
@@ -350,8 +390,16 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
              
              
              
-            && p.latencyByName == q.latencyByName
+             
+             
+             
+             
+             
+            && (!Self.ordersByLatency(p) || p.latencyByName == q.latencyByName)
         let sweepEqual = p.isConnected == q.isConnected
+             
+             
+            && p.liveCatalog == q.liveCatalog
         let chromeEqual = p.displayPreferences == q.displayPreferences
             && p.catalogState == q.catalogState
             && p.canRefreshCatalog == q.canRefreshCatalog
@@ -394,8 +442,9 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                 else if p.searchableProxies != q.searchableProxies { field = "searchable" }
                 else if p.providers != q.providers { field = "providers" }
                 else if p.ungrouped != q.ungrouped { field = "ungrouped" }
-                else if p.latencyByName != q.latencyByName { field = "latency" }
+                else if Self.ordersByLatency(p), p.latencyByName != q.latencyByName { field = "latency" }
                 else if p.isConnected != q.isConnected { field = "connected" }
+                else if p.liveCatalog != q.liveCatalog { field = "live-catalog" }
                 else if p.displayPreferences != q.displayPreferences { field = "prefs" }
                 else if p.catalogState != q.catalogState { field = "catalog-state" }
                 else if p.canRefreshCatalog != q.canRefreshCatalog { field = "can-refresh" }
@@ -407,6 +456,12 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             }
         }
         return equal
+    }
+
+     
+     
+    nonisolated static func ordersByLatency(_ p: ClashProxiesSnapshot) -> Bool {
+        p.displayPreferences.sort == .delay
     }
 
     private let snapshot: AppleClientSnapshot
@@ -510,6 +565,13 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
      
      
     @State private var revealedFullGroups: Set<String> = []
+     
+     
+    @State private var locateMarker: ClashProxyLocatePlan?
+     
+     
+    @State private var locateAwaitedGroup: String?
+    @State private var locateAwaitedSince: Date?
     @State private var preferences: ClashProxiesDisplayPreferences
     @State private var showsDisplayOptions = false
      
@@ -561,7 +623,8 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             preferences: initialPreferences,
             expanded: initialExpanded,
             isSearching: false,
-            selectedTab: nil
+            selectedTab: nil,
+            liveCatalog: snapshot.proxies.liveCatalog ?? false
         )
         _preferences = State(initialValue: initialPreferences)
         _index = State(
@@ -635,7 +698,7 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
         root
             .clashContentHeading("Proxies")
             .background(partialGroupSearch)
-            .sheet(
+            .clashSheet(
                 isPresented: $showsDisplayOptions,
                 onDismiss: commitDisplayOptions
             ) {
@@ -818,7 +881,8 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             preferences: preferences,
             expanded: expanded,
             isSearching: isSearching,
-            selectedTab: selectedTab
+            selectedTab: selectedTab,
+            liveCatalog: snapshot.proxies.liveCatalog ?? false
         )
     }
 
@@ -828,6 +892,7 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
         expanded: Set<String>,
         isSearching: Bool,
         selectedTab: String?,
+        liveCatalog: Bool = true,
         drawsTabs: Bool = ClashProxiesBrowserPlatform.drawsTabs
     ) -> Set<String> {
         if drawsTabs, preferences.style == .tabs {
@@ -835,7 +900,10 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                groups.contains(where: { $0.name == selectedTab }) {
                 return [selectedTab]
             }
-            return groups.first.map { [$0.name] } ?? []
+             
+            return ClashProxyBrowsing.defaultTab(groups.map(\.name),
+                                                 skipping: ClashProxyBrowsing.notOpenedUnasked(groups, liveCatalog: liveCatalog))
+                .map { [$0] } ?? []
         }
         return Set(groups.lazy.filter {
             isSearching || expanded.contains($0.name)
@@ -880,7 +948,8 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             preferences: value,
             expanded: expanded,
             isSearching: isSearching,
-            selectedTab: selectedTab
+            selectedTab: selectedTab,
+            liveCatalog: snapshot.proxies.liveCatalog ?? false
         )
         let previous = index
         let key = ProxyIndexPreparationKey(
@@ -1009,6 +1078,9 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                     .background(ClashProxiesPageScrollReader(scroll: pageScroll))
             }
         }
+         
+         
+        .onChange(of: locateOnceWhole) { locateAgain($0) }
     }
 
     @ViewBuilder
@@ -1071,9 +1143,9 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             showsDismissControl: showsDismissControl,
             hasExpandedGroups: hasExpandedGroups,
             canRefreshCatalog: snapshot.proxies.canRefreshCatalog == true,
-            refreshDisabled:
-                snapshot.proxies.effectiveCatalogState == .loading
-                    || snapshot.proxies.isTestingLatency,
+             
+             
+            refreshDisabled: snapshot.proxies.effectiveCatalogState == .loading,
             preferences: $preferences,
             onDismiss: { dismiss() },
             onToggleFold: { toggleAllGroups() },
@@ -1399,6 +1471,13 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                 ClashGroupRefusalLine(group: group.name, refusal: refusal)
                     .padding(.bottom, ClashTheme.Spacing.compact)
             }
+             
+             
+             
+             
+             
+             
+            refusalCaption(for: group)
         }
         .id("group.\(group.name)")
     }
@@ -1416,6 +1495,12 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             isConnected: snapshot.proxies.isConnected,
             currentSelection: selection,
             latency: snapshot.proxies.displayedLatency(forGroup: group),
+            latencyPulse: latencyPulse,
+            gate: activePulseGate,
+            seed: (latencyPulseSnapshot?()).map {
+                ClashLatencyGroupFace.reading(
+                    $0, group: group, memberKeys: { ClashLatencyGroupFace.memberKeys(of: group) }, kept: .init())
+            } ?? .init(),
             showsUnpin: snapshot.proxies.offersUnpin(for: group)
                 && selection != nil,
              
@@ -1493,7 +1578,9 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             + (browsedUngrouped.isEmpty ? [] : [ClashProxyBrowsing.ungroupedKey])
          
          
-        let active = tabs.contains(selectedTab ?? "") ? selectedTab : tabs.first
+        let active = tabs.contains(selectedTab ?? "") ? selectedTab
+            : ClashProxyBrowsing.defaultTab(tabs, skipping: ClashProxyBrowsing.notOpenedUnasked(
+                browsedGroups, liveCatalog: snapshot.proxies.liveCatalog ?? false))
 
         HStack(spacing: ClashTheme.Spacing.compact) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1703,6 +1790,9 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                         ForEach(row.members[range.lowerBound..<end]) { member in
                             memberCard(member, in: group)
                         }
+                    }
+                    .overlay(alignment: .top) {
+                        locateMarkerOverlay(for: row, count: end - range.lowerBound)
                     }
                     .padding(.bottom, ClashTheme.Spacing.compact)
                 }
@@ -2286,7 +2376,11 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                 ?? snapshot.proxies.initiallyExpandedGroup
                 ?? snapshot.proxies.rememberedOpenGroup,
             isSearching: isSearching,
-            readerFoldedAll: snapshot.proxies.readerFoldedAll ?? false
+            readerFoldedAll: snapshot.proxies.readerFoldedAll ?? false,
+             
+             
+            notAsFallback: ClashProxyBrowsing.notOpenedUnasked(snapshot.proxies.groups,
+                                                               liveCatalog: snapshot.proxies.liveCatalog ?? false)
         ) else { return }
         ClashPerf.emit("proxies keep-open group=\(name)")
         expanded = [name]
@@ -2357,24 +2451,76 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
      
      
      
+     
+     
+     
     private func locate(_ group: ClashProxyGroupSnapshot) -> String? {
-        let ordered = index.renderingMembers(in: group, for: snapshot.proxies, sortedBy: preferences.sort).map(\.name)
-        guard let plan = ClashProxyLocatePlan.make(
-            group: group.name, ordered: ordered, selection: visibleSelection(in: group),
-            isRevealed: revealedFullGroups.contains(group.name),
-            renderCap: Self.memberRenderCap, columns: gridColumns.count
-        ) else { return nil }
+        guard let plan = locatePlan(group) else { return nil }
         if !expanded.contains(group.name) { toggle(group) }
-        if plan.revealsAll {
-            revealedFullGroups.insert(group.name)
-            if !group.hasEveryMember { send(.loadMembers(group: group.name)) }
-        }
+        if plan.revealsAll { revealedFullGroups.insert(group.name) }
+        if plan.awaitsWhole { send(.loadMembers(group: group.name)) }
+        locateMarker = plan
+        locateAwaitedGroup = plan.awaitsWhole ? group.name : nil
+        locateAwaitedSince = plan.awaitsWhole ? Date() : nil
         return plan.anchor
+    }
+
+    private func locatePlan(_ group: ClashProxyGroupSnapshot) -> ClashProxyLocatePlan? {
+        let ordered = index.renderingMembers(in: group, for: snapshot.proxies, sortedBy: preferences.sort).map(\.name)
+        return ClashProxyLocatePlan.make(
+            group: group.name, ordered: ordered, selection: visibleSelection(in: group),
+            isRevealed: revealedFullGroups.contains(group.name), carriesSelection: group.carriesSelection,
+            renderCap: Self.memberRenderCap, columns: gridColumns.count
+        )
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    private var locateOnceWhole: ClashProxyLocatePlan? {
+        guard let name = locateAwaitedGroup, expanded.contains(name), !isSearching,
+              let group = snapshot.proxies.group(named: name), group.hasEveryMember
+        else { return nil }
+        return locatePlan(group)
+    }
+
+     
+    private func locateAgain(_ plan: ClashProxyLocatePlan?) {
+        guard let plan else { return }
+        let since = locateAwaitedSince
+        locateAwaitedGroup = nil
+        locateAwaitedSince = nil
+        guard let since, Date().timeIntervalSince(since) <= ClashProxyLocatePlan.wait else { return }
+        locateMarker = plan
+        scrollPage(to: AnyHashable(plan.anchor), anchor: .center)
+    }
+
+     
+    @ViewBuilder
+    private func locateMarkerOverlay(for row: ClashProxyAccordionRow, count: Int) -> some View {
+        if let marker = locateMarker, marker.slice == row.id, count > 0 {
+            let columns = max(gridColumns.count, 1)
+            let rows = (count + columns - 1) / columns
+            if marker.offset < count {
+                ClashGridRowMarker(rows: rows, row: marker.offset / columns, id: AnyHashable(marker.anchor))
+            }
+        }
     }
 
     private func toggle(_ group: ClashProxyGroupSnapshot) {
         let wasOpen = expanded.contains(group.name)
         ClashPerf.markGroupFold(wasOpen: wasOpen)
+         
+         
+        if locateAwaitedGroup != nil {
+            locateAwaitedGroup = nil
+            locateAwaitedSince = nil
+        }
          
          
          
@@ -2446,7 +2592,7 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
          
          
         if !member.isGroup,
-           index.source == snapshot.proxies,
+           index.answersDetails(for: snapshot.proxies),
            let detail = index.detail(for: member)
         {
             return detail
@@ -2543,12 +2689,21 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
      
      
     private func scrollToGroup(_ name: String) {
+        scrollPage(to: Self.groupAnchor(name), anchor: .top) {
+            ClashPerf.emit("proxies entry-scroll dest=\(name)")
+        }
+    }
+
+     
+     
+     
+    private func scrollPage(to id: AnyHashable, anchor: UnitPoint, then trace: @escaping () -> Void = {}) {
         let outer = scrollToID
         let page = pageScroll
         DispatchQueue.main.async {
             guard let scroll = outer ?? page.request else { return }
-            ClashPerf.emit("proxies entry-scroll dest=\(name)")
-            scroll(Self.groupAnchor(name))
+            trace()
+            scroll(id, anchor: anchor)
         }
     }
 
@@ -2656,12 +2811,51 @@ struct ClashProxyMemberCard: View, Equatable {
      
     var gate: ClashLatencyPulseGate?
     @State private var liveLatency: ClashProxyLatencyState?
+     
+     
+    @State private var settledLatency: ClashProxyLatencyState?
+     
+     
+     
+     
+    @State private var latencyTap: ClashLatencyTap?
 
      
      
      
      
     private var shownLatency: ClashProxyLatencyState { pulse == nil ? latency : liveLatency ?? latency }
+
+     
+     
+    private func setLive(_ value: ClashProxyLatencyState?) {
+        let settled = ClashLatencySlotFace.settled(writing: value, over: shownLatency, kept: settledLatency)
+        if settled != settledLatency { settledLatency = settled }
+        liveLatency = value
+    }
+
+     
+     
+     
+     
+     
+    private var slotTest: (() -> Void)? {
+        onTest.map { test in
+            {
+                guard ClashLatencyTap.canTap(shown: shownLatency, tap: latencyTap, now: Date()) else { return }
+                let tap = ClashLatencyTap(before: latencyTap?.before ?? shownLatency, at: Date())
+                latencyTap = tap
+                test()
+                setLive(.testing)
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(ClashLatencyTap.expiry * 1_000_000_000))
+                    guard latencyTap == tap, liveLatency == .testing else { return }
+                    setLive(tap.before)
+                    latencyTap = nil
+                }
+            }
+        }
+    }
 
     var body: some View {
          
@@ -2708,7 +2902,7 @@ struct ClashProxyMemberCard: View, Equatable {
         .accessibilityElement(children: .combine)
         .accessibilityValue(isCurrent ? "Selected" : "")
         .latencyTestAction(
-            onTest.map { test in ClashProxyLatencyAffordance.of(shownLatency) == .inProgress ? {} : test },
+            slotTest.map { test in ClashProxyLatencyAffordance.of(shownLatency) == .inProgress ? {} : test },
             offered: showsLatency
         )
         .accessibilityIdentifier("proxies.member.\(member.name)")
@@ -2736,18 +2930,27 @@ struct ClashProxyMemberCard: View, Equatable {
                      
                      
                      
-                    liveLatency = ClashLatencyKey.reading(name, in: batch.results) ?? .untested
-                } else if let landed = ClashLatencyKey.reading(name, in: batch.results) {
-                    liveLatency = landed
-                } else if ClashLatencyKey.isTesting(name, in: batch.testing) {
-                    liveLatency = .testing
+                    if let tap = latencyTap, !ClashLatencyKey.isNamed(name, in: batch.landed) {
+                         
+                         
+                         
+                        let settled = tap.afterSilentPulse(now: Date())
+                        setLive(settled)
+                        if settled != .testing { latencyTap = nil }
+                    } else {
+                        setLive(ClashLatencyKey.reading(name, in: batch.results) ?? .untested)
+                        if latencyTap != nil { latencyTap = nil }
+                    }
+                } else if let live = ClashLatencySlotFace.liveReading(testingPulse: batch, key: name, tapped: latencyTap != nil) {
+                    setLive(live)
+                    if live != .testing, latencyTap != nil { latencyTap = nil }
                 }
             } else if !batch.isTesting {
                  
                  
                  
                  
-                liveLatency = nil
+                setLive(nil)
             }
         }
     }
@@ -2827,11 +3030,11 @@ struct ClashProxyMemberCard: View, Equatable {
             chainLine
              
              
-             
             ClashProxyLatencyIndicator(
                 state: shownLatency,
+                settled: settledLatency,
                 failureCategory: failureCategory,
-                onTest: onTest
+                onTest: slotTest
             )
                 .latencySlot(shown: showsLatency)
                 .alignmentGuide(.clashLatencyRow) { $0[VerticalAlignment.center] }
@@ -2856,8 +3059,9 @@ struct ClashProxyMemberCard: View, Equatable {
                     Spacer(minLength: 4)
                     ClashProxyLatencyIndicator(
                         state: shownLatency,
+                        settled: settledLatency,
                         failureCategory: failureCategory,
-                        onTest: onTest
+                        onTest: slotTest
                     )
                         .latencySlot(shown: showsLatency)
                         .alignmentGuide(.clashLatencyRow) { $0[VerticalAlignment.center] }
@@ -2893,8 +3097,9 @@ struct ClashProxyMemberCard: View, Equatable {
                     Spacer(minLength: 2)
                     ClashProxyLatencyIndicator(
                         state: shownLatency,
+                        settled: settledLatency,
                         failureCategory: failureCategory,
-                        onTest: onTest
+                        onTest: slotTest
                     )
                         .latencySlot(shown: showsLatency)
                         .alignmentGuide(.clashLatencyRow) { $0[VerticalAlignment.center] }
@@ -2917,10 +3122,19 @@ struct ClashProxyMemberCard: View, Equatable {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 2)
+             
+             
+             
+             
+             
+             
+             
+             
             ClashProxyLatencyIndicator(
                 state: shownLatency,
+                settled: settledLatency,
                 failureCategory: failureCategory,
-                usesDot: true
+                onTest: slotTest
             )
                 .latencySlot(shown: showsLatency)
                 .alignmentGuide(.clashLatencyRow) { $0[VerticalAlignment.center] }
@@ -2962,9 +3176,10 @@ private extension View {
 private struct ClashProxyLatencyIndicator: View {
     let state: ClashProxyLatencyState
      
+    var settled: ClashProxyLatencyState? = nil
+     
      
     var failureCategory: String = ""
-    var usesDot = false
      
      
     var onTest: (() -> Void)?
@@ -3007,30 +3222,36 @@ private struct ClashProxyLatencyIndicator: View {
         .layoutPriority(1)
     }
 
-    @ViewBuilder
+     
+     
+     
     private var indicator: some View {
+        let slot = ClashLatencySlotFace(shown: state, settled: settled)
+        return ZStack(alignment: .trailing) {
+            face(slot.face)
+                .opacity(slot.isTesting ? 0 : 1)
+                .accessibilityHidden(slot.isTesting)
+            if slot.isTesting {
+                ClashLatencySpinner(diameter: 10)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func face(_ state: ClashProxyLatencyState) -> some View {
         switch state {
-        case .untested:
+        case .untested, .testing:
              
              
             Image(systemName: ClashSymbol.bolt.rawValue)
                 .font(.caption2)
                 .foregroundStyle(.tint)
                 .accessibilityLabel("Test latency")
-        case .testing:
-            ProgressView()
-                .controlSize(.mini)
-                .accessibilityLabel("Testing latency")
         case .measured(let milliseconds):
-            if usesDot {
-                latencyDot(color: color(milliseconds))
-                    .accessibilityLabel("\(milliseconds)ms")
-            } else {
-                Text("\(milliseconds)ms")
-                    .font(.caption2.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(color(milliseconds))
-            }
+            Text("\(milliseconds)ms")
+                .font(.caption2.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(color(milliseconds))
         case .failed, .timedOut:
              
              
@@ -3050,22 +3271,9 @@ private struct ClashProxyLatencyIndicator: View {
     }
 
     private func status(_ title: ClashDisplayText, color: Color) -> some View {
-        Group {
-            if usesDot {
-                latencyDot(color: color)
-                    .accessibilityLabel(Text(clash: title))
-            } else {
-                Text(clash: title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(color)
-            }
-        }
-    }
-
-    private func latencyDot(color: Color) -> some View {
-        Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
+        Text(clash: title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
     }
 
     private func color(_ milliseconds: Int) -> Color {
@@ -3120,6 +3328,18 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
     let currentSelection: String?
      
     let latency: ClashProxyLatencyState
+     
+     
+     
+    let latencyPulse: AnyPublisher<ClashLatencyPulse, Never>?
+     
+     
+    var gate: ClashLatencyPulseGate?
+     
+     
+     
+     
+    let seed: ClashLatencyGroupFace
     let showsUnpin: Bool
      
     let showsLocate: Bool
@@ -3137,6 +3357,17 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
      
      
     @Environment(\.clashScrollToID) private var scrollToID
+    @State private var live: ClashLatencyGroupFace?
+    @State private var memberKeys = ClashLatencyMemberKeys()
+     
+     
+     
+     
+     
+    @State private var pressedAt: Date?
+    private var face: ClashLatencyGroupFace { live ?? seed }
+    private var shownTesting: Bool { pressedAt != nil || (face.isTesting ?? isTesting) }
+    private var shownLatency: ClashProxyLatencyState { face.latency(of: group, initial: latency) }
 
     nonisolated static func == (a: Self, b: Self) -> Bool {
         ClashPerf.count("proxies.header.eq")
@@ -3146,6 +3377,7 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
             && a.isConnected == b.isConnected
             && a.currentSelection == b.currentSelection
             && a.latency == b.latency
+            && a.seed == b.seed
             && a.showsUnpin == b.showsUnpin
             && a.showsLocate == b.showsLocate
              
@@ -3292,14 +3524,25 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
 
                     Button {
                         onTestGroup()
+                         
+                         
+                         
+                        let press = Date()
+                        pressedAt = press
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: UInt64(ClashLatencyTap.expiry * 1_000_000_000))
+                            if pressedAt == press { pressedAt = nil }
+                        }
                     } label: {
-                        Group {
-                            if isTesting {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                icon(.boltHorizontalCircle)
-                            }
+                         
+                         
+                         
+                         
+                        ZStack {
+                            icon(.boltHorizontalCircle)
+                                .opacity(shownTesting ? 0 : 1)
+                                .accessibilityHidden(shownTesting)
+                            ClashLatencySpinner(isSpinning: shownTesting, diameter: 14)
                         }
                         .font(.body.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -3312,7 +3555,7 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(!isConnected || isTesting)
+                    .disabled(!isConnected || shownTesting)
                     .accessibilityLabel(
                         Text(clash: .format(
                             "Test all proxies in %@",
@@ -3364,7 +3607,7 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        if case .measured(let milliseconds) = latency {
+                        if case .measured(let milliseconds) = shownLatency {
                             Text(clash: .verbatim("(\(milliseconds) ms)"))
                                 .font(.caption)
                                 .monospacedDigit()
@@ -3385,6 +3628,14 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
                 }
             }
             .padding(.vertical, ClashTheme.Spacing.compact)
+        }
+        .onReceive(latencyPulse ?? Empty<ClashLatencyPulse, Never>().eraseToAnyPublisher()) { batch in
+            guard gate?.isOpen ?? true else { return }
+            let next = ClashLatencyGroupFace.reading(
+                batch, group: group, memberKeys: { memberKeys.of(group) }, kept: face)
+            if next != face { live = next }
+             
+            if pressedAt != nil, next.isTesting == true || !batch.isTesting { pressedAt = nil }
         }
     }
 }
@@ -3723,6 +3974,13 @@ public struct ClashLatencyPulse: Equatable, Sendable {
     public let completed: Int
     public let total: Int
     public let isTesting: Bool
+     
+     
+     
+     
+     
+     
+    public let landed: Set<String>
 
     public init(
         results: [String: ClashProxyLatencyState],
@@ -3731,7 +3989,8 @@ public struct ClashLatencyPulse: Equatable, Sendable {
         groupTerminalKeys: [String: String] = [:],
         completed: Int,
         total: Int,
-        isTesting: Bool
+        isTesting: Bool,
+        landed: Set<String> = []
     ) {
         self.results = results
         self.testing = testing
@@ -3740,6 +3999,7 @@ public struct ClashLatencyPulse: Equatable, Sendable {
         self.completed = completed
         self.total = total
         self.isTesting = isTesting
+        self.landed = landed
     }
 }
 
@@ -3821,7 +4081,7 @@ struct ProxyDerivedIndex: Equatable {
          
          
         guard let source else { return group.members }
-        if Self.hasSameAnswers(source, proxies) {
+        if Self.hasSameAnswers(source, proxies, sortedBy: sort) {
             return members(in: group, sortedBy: sort) ?? group.members
         }
          
@@ -3842,14 +4102,30 @@ struct ProxyDerivedIndex: Equatable {
      
      
      
+     
+     
+     
+     
     private static func hasSameAnswers(
         _ lhs: ClashProxiesSnapshot,
-        _ rhs: ClashProxiesSnapshot
+        _ rhs: ClashProxiesSnapshot,
+        sortedBy sort: ClashProxiesDisplayPreferences.Sort
     ) -> Bool {
+        hasSameShape(lhs, rhs)
+            && (sort != .delay || lhs.latencyByName == rhs.latencyByName)
+    }
+
+     
+     
+     
+    fileprivate static func hasSameShape(_ lhs: ClashProxiesSnapshot, _ rhs: ClashProxiesSnapshot) -> Bool {
         lhs.groups == rhs.groups
             && lhs.hiddenGroups == rhs.hiddenGroups
-            && lhs.latencyByName == rhs.latencyByName
             && lhs.isConnected == rhs.isConnected
+    }
+
+    func answersDetails(for proxies: ClashProxiesSnapshot) -> Bool {
+        source.map { Self.hasSameShape($0, proxies) } ?? false
     }
 
      
@@ -3925,13 +4201,11 @@ struct ProxyDerivedIndex: Equatable {
                 if let carried = reusableNameOrder?.sortedMembers[nameKey] {
                     sorted[nameKey] = carried
                 } else {
-                    sorted[nameKey] = group.members.enumerated().sorted {
-                        let comparison = $0.element.name
-                            .localizedStandardCompare($1.element.name)
-                        return comparison == .orderedSame
-                            ? $0.offset < $1.offset
-                            : comparison == .orderedAscending
-                    }.map(\.element)
+                     
+                     
+                    sorted[nameKey] = ClashProxiesDisplayPreferences.Sort.name.ordered(
+                        group.members, name: \.name, latency: { _ in .untested }
+                    )
                 }
             }
             if sort == .delay {
@@ -3948,11 +4222,9 @@ struct ProxyDerivedIndex: Equatable {
                    let carried = reusableNameOrder?.sortedMembers[delayOrderKey] {
                     sorted[delayOrderKey] = carried
                 } else {
-                    sorted[delayOrderKey] =
-                        group.members.enumerated().sorted {
-                            delayKey(latencyByKey[key($0.element)] ?? .untested, offset: $0.offset)
-                                < delayKey(latencyByKey[key($1.element)] ?? .untested, offset: $1.offset)
-                        }.map(\.element)
+                    sorted[delayOrderKey] = ClashProxiesDisplayPreferences.Sort.delay.ordered(
+                        group.members, name: \.name, latency: { latencyByKey[key($0)] ?? .untested }
+                    )
                 }
             }
         }
@@ -3963,20 +4235,6 @@ struct ProxyDerivedIndex: Equatable {
             sortedMembers: sorted,
             membershipSignature: signature
         )
-    }
-
-     
-     
-    private static func delayKey(
-        _ latency: ClashProxyLatencyState, offset: Int
-    ) -> (Int, Int, Int) {
-        switch latency {
-        case .measured(let milliseconds): return (0, milliseconds, offset)
-        case .testing: return (1, 0, offset)
-        case .untested: return (2, 0, offset)
-        case .failed: return (3, 0, offset)
-        case .timedOut: return (4, 0, offset)
-        }
     }
 
     private static func detail(

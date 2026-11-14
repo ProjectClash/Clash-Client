@@ -23,7 +23,7 @@ enum ClashTVAutoUpdate {
         guard let hours = row.updateIntervalHours, hours > 0, row.hasFetchableAddress else { return false }
         guard let last = row.updatedAt else { return true }
         if last > now { return false }
-        return last.addingTimeInterval(TimeInterval(hours) * 3600) <= now
+        return last.addingTimeInterval(TimeInterval(hours) * 3600).timeIntervalSince(now) <= 0
     }
 
      

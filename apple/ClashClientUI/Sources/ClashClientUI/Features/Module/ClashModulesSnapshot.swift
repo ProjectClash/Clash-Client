@@ -94,6 +94,17 @@ public struct ClashModulesSnapshot: Equatable, Sendable {
 
      
      
+     
+     
+    public enum NoticePlace: Hashable, Sendable, Identifiable {
+         
+        case snifferSettings(profileID: String)
+
+        public var id: Self { self }
+    }
+
+     
+     
     public struct Notice: Equatable, Sendable, Identifiable {
          
          
@@ -107,14 +118,18 @@ public struct ClashModulesSnapshot: Equatable, Sendable {
         public var action: NoticeAction?
         public var actionTitle: ClashDisplayText?
         public var tone: Tone
+         
+         
+        public var place: NoticePlace?
 
         public init(id: String, text: ClashDisplayText, action: NoticeAction? = nil, actionTitle: ClashDisplayText? = nil,
-                    tone: Tone = .attention) {
+                    tone: Tone = .attention, place: NoticePlace? = nil) {
             self.id = id
             self.text = text
             self.action = action
             self.actionTitle = actionTitle
             self.tone = tone
+            self.place = place
         }
     }
 
@@ -231,16 +246,6 @@ public struct ClashModulesSnapshot: Equatable, Sendable {
     public var editor: ClashModuleEditorSnapshot?
      
      
-     
-     
-    public var switching: [String: Bool]
-     
-     
-     
-     
-    public var decryptionSwitching: Bool?
-     
-     
     public var batch: Batch?
 
      
@@ -270,7 +275,7 @@ public struct ClashModulesSnapshot: Equatable, Sendable {
 
     public init(isOn: Bool = false, isBusy: Bool = false, certificate: Certificate? = nil, install: Install? = nil,
                 notices: [Notice] = [], modules: [ModuleRow] = [], editor: ClashModuleEditorSnapshot? = nil,
-                switching: [String: Bool] = [:], batch: Batch? = nil, decryptionSwitching: Bool? = nil) {
+                batch: Batch? = nil) {
         self.isOn = isOn
         self.isBusy = isBusy
         self.certificate = certificate
@@ -278,9 +283,7 @@ public struct ClashModulesSnapshot: Equatable, Sendable {
         self.notices = notices
         self.modules = modules
         self.editor = editor
-        self.switching = switching
         self.batch = batch
-        self.decryptionSwitching = decryptionSwitching
     }
 
     public static let off = ClashModulesSnapshot()
@@ -345,6 +348,9 @@ public enum ClashModulesAction: Equatable, Sendable {
     case refreshPanel(id: String)
      
      
+    case runAppScript(id: String)
+     
+     
     case renameModule(id: String, name: String)
      
      
@@ -360,13 +366,31 @@ public enum ClashModulesAction: Equatable, Sendable {
  
  
  
+ 
+ 
+ 
 public enum ClashModuleDecryptionWait: Equatable, Sendable {
     case off
     case notReady
+    case onHold
 }
 
  
  
+ 
+ 
+public struct ClashModuleScriptSource: Equatable, Sendable, Hashable {
+    public var name: String
+    public var link: String
+    public var file: URL?
+
+    public init(name: String, link: String, file: URL?) {
+        self.name = name
+        self.link = link
+        self.file = file
+    }
+}
+
 public struct ClashModuleDetailSnapshot: Equatable, Sendable {
     public struct Item: Equatable, Sendable, Identifiable {
         public var id: String
@@ -381,10 +405,17 @@ public struct ClashModuleDetailSnapshot: Equatable, Sendable {
          
          
         public var place: ClashDisplayText?
+         
+         
+        public var script: ClashModuleScriptSource?
+         
+         
+         
+        public var runNow: String?
 
         public init(id: String, text: String, detail: ClashDisplayText? = nil, secondary: String? = nil,
                     action: ClashModulesSnapshot.NoticeAction? = nil, actionTitle: ClashDisplayText? = nil,
-                    place: ClashDisplayText? = nil) {
+                    place: ClashDisplayText? = nil, script: ClashModuleScriptSource? = nil, runNow: String? = nil) {
             self.id = id
             self.text = text
             self.detail = detail
@@ -392,6 +423,8 @@ public struct ClashModuleDetailSnapshot: Equatable, Sendable {
             self.action = action
             self.actionTitle = actionTitle
             self.place = place
+            self.script = script
+            self.runNow = runNow
         }
     }
 
@@ -465,10 +498,6 @@ public struct ClashModuleDetailSnapshot: Equatable, Sendable {
     public var source: ClashModuleSource
     public var updatedAt: Date?
     public var enabled: Bool
-     
-     
-     
-    public var switching: Bool?
     public var effectiveCount: Int
     public var ignoredCount: Int
     public var failure: ClashDisplayText?

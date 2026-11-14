@@ -9,7 +9,9 @@ import Foundation
  
 enum PastedContent: Equatable {
     case empty
-    case link(url: String, unwrapped: Unwrap?)
+     
+     
+    case link(url: String, unwrapped: Unwrap?, rules: InstallLinkRuleScheme? = nil)
     case nodeShareLinks([String])
     case configText(String)
     case unrecognized
@@ -28,8 +30,6 @@ enum PastedContentClassifier {
      
     static let nodeSchemes = ProxyImportBridge.profilePasteNodeSchemes
 
-    private static let installSchemes: Set<String> = ["clash", "clashmeta", "flclash"]
-
     static func classify(_ raw: String) -> PastedContent {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .empty }
@@ -41,8 +41,8 @@ enum PastedContentClassifier {
         if let inner = shadowrocketAddTarget(trimmed) {
             return classify(inner)
         }
-        if let inner = installLinkTarget(trimmed) {
-            return .link(url: inner, unwrapped: .installLink)
+        if let target = installLinkTarget(trimmed) {
+            return .link(url: target.url, unwrapped: .installLink, rules: target.rules)
         }
         if !trimmed.contains(where: \.isNewline), let inner = subSchemeTarget(trimmed) {
              
@@ -94,15 +94,13 @@ enum PastedContentClassifier {
             ? candidate : nil
     }
 
-    private static func installLinkTarget(_ text: String) -> String? {
-        guard let components = URLComponents(string: text),
-              let scheme = components.scheme?.lowercased(),
-              installSchemes.contains(scheme),
-              components.host?.lowercased() == "install-config",
-              let target = components.queryItems?
-                  .first(where: { $0.name == "url" })?.value,
-              !target.isEmpty else { return nil }
-        return target
+     
+     
+     
+     
+    private static func installLinkTarget(_ text: String) -> FlClashInstallLink.Target? {
+        guard let components = URLComponents(string: text) else { return nil }
+        return try? FlClashInstallLink.target(of: components)
     }
 
     private static func shadowrocketAddTarget(_ text: String) -> String? {

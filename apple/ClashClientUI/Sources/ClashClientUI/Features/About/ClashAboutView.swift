@@ -109,21 +109,26 @@ public enum ClashAboutAcknowledgement:
  
  
  
+ 
 public enum ClashAboutLink:
     String,
     CaseIterable,
     Identifiable,
     Sendable
 {
+     
+     
+    case guide
+    case telegram
+    case followOnX
     case sourceRepository
     case reportIssue
-    case followOnX
-    case telegram
 
     public var id: Self { self }
 
     public var title: String {
         switch self {
+        case .guide: "User Guide"
         case .sourceRepository: "Source Repository"
         case .reportIssue: "Ideas & Gripes"
         case .followOnX: "Follow on X"
@@ -133,6 +138,7 @@ public enum ClashAboutLink:
 
     public var symbol: ClashSymbol {
         switch self {
+        case .guide: .bookClosed
         case .sourceRepository: .githubMark
         case .reportIssue: .exclamationmarkBubble
         case .followOnX: .xLogo
@@ -143,17 +149,28 @@ public enum ClashAboutLink:
      
      
      
-    public var detail: String {
+     
+     
+     
+    public func detail(for language: ConfigurationFieldCopy.Language) -> String {
         switch self {
-        case .sourceRepository: "github.com/ProjectClash/Clash-Client"
-        case .reportIssue: "GitHub Issues"
-        case .followOnX: "@ClashbyClash"
-        case .telegram: "t.me/clashbyclash"
+        case .guide:
+            let url = url(for: language)
+            return (url.host ?? "") + url.path.replacingOccurrences(of: #"/$"#, with: "", options: .regularExpression)
+        case .sourceRepository: return "github.com/ProjectClash/Clash-Client"
+        case .reportIssue: return "GitHub Issues"
+        case .followOnX: return "@ClashbyClash"
+        case .telegram: return "t.me/clashbyclash"
         }
     }
 
-    public var url: URL {
+     
+     
+     
+    public func url(for language: ConfigurationFieldCopy.Language) -> URL {
         switch self {
+        case .guide:
+            URL(string: ClashSite.root(for: language) + "/guide/")!
         case .sourceRepository:
             URL(string: "https://github.com/ProjectClash/Clash-Client")!
         case .reportIssue:
@@ -167,12 +184,46 @@ public enum ClashAboutLink:
 }
 
  
+ 
+ 
+public enum ClashAboutDocument: String, CaseIterable, Sendable {
+    case terms
+    case privacy
+
+    public var title: String {
+        switch self {
+        case .terms: "Terms of Use"
+        case .privacy: "Privacy Policy"
+        }
+    }
+
+     
+     
+    public func url(for language: ConfigurationFieldCopy.Language) -> URL {
+        switch self {
+        case .terms: return URL(string: ClashSite.root(for: language) + "/terms")!
+        case .privacy: return URL(string: ClashSite.root(for: language) + "/privacy")!
+        }
+    }
+}
+
+ 
+ 
+ 
+enum ClashSite {
+    static func root(for language: ConfigurationFieldCopy.Language) -> String {
+        language == .en ? "https://clash.md" : "https://clash.md/zh"
+    }
+}
+
+ 
 public struct ClashAboutView<
     Icon: View,
     ComponentLogo: View,
     Acknowledgements: View
 >: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.locale) private var locale
 
     private let snapshot: ClashAboutSnapshot
     private let palette: ClashProductPalette
@@ -221,26 +272,24 @@ public struct ClashAboutView<
                     .padding(.vertical, ClashTheme.Spacing.compact)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(
-                        "Clash, Powered by Clash, Version \(snapshot.appVersion)"
+                        "Clash, Version \(snapshot.appVersion)"
                     )
                     .accessibilityIdentifier("about.appHeader")
 
                 Text(
-                    "A rule-based proxy client for Apple platforms, powered by the Clash core."
+                    "The Clash family of clients, powered by the Clash core."
                 )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             }
 
-            componentsSection
-
              
              
              
              
-            acknowledgementsSection
-
             openSourceSection
+
+            componentsSection
 
              
              
@@ -259,6 +308,9 @@ public struct ClashAboutView<
             if let developerMode {
                 developerSection(developerMode)
             }
+
+             
+            acknowledgementsSection
 
             legalFooter
         }
@@ -422,10 +474,17 @@ public struct ClashAboutView<
         }
     }
 
+     
+     
+    private var shownLanguage: ConfigurationFieldCopy.Language { .shown(in: locale) }
+
     private var openSourceSection: some View {
         Section {
             ForEach(ClashAboutLink.allCases) { link in
-                Link(destination: link.url) {
+                 
+                 
+                 
+                Link(destination: link.url(for: shownLanguage)) {
                     linkRow(link)
                 }
                 .buttonStyle(.plain)
@@ -547,7 +606,7 @@ public struct ClashAboutView<
      
      
     private func linkRow(_ link: ClashAboutLink) -> some View {
-        linkStyleRow(symbol: link.symbol, title: link.title, detail: link.detail, trailing: .linksOut)
+        linkStyleRow(symbol: link.symbol, title: link.title, detail: link.detail(for: shownLanguage), trailing: .linksOut)
     }
 
     enum RowTrailing { case linksOut, none }
@@ -588,13 +647,14 @@ public struct ClashAboutView<
      
      
      
+     
     private var legalFooter: some View {
         Section {} footer: {
             HStack(spacing: ClashTheme.Spacing.compact) {
-                Link(destination: URL(string: "https://clash.md/terms")!) { Text("Terms of Use") }
+                Link(destination: ClashAboutDocument.terms.url(for: shownLanguage)) { Text(clash: .copy(ClashAboutDocument.terms.title)) }
                     .accessibilityIdentifier("about.terms")
                 Text(verbatim: "·").accessibilityHidden(true)
-                Link(destination: URL(string: "https://clash.md/privacy")!) { Text("Privacy Policy") }
+                Link(destination: ClashAboutDocument.privacy.url(for: shownLanguage)) { Text(clash: .copy(ClashAboutDocument.privacy.title)) }
                     .accessibilityIdentifier("about.privacy")
             }
             .font(.footnote)

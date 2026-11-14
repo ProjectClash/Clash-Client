@@ -29,7 +29,7 @@ struct ProfileOverrideView: View {
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
     @State private var patchText: String
-    @State private var patchDiagnosticLine: Int?
+    @State private var patchDiagnostic: CodeEditorDiagnostic?
     @State private var rules: [String]
     @State private var prependRules: Bool
     @State private var disabledGlobalRules: Set<String>
@@ -94,6 +94,25 @@ struct ProfileOverrideView: View {
     @State private var draftSlot: ClashDraftSlot<ProfileOverrideDraft>
      
     @State private var showsRestoredDraft: Bool
+     
+     
+     
+     
+    @State private var publishedRuleSets: (options: ClashRulePolicyOptions, savedAs: RuleSetInputs)?
+
+     
+     
+     
+    private struct RuleSetInputs: Equatable {
+        let scriptID: String?
+        let scriptBody: String?
+        let mode: Profile.OverwriteMode
+        let patchText: String
+    }
+
+    private func ruleSetInputs(scriptID: String?, mode: Profile.OverwriteMode, patchText: String) -> RuleSetInputs {
+        RuleSetInputs(scriptID: scriptID, scriptBody: scripts.first { $0.id == scriptID }?.body, mode: mode, patchText: patchText)
+    }
 
     init(
         profile: Profile,
@@ -257,7 +276,7 @@ struct ProfileOverrideView: View {
                             text: $patchText,
                             language: .json,
                             minHeight: 260,
-                            diagnosticLine: patchDiagnosticLine
+                            diagnostic: patchDiagnostic
                         )
                     } header: {
                         Text("Patch JSON")
@@ -413,10 +432,14 @@ struct ProfileOverrideView: View {
              
              
             .task(id: profile.id) {
-                guard projectionPending, let loadRawYAML else { return }
-                let loaded = await loadRawYAML()
-                if rawYAML == nil { rawYAML = loaded }
-                projectionPending = false
+                if projectionPending, let loadRawYAML {
+                    let loaded = await loadRawYAML()
+                    if rawYAML == nil { rawYAML = loaded }
+                    projectionPending = false
+                }
+                let saved = draftSlot.original
+                let savedAs = ruleSetInputs(scriptID: saved.selectedScriptID, mode: saved.mode, patchText: saved.patchText)
+                publishedRuleSets = (await ProfileRulesAdapter.loadPublishedRuleSets(of: profile), savedAs)
             }
             .onReceive(NotificationCenter.default.publisher(for: ScriptLibrary.didChange)) { _ in
                 scripts = ScriptLibrary.load(from: scriptLibrary)
@@ -547,12 +570,16 @@ struct ProfileOverrideView: View {
             .scriptSaveRefusalAlert($scriptRefusal)
              
              
-            .alert("Rename…", isPresented: Binding(get: { renamingScript != nil }, set: { if !$0 { renamingScript = nil } })) {
-                TextField("Script name", text: $scriptName)
-                    .accessibilityIdentifier("profile.override.script.rename.name")
-                Button("OK") { commitRename() }
-                    .disabled(!renameIsValid)
-                Button("Cancel", role: .cancel) {}
+             
+             
+             
+             
+            .clashTextFieldAlert("Rename…", isPresented: Binding(get: { renamingScript != nil }, set: { if !$0 { renamingScript = nil } }),
+                                 presenting: renamingScript, text: $scriptName,
+                                 field: ClashTextFieldAlertField(placeholder: "Script name",
+                                                                 identifier: "profile.override.script.rename.name"),
+                                 isConfirmEnabled: { script, name in renameIsValid(script, name: name) }) { script, name in
+                commitRename(script, name: name)
             }
             }
             }
@@ -619,7 +646,8 @@ struct ProfileOverrideView: View {
             let verdict: ScriptSaveCheck.Verdict
             do {
                 verdict = try await Task.detached(priority: .userInitiated) {
-                    _ = try ProfileRuntimeConfigBuilder.runtimePreview(raw: rawYAML, profile: updated)
+                     
+                    _ = try ProfileRuntimeConfigBuilder.runtimePreview(raw: rawYAML, profile: updated, scripts: .surfaced)
                     guard let library else { return ScriptSaveCheck.Verdict.accepted }
                     return ScriptSaveCheck.verdict(raw: rawYAML, profile: updated, scripts: library)
                 }.value
@@ -672,13 +700,19 @@ struct ProfileOverrideView: View {
 
      
     private func reportSaveFailure(_ error: Error) {
-        patchDiagnosticLine = nil
+        patchDiagnostic = nil
         refusal = nil
         self.error = error.localizedDescription
     }
 
     private func report(_ error: Error) {
-        patchDiagnosticLine = CodeEditorDiagnosticParser.line(in: error.localizedDescription)
+        if let refusal = error as? PatchKeysSetElsewhere {
+            patchDiagnostic = nil
+            self.refusal = nil
+            self.error = refusal.sentence(locale: locale)
+            return
+        }
+        patchDiagnostic = CodeEditorDiagnostic.parsed(from: error.localizedDescription, in: patchText)
         refusal = error as? CustomOverwriteError
         if error is CustomOverwriteError
             || error is ProxyChainError
@@ -786,9 +820,16 @@ struct ProfileOverrideView: View {
      
      
     private var policyOptions: RulePolicyOptions {
-        RulePolicyOptions
+         
+         
+         
+        let published = publishedRuleSets.flatMap { loaded in
+            loaded.savedAs == ruleSetInputs(scriptID: selectedScriptID, mode: mode, patchText: patchText) ? loaded.options : nil
+        }
+        return RulePolicyOptions
             .make(sourceYAML: rawYAML)
             .including(customGroups: customGroups)
+            .adopting(published: published)
     }
 
     private func quickFill() {
@@ -824,11 +865,13 @@ struct ProfileOverrideView: View {
                     "Sync or activate this profile before configuring proxy chains."
                 )
             }
+             
+             
             return try ProfileRuntimeConfigBuilder.buildProduction(
                 raw: rawYAML,
                 profile: try draft.get(),
                 applyProxyChain: false,
-                applyLegacyRelayMigration: false
+                applyLegacyRelayMigration: false, scripts: .surfaced
             )
         }
     }
@@ -866,17 +909,15 @@ struct ProfileOverrideView: View {
 
      
      
-    private var renameIsValid: Bool {
-        guard let script = renamingScript else { return false }
-        return ScriptLibrary.editedScript(id: script.id, label: scriptName, body: script.body,
+    private func renameIsValid(_ script: ConfigScript, name: String) -> Bool {
+        ScriptLibrary.editedScript(id: script.id, label: name, body: script.body,
                                           existing: scripts) != nil
     }
 
      
      
-    private func commitRename() {
-        guard let script = renamingScript else { return }
-        do { try ScriptLibrary.rename(id: script.id, to: scriptName, in: scriptLibrary) }
+    private func commitRename(_ script: ConfigScript, name: String) {
+        do { try ScriptLibrary.rename(id: script.id, to: name, in: scriptLibrary) }
         catch { failScriptAdd(error.localizedDescription) }
     }
 
@@ -1012,6 +1053,10 @@ struct ProfileOverrideView: View {
             }
             let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
             patchJSON = String(decoding: data, as: UTF8.self)
+             
+             
+             
+            if !configurationCenter, let refusal = PatchKeysSetElsewhere(patchJSON: patchJSON) { throw refusal }
         }
 
         let customOverwrite = CustomOverwriteSpec(
@@ -1274,6 +1319,11 @@ struct ProfileProxyChainPreparation {
     let error: String
     let derived: ProfileProxyChainDerivedState
     let hasDerivedState: Bool
+     
+     
+     
+     
+    let scriptTimedOut: Bool
 
     init(
         baseResult: Result<String, Error>,
@@ -1285,6 +1335,11 @@ struct ProfileProxyChainPreparation {
         let resolvedYAML: String?
         let identities: [ProxyIdentity]
         let message: String
+        if case .failure(let failure) = baseResult {
+            scriptTimedOut = failure as? ScriptEngine.ScriptError == .timedOut
+        } else {
+            scriptTimedOut = false
+        }
         switch baseResult {
         case .success(let sourceYAML):
             do {
@@ -1333,7 +1388,10 @@ struct ProfileProxyChainPreparation {
         )
     }
 
-    static func make(profile: Profile, rawYAML: String?) -> Self {
+     
+     
+     
+    static func make(profile: Profile, rawYAML: String?, scripts caller: ScriptEngine.Caller) -> Self {
         let baseResult: Result<String, Error> = Result {
             guard let rawYAML else {
                 throw PipelineError.sourceUnavailable(
@@ -1347,7 +1405,7 @@ struct ProfileProxyChainPreparation {
                 raw: rawYAML,
                 profile: base,
                 applyProxyChain: false,
-                applyLegacyRelayMigration: false
+                applyLegacyRelayMigration: false, scripts: caller
             )
         }
         return ProfileProxyChainPreparation(
@@ -2586,7 +2644,7 @@ private struct ChainEndPicker: View {
         .clashPageTitle(.copy(title))
         .clashDetailPageInsets()
         .clashProductModalChild(
-            title: title,
+            title: .copy(title),
             searchText: $query
         )
         .clashCapturesDismiss(dismiss)

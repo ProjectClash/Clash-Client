@@ -29,7 +29,7 @@
 
 ## 版本与依赖
 
-客户端源码目前按提交发布，尚无独立发行标签。各平台的 App Store 版本分别管理，内核的 `1.19.33` 不是客户端应用版本。复现构建时请固定 Client 提交，并保持该提交的依赖锁不变。
+客户端源码目前按提交发布，尚无独立发行标签。各平台的 App Store 版本分别管理，内核的 `1.19.34` 不是客户端应用版本。复现构建时请固定 Client 提交，并保持该提交的依赖锁不变。
 
 本次源码对应的最近验收产品构建：
 
@@ -43,8 +43,8 @@
 
 | 依赖 | 固定源码或工具版本 |
 | --- | --- |
-| [Clash 内核](https://github.com/ProjectClash/Clash) | [`4b7d5f53c`](https://github.com/ProjectClash/Clash/commit/4b7d5f53cff448f01cd5012b5e3f7eddc7d43e33)，从源码构建 |
-| [Clash Adapter](https://github.com/ProjectClash/Clash-Adapter) | [`09fbc0d7e`](https://github.com/ProjectClash/Clash-Adapter/commit/09fbc0d7ec3a563758384fddef9c7cce94822b21) |
+| [Clash 内核](https://github.com/ProjectClash/Clash) | [`c8f2fc1d5`](https://github.com/ProjectClash/Clash/commit/c8f2fc1d58bf9ac856a0bf161bc9489591821f45)，从源码构建 |
+| [Clash Adapter](https://github.com/ProjectClash/Clash-Adapter) | [`9ba5c2724`](https://github.com/ProjectClash/Clash-Adapter/commit/9ba5c2724b68c753d57496c1036f4dfb1587e482) |
 | Swift Certificates / Crypto / ASN.1 | **1.9.0 / 3.15.1 / 1.7.3**，固定在 XcodeGen 工程中 |
 | gomobile / gobind | `github.com/sagernet/gomobile` **v0.1.13** |
 
@@ -58,7 +58,7 @@ iOS 和 macOS 工程通过共享框架封装静态 Core；工程生成时会保�
 
 - macOS、Xcode 27.0 或更新版本，以及 iOS、macOS、tvOS SDK。
 - 可在命令行使用的 XcodeGen 和 Git。
-- 启用自动工具链选择的 Go，或安装固定内核绑定模块所选择的 Go 1.26.10 工具链。
+- 启用自动工具链选择的 Go，或安装固定内核绑定模块所选择的 Go 1.26.11 工具链。
 - Python 3 和 PyYAML。
 - 部署目标为 iOS/iPadOS 15+、macOS 13+ 和 tvOS 17+，以 [`project.yml`](apple/ClashClient/project.yml) 为准。
 

@@ -15,12 +15,25 @@ import SwiftUI
  
  
  
+ 
+ 
+ 
+ 
+ 
 struct TunnelSettingsView: View {
     @ObservedObject var vpn: VPNController
-    @State private var draft = VPNTunnelSettings()
-    @State private var hasLoaded = false
-    @State private var isApplying = false
-    @State private var error = ""
+     
+     
+     
+    @ObservedObject private var applying: TunnelSettingsApplying
+
+    init(vpn: VPNController) {
+        self.vpn = vpn
+        _applying = ObservedObject(wrappedValue: vpn.tunnelSettingsApplying)
+    }
+
+     
+    var sharedApplier: TunnelSettingsApplying { applying }
      
      
      
@@ -34,6 +47,7 @@ struct TunnelSettingsView: View {
                  
                  
                 Toggle("Enforce Routes", isOn: binding(\.enforceRoutes))
+                    .tunnelSwitchWaiting(applying, \.enforceRoutes)
                     .accessibilityIdentifier("tunnel.enforceRoutes")
             } footer: {
                 Text("If YES, route rules for this tunnel will take precedence over any locally-defined routes. The default is NO.")
@@ -41,6 +55,7 @@ struct TunnelSettingsView: View {
 
             Section {
                 Toggle("Include All Networks", isOn: binding(\.includeAllNetworks))
+                    .tunnelSwitchWaiting(applying, \.includeAllNetworks)
                     .accessibilityIdentifier("tunnel.includeAllNetworks")
             } header: {
                 Text("Include All Networks")
@@ -50,14 +65,20 @@ struct TunnelSettingsView: View {
                      
                      
                      
-                    Text("While this is on, the tunnel runs the gVisor stack; a profile that asks for the system or mixed stack is switched, and the switch is listed under Deviations.")
+                     
+                     
+                     
+                     
+                     
+                    Text("While this is on, updating Clash can cut off the network until the device restarts. Turn it off before updating.")
                     moduleNote(.includeAllNetworks)
                 }
             }
 
             Section {
                 Toggle("Include Local Networks", isOn: binding(\.includeLocalNetworks))
-                    .disabled(!(draft.includeAllNetworks || draft.enforceRoutes))
+                    .tunnelSwitchWaiting(applying, \.includeLocalNetworks)
+                    .disabled(!(applying.draft.includeAllNetworks || applying.draft.enforceRoutes))
                     .accessibilityIdentifier("tunnel.includeLocalNetworks")
             } header: {
                 Text("Include Local Networks")
@@ -71,7 +92,8 @@ struct TunnelSettingsView: View {
             if #available(iOS 16.4, *) {
                 Section {
                     Toggle("Include APNs", isOn: binding(\.includeAPNs))
-                        .disabled(!draft.includeAllNetworks)
+                        .tunnelSwitchWaiting(applying, \.includeAPNs)
+                        .disabled(!applying.draft.includeAllNetworks)
                         .accessibilityIdentifier("tunnel.includeAPNs")
                 } header: {
                     Text("Include APNs")
@@ -84,7 +106,8 @@ struct TunnelSettingsView: View {
 
                 Section {
                     Toggle("Include Cellular Services", isOn: binding(\.includeCellularServices))
-                        .disabled(!draft.includeAllNetworks)
+                        .tunnelSwitchWaiting(applying, \.includeCellularServices)
+                        .disabled(!applying.draft.includeAllNetworks)
                         .accessibilityIdentifier("tunnel.includeCellularServices")
                 } header: {
                     Text("Include Cellular Services")
@@ -100,6 +123,7 @@ struct TunnelSettingsView: View {
              
             Section {
                 Toggle("Hide VPN Icon", isOn: binding(\.hideVPNIcon))
+                    .tunnelSwitchWaiting(applying, \.hideVPNIcon)
                     .accessibilityIdentifier("tunnel.hideVPNIcon")
             } header: {
                 Text("Hide VPN Icon")
@@ -112,6 +136,7 @@ struct TunnelSettingsView: View {
 
             Section {
                 Toggle("HomeKit Compatibility", isOn: binding(\.homeKitCompatibility))
+                    .tunnelSwitchWaiting(applying, \.homeKitCompatibility)
                     .accessibilityIdentifier("tunnel.homeKitCompatibility")
             } header: {
                 Text("HomeKit Compatibility")
@@ -132,6 +157,7 @@ struct TunnelSettingsView: View {
              
             Section {
                 Toggle("Exclude APNs Route", isOn: binding(\.excludeAPNsRoute))
+                    .tunnelSwitchWaiting(applying, \.excludeAPNsRoute)
                     .accessibilityIdentifier("tunnel.excludeAPNsRoute")
             } header: {
                 Text("Exclude APNs Route")
@@ -139,21 +165,15 @@ struct TunnelSettingsView: View {
                 Text("If YES, 17.0.0.0/8 stays outside the tunnel and push.apple.com resolves to its real address, so Apple push notifications reach this device directly instead of through the proxy. Takes effect on the next connection.")
             }
 
-            if !error.isEmpty {
+            if !applying.error.isEmpty {
                 Section {
-                    ClashStatusMessage(text: .copy(error), kind: .error)
+                    ClashStatusMessage(text: .copy(applying.error), kind: .error)
                         .accessibilityIdentifier("tunnel.error")
                 }
             }
         }
-        .disabled(isApplying)
-        .onAppear {
-            guard !hasLoaded else { return }
-            draft = vpn.tunnelSettings
-            hasLoaded = true
-        }
         .onChange(of: vpn.tunnelSettings) { settings in
-            draft = settings
+            applying.adopt(settings)
         }
         .task { moduleSets = await ModuleDeviceSettingNote.published() }
     }
@@ -171,28 +191,108 @@ struct TunnelSettingsView: View {
 
     private func binding(_ keyPath: WritableKeyPath<VPNTunnelSettings, Bool>) -> Binding<Bool> {
         Binding(
-            get: { draft[keyPath: keyPath] },
-            set: { value in
-                var next = draft
-                next[keyPath: keyPath] = value
-                draft = next
-                commit(next)
-            }
+            get: { applying.draft[keyPath: keyPath] },
+            set: { value in applying.flip(keyPath, to: value) }
         )
+    }
+}
+
+extension View {
+     
+     
+    fileprivate func tunnelSwitchWaiting(_ applying: TunnelSettingsApplying,
+                                         _ keyPath: WritableKeyPath<VPNTunnelSettings, Bool>) -> some View {
+        disabled(applying.isWaiting(keyPath))
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@MainActor
+final class TunnelSettingsApplying: ObservableObject {
+    @Published private(set) var draft: VPNTunnelSettings
+     
+    @Published private(set) var confirmed: VPNTunnelSettings
+    @Published private(set) var error = ""
+     
+     
+    private(set) var isApplying = false
+    private let apply: (VPNTunnelSettings) async -> Bool
+    private let current: () -> VPNTunnelSettings?
+     
+     
+    let lastError: () -> String
+
+    static let switches: [WritableKeyPath<VPNTunnelSettings, Bool>] = [
+        \.enforceRoutes, \.includeAllNetworks, \.includeLocalNetworks, \.includeAPNs,
+        \.includeCellularServices, \.hideVPNIcon, \.homeKitCompatibility, \.excludeAPNsRoute,
+    ]
+
+     
+    init(settings: VPNTunnelSettings, apply: @escaping (VPNTunnelSettings) async -> Bool,
+         current: @escaping () -> VPNTunnelSettings?, lastError: @escaping () -> String) {
+        draft = settings
+        confirmed = settings
+        self.apply = apply
+        self.current = current
+        self.lastError = lastError
+    }
+
+    convenience init(vpn: VPNController) {
+        self.init(settings: vpn.tunnelSettings,
+                  apply: { [weak vpn] settings in await vpn?.updateTunnelSettings(settings) ?? false },
+                  current: { [weak vpn] in vpn?.tunnelSettings },
+                  lastError: { [weak vpn] in vpn?.reportableLastError ?? "" })
     }
 
      
      
-    private func commit(_ settings: VPNTunnelSettings) {
-        isApplying = true
+    func adopt(_ settings: VPNTunnelSettings) {
+        guard !isApplying, draft == confirmed else { return }
+        draft = settings
+        confirmed = settings
+    }
+
+    func isWaiting(_ keyPath: WritableKeyPath<VPNTunnelSettings, Bool>) -> Bool {
+        draft[keyPath: keyPath] != confirmed[keyPath: keyPath]
+    }
+
+    func flip(_ keyPath: WritableKeyPath<VPNTunnelSettings, Bool>, to value: Bool) {
+        guard draft[keyPath: keyPath] != value else { return }
+        draft[keyPath: keyPath] = value
         error = ""
-        Task {
-            let applied = await vpn.updateTunnelSettings(settings)
-            if !applied {
-                error = vpn.lastError
-                draft = vpn.tunnelSettings
+        guard !isApplying else { return }
+        isApplying = true
+        Task { await applyUntilSettled() }
+    }
+
+     
+    private func applyUntilSettled() async {
+        defer { isApplying = false }
+        while draft != confirmed {
+            let settings = draft
+            let before = confirmed
+            if await apply(settings) {
+                confirmed = settings
+                continue
             }
-            isApplying = false
+            error = lastError()
+            let rolledBack = current() ?? before
+            confirmed = rolledBack
+             
+             
+            for keyPath in Self.switches where settings[keyPath: keyPath] != before[keyPath: keyPath]
+                && draft[keyPath: keyPath] == settings[keyPath: keyPath] {
+                draft[keyPath: keyPath] = rolledBack[keyPath: keyPath]
+            }
         }
     }
 }

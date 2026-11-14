@@ -5,6 +5,19 @@ import os.log
 
 let appGroupID = ClashAppIdentifiers.appGroup
 
+ 
+ 
+ 
+ 
+enum TunnelGlobalReading {
+    static func exit() -> ClashTunnelOutboundMode.GlobalExit? {
+        ClashTunnelOutboundMode.readGlobalExit(
+            summary: { ClashProxiesSummaryJSON() },
+            members: { ClashGroupMembersJSON($0, 0, Int32(ClashTunnelOutboundMode.membersRead)) }
+        )
+    }
+}
+
 
 
 enum ExtensionError: LocalizedError {
@@ -33,6 +46,40 @@ enum ExtensionError: LocalizedError {
             return String(format: "Not retrying before %@ after repeated failures on this network; last: %@",
                           ISO8601DateFormatter().string(from: until), lastMessage)
         }
+    }
+
+     
+     
+     
+     
+     
+    static func startFailureLine(_ error: Error) -> String {
+        if case let .coreRefused(errorClass, message)? = error as? ExtensionError {
+            let oneLine = message.replacingOccurrences(of: "\r\n", with: "\\n")
+                .replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\r", with: "\\n")
+            return "tunnel start refused (\(errorClass)): \(oneLine)"
+        }
+        return "tunnel start failed: \(String(describing: error))"
+    }
+}
+
+ 
+ 
+ 
+extension ExtensionError: CustomNSError {
+    static var errorDomain: String { ClashTunnelStart.startErrorDomain }
+
+    var errorCode: Int {
+        let code: ClashTunnelStart.StartErrorCode
+        switch self {
+        case .serviceUnavailable: code = .serviceUnavailable
+        case .coreRefused: code = .coreRefused
+        case .backedOff: code = .backedOff
+        case .appGroupUnavailable: code = .appGroupUnavailable
+        case .configurationUnavailable: code = .configurationUnavailable
+        case .physicalPathUnavailable: code = .physicalPathUnavailable
+        }
+        return code.rawValue
     }
 }
 
@@ -174,6 +221,11 @@ final class ExtensionProvider: NSObject {
      
     private let tunnelSessionLease = ProviderTunnelSessionLease()
     private let reloadEnvelope = ProviderReloadEnvelope()
+#if os(tvOS)
+     
+     
+    private let urlTestSweep = ClashURLTestSweep { name, url in ClashURLTest(name, url) }
+#endif
 
 
     private let log = Logger(subsystem: "org.example.clash.demo.extension", category: "core")
@@ -801,9 +853,10 @@ final class ExtensionProvider: NSObject {
             settleStart { withStateLock { runningConfiguration = nil } }
             await recordStartFailedBeforeCore(error, userInitiated: userInitiated)
             finishStartupSampling(token: samplingToken, reason: .failed(reason))
-            log.error("tunnel start failed: \(reason, privacy: .public)")
+            let line = ExtensionError.startFailureLine(error)
+            log.error("\(line, privacy: .public)")
             ClashLogStore.shared.append(
-                "tunnel start failed: \(reason)",
+                line,
                 stream: .app,
                 level: .error
             )
@@ -941,6 +994,7 @@ final class ExtensionProvider: NSObject {
          
          
          
+         
         #if os(iOS)
         options.persistentCacheDirectory = NSHomeDirectory() + "/Library/Application Support"
         #elseif os(tvOS)
@@ -1005,6 +1059,8 @@ final class ExtensionProvider: NSObject {
 
 
 
+         
+         
          
          
          
@@ -1260,7 +1316,9 @@ final class ExtensionProvider: NSObject {
                  
                  
                  
-                let yaml = ClashTunnelOutboundMode.applyingChoice(in: UserDefaults(suiteName: appGroupID), to: yaml)
+                 
+                let yaml = ClashTunnelOutboundMode.applyingChoice(in: UserDefaults(suiteName: appGroupID),
+                                                                  cardsAt: ClashAppIdentifiers.appGroupContainer, to: yaml)
                 let outcome = service.startClassified(yaml)
                 return .init(errorClass: outcome?.errorClass ?? "unknown",
                              message: outcome?.message ?? "clash: StartClassified returned nothing")
@@ -1453,6 +1511,11 @@ final class ExtensionProvider: NSObject {
             await operationGate.leave()
             return
         }
+#if os(tvOS)
+         
+         
+        urlTestSweep.close()
+#endif
         markStopped()
          
          
@@ -1742,6 +1805,26 @@ final class ExtensionProvider: NSObject {
          
          
         case "proxiesSummary": return Data(ClashProxiesSummaryJSON().utf8)
+         
+         
+         
+        case "urltestSweep":
+            guard currentService != nil else { return appError("Not connected", english: "service not running") }
+            guard let probes = ClashURLTestSweep.probes(from: req) else { return refusedRequest("missing probes") }
+            let width = (req["width"] as? NSNumber)?.intValue ?? 1
+            let floor = ((req["failureFloorMilliseconds"] as? NSNumber)?.doubleValue ?? 0) / 1000
+            guard let id = urlTestSweep.start(probes, width: width, failureFloor: floor) else {
+                return appError("Not connected", english: "service not running")
+            }
+            return jsonObject(ClashURLTestSweep.startReply(sweep: id, count: probes.count))
+        case "urltestSweepRead":
+            guard let id = (req["sweep"] as? NSNumber)?.uint64Value, let reading = urlTestSweep.read(id) else {
+                return refusedRequest("no such sweep")
+            }
+            return jsonObject(reading.reply)
+        case "urltestSweepStop":
+            urlTestSweep.stop((req["sweep"] as? NSNumber)?.uint64Value)
+            return okJSON()
         case "groupMembers":
             guard let group = req["group"] as? String else { return refusedRequest("missing group") }
             return Data(ClashGroupMembersJSON(group, Self.pageOffset(req), Self.pageLimit(req)).utf8)
@@ -1802,7 +1885,24 @@ final class ExtensionProvider: NSObject {
         case "logs": return Data(ClashRecentLogsJSON().utf8)
         case "setMode":
             guard let mode = req["mode"] as? String else { return refusedRequest("missing mode") }
-            do { try currentService?.setMode(mode); return okJSON() } catch { return jsonError(error.localizedDescription) }
+            do {
+                let service = currentService
+                let before = service?.mode()
+                try service?.setMode(mode)
+#if !os(tvOS)
+                 
+                 
+                 
+                 
+                if service != nil, (req["closes"] as? Bool) ?? true,
+                   let defaults = UserDefaults(suiteName: appGroupID),
+                   ClashConnectionsOnSwitch.closesAfterModeSwitch(
+                       from: before, to: mode, settingIsOn: ClashConnectionsOnSwitch.isOn(in: defaults)) {
+                    ClashCloseAllConnections()
+                }
+#endif
+                return okJSON()
+            } catch { return jsonError(error.localizedDescription) }
         case "select":
             guard let group = req["group"] as? String, let name = req["name"] as? String
             else { return refusedRequest("missing group/name") }
@@ -1956,6 +2056,12 @@ final class ExtensionProvider: NSObject {
                 self.recordReload(verdict, requested: requested)
                 return verdict
             }
+#if os(tvOS)
+             
+             
+             
+            self.urlTestSweep.stop()
+#endif
 #if os(iOS) || os(macOS)
              
              
@@ -1963,10 +2069,13 @@ final class ExtensionProvider: NSObject {
 #endif
              
              
+             
+            let defaults = UserDefaults(suiteName: appGroupID)
+             
+             
             ClashSetAllowLanPermitted(LocalNetworkPermission.isPermitted(UserDefaults(suiteName: appGroupID)))
             self.applyRemoteControlSetting()
-             
-            let yaml = ClashTunnelOutboundMode.applyingChoice(in: UserDefaults(suiteName: appGroupID), to: published)
+            let yaml = ClashTunnelOutboundMode.applyingChoice(in: defaults, cardsAt: ClashAppIdentifiers.appGroupContainer, to: published)
             let outcome = service.reloadClassified(yaml)
             let verdict = ProviderReloadEnvelope.Verdict(
                 errorClass: outcome?.errorClass ?? "unknown",
@@ -2337,35 +2446,88 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
             moduleOverlay: ClashAppIdentifiers.appGroupContainer?
                 .appendingPathComponent(ClashTunnelRouteShaping.moduleDeviceSettingsPath)
         )
+         
+        let enforceRoutes = tunnelProvider.protocolConfiguration.enforceRoutes
+         
+         
+         
+        #if os(iOS)
+        let routeShapeSwitches = routeSwitches
+        #else
+        var routeShapeSwitches = routeSwitches
+        routeShapeSwitches.hideVPNIcon = false
+        #endif
+         
+         
+         
+         
+         
+         
+        let loopback4 = options.getInet4LoopbackAddress().map(collectV4Routes) ?? []
+        let loopback6 = options.getInet6LoopbackAddress().map(collectV6Routes) ?? []
+        #if os(iOS)
+        let loopbackConfigured = !v4Addr.isEmpty && !loopback4.isEmpty
+        #else
+        let loopbackConfigured = false
+        #endif
         let splitTable = ClashTunnelRouteShaping.usesSplitTable(
-            strictRoute: options.getStrictRoute(), switches: routeSwitches
+            strictRoute: options.getStrictRoute(), enforceRoutes: enforceRoutes,
+            loopbackConfigured: loopbackConfigured, switches: routeShapeSwitches
         )
+         
+         
+        let wholeAsDefault = ClashTunnelRouteShaping.takesWholeAsDefault(
+            splitTable: splitTable, hideVPNIcon: routeShapeSwitches.hideVPNIcon
+        )
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        let besideLoopback = loopbackConfigured && !splitTable
         ClashLogStore.shared.append(
-            "route shaping: hideVPNIcon=\(routeSwitches.hideVPNIcon) homeKitCompatibility=\(routeSwitches.homeKitCompatibility) excludeAPNsRoute=\(routeSwitches.excludeAPNsRoute) splitTable=\(splitTable)",
+            "route shaping: hideVPNIcon=\(routeSwitches.hideVPNIcon) homeKitCompatibility=\(routeSwitches.homeKitCompatibility) excludeAPNsRoute=\(routeSwitches.excludeAPNsRoute) enforceRoutes=\(enforceRoutes) splitTable=\(splitTable) loopback=\(loopback4.count + loopback6.count) besideLoopback=\(besideLoopback)",
             stream: .app
         )
+        var v4DeclaredMask = v4Mask
         if !v4Addr.isEmpty {
             guard let includedIt = options.getInet4RouteAddress(),
                   let excludedIt = options.getInet4RouteExcludeAddress() else {
                 throw ExtensionError.serviceUnavailable("OpenTun: nil Inet4 route iterator")
             }
-            let v4 = NEIPv4Settings(addresses: v4Addr, subnetMasks: v4Mask)
             let included = collectV4Routes(includedIt)
             let effective = included.isEmpty ? defaultV4Routes(strict: splitTable) : included
-             
-             
-             
-             
-            let loopback4 = options.getInet4LoopbackAddress().map(collectV4Routes) ?? []
-            v4.includedRoutes = ClashTunnelRouteShaping.v4Included(
-                effective.map { .init(address: $0.destinationAddress, mask: $0.destinationSubnetMask) },
-                loopback: loopback4.map { .init(address: $0.destinationAddress, mask: $0.destinationSubnetMask) }
-            ).map { NEIPv4Route(destinationAddress: $0.address, subnetMask: $0.mask) }
-            v4.excludedRoutes = ClashTunnelRouteShaping.v4Excluded(
-                collectV4Routes(excludedIt).map { .init(address: $0.destinationAddress, mask: $0.destinationSubnetMask) },
+            let routes4 = effective.map { ClashTunnelRouteShaping.V4(address: $0.destinationAddress, mask: $0.destinationSubnetMask) }
+            let loopbackRoutes4 = loopback4.map { ClashTunnelRouteShaping.V4(address: $0.destinationAddress, mask: $0.destinationSubnetMask) }
+            let leftOut4 = besideLoopback ? ClashTunnelRouteShaping.v4LeftOutBesideLoopback(
+                routes4, keeping: zip(v4Addr, v4Mask).map { ClashTunnelRouteShaping.V4(address: $0, mask: $1) } + loopbackRoutes4
+            ) : nil
+            let configured4 = collectV4Routes(excludedIt).map {
+                ClashTunnelRouteShaping.V4(address: $0.destinationAddress, mask: $0.destinationSubnetMask)
+            }
+            let excluded4 = ClashTunnelRouteShaping.v4Excluded(
+                configured4 + (leftOut4 ?? []).filter { !configured4.contains($0) },
                 includedIsEmpty: effective.isEmpty,
                 switches: routeSwitches
+            )
+            if ClashTunnelRouteShaping.v4DeclaresHostAddress(leftOut: leftOut4, excluded: excluded4, dnsServer: dnsBox.value) {
+                v4DeclaredMask = v4Mask.map { _ in ClashTunnelRouteShaping.v4HostMask }
+            }
+            let v4 = NEIPv4Settings(addresses: v4Addr, subnetMasks: v4DeclaredMask)
+             
+             
+             
+             
+            v4.includedRoutes = ClashTunnelRouteShaping.v4Included(
+                routes4,
+                loopback: loopbackRoutes4,
+                wholeAsDefault: wholeAsDefault, besideLoopback: besideLoopback
             ).map { NEIPv4Route(destinationAddress: $0.address, subnetMask: $0.mask) }
+            v4.excludedRoutes = excluded4.map { NEIPv4Route(destinationAddress: $0.address, subnetMask: $0.mask) }
             settings.ipv4Settings = v4
         }
 
@@ -2378,7 +2540,14 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
             guard let p = v6It.next() else { break }
             v6Addr.append(p.address()); v6Prefix.append(NSNumber(value: p.prefix()))
         }
-        if !v6Addr.isEmpty {
+         
+         
+         
+         
+         
+         
+         
+        if !v6Addr.isEmpty, !besideLoopback {
             guard let includedIt = options.getInet6RouteAddress(),
                   let excludedIt = options.getInet6RouteExcludeAddress() else {
                 throw ExtensionError.serviceUnavailable("OpenTun: nil Inet6 route iterator")
@@ -2388,10 +2557,10 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
             let effective = included.isEmpty ? defaultV6Routes(strict: splitTable) : included
              
              
-            let loopback6 = options.getInet6LoopbackAddress().map(collectV6Routes) ?? []
             v6.includedRoutes = ClashTunnelRouteShaping.v6Included(
                 effective.map { .init(address: $0.destinationAddress, prefix: $0.destinationNetworkPrefixLength.intValue) },
-                loopback: loopback6.map { .init(address: $0.destinationAddress, prefix: $0.destinationNetworkPrefixLength.intValue) }
+                loopback: loopback6.map { .init(address: $0.destinationAddress, prefix: $0.destinationNetworkPrefixLength.intValue) },
+                wholeAsDefault: wholeAsDefault
             ).map { NEIPv6Route(destinationAddress: $0.address, networkPrefixLength: NSNumber(value: $0.prefix)) }
             v6.excludedRoutes = ClashTunnelRouteShaping.v6Excluded(
                 collectV6Routes(excludedIt).map { .init(address: $0.destinationAddress, prefix: $0.destinationNetworkPrefixLength.intValue) },
@@ -2409,8 +2578,10 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
         let requested = PreappliedTunnelDescriptor(
             mtu: Int(effectiveMTU),
             dnsServerAddress: dnsBox.value,
-            inet4Addresses: zip(v4Addr, v4Mask).map { "\($0)/\($1)" },
-            inet6Addresses: zip(v6Addr, v6Prefix).map { "\($0)/\($1.intValue)" },
+            inet4Addresses: zip(v4Addr, v4DeclaredMask).map { "\($0)/\($1)" },
+             
+             
+            inet6Addresses: settings.ipv6Settings == nil ? [] : zip(v6Addr, v6Prefix).map { "\($0)/\($1.intValue)" },
             inet4IncludedRoutes: (settings.ipv4Settings?.includedRoutes ?? [])
                 .map { "\($0.destinationAddress)/\($0.destinationSubnetMask)" },
             inet4ExcludedRoutes: (settings.ipv4Settings?.excludedRoutes ?? [])
@@ -2598,10 +2769,16 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
      
      
      
-    static let readsTheTunnelDirectly = false
+     
+     
+     
+     
+     
+     
+     
+    static let readsTheTunnelDirectly = true
 
     static func systemTunnelDescriptor() -> Int32? {
-#if os(iOS)
         guard readsTheTunnelDirectly else { return nil }
          
          
@@ -2613,7 +2790,6 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
             guard getsockopt(descriptor, controlProtocol, interfaceNameOption, &name, &length) == 0 else { continue }
             if String(cString: name).hasPrefix("utun") { return descriptor }
         }
-#endif
         return nil
     }
 
@@ -2892,16 +3068,18 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
      
      
      
+     
+     
+     
+     
     private func defaultV4Routes(strict: Bool) -> [NEIPv4Route] {
-        guard strict else { return [NEIPv4Route.default()] }
-        return ClashTunnelRouteShaping.v4SplitTable.map {
+        ClashTunnelRouteShaping.v4Default(splitTable: strict).map {
             NEIPv4Route(destinationAddress: $0.address, subnetMask: $0.mask)
         }
     }
 
     private func defaultV6Routes(strict: Bool) -> [NEIPv6Route] {
-        guard strict else { return [NEIPv6Route.default()] }
-        return ClashTunnelRouteShaping.v6SplitTable.map {
+        ClashTunnelRouteShaping.v6Default(splitTable: strict).map {
             NEIPv6Route(destinationAddress: $0.address, networkPrefixLength: NSNumber(value: $0.prefix))
         }
     }

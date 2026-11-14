@@ -106,6 +106,9 @@ public enum ClashTunnelRouteShaping {
     ]
 
      
+     
+     
+     
     public static let v6SplitTable: [V6] = [
         V6(address: "100::", prefix: 8),
         V6(address: "200::", prefix: 7),
@@ -136,8 +139,97 @@ public enum ClashTunnelRouteShaping {
 
      
      
-    public static func usesSplitTable(strictRoute: Bool, switches: Switches) -> Bool {
-        strictRoute || switches.homeKitCompatibility
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func usesSplitTable(strictRoute: Bool, enforceRoutes: Bool, loopbackConfigured: Bool, switches: Switches) -> Bool {
+        switches.homeKitCompatibility || (strictRoute && (enforceRoutes || (!switches.hideVPNIcon && !loopbackConfigured)))
+    }
+
+     
+     
+    public static func v4Default(splitTable: Bool) -> [V4] {
+        splitTable ? v4SplitTable : [V4(address: "0.0.0.0", mask: "0.0.0.0")]
+    }
+
+    public static func v6Default(splitTable: Bool) -> [V6] {
+        splitTable ? v6SplitTable : [V6(address: "::", prefix: 0)]
+    }
+
+     
+     
+     
+     
+     
+     
+    public static func takesWholeAsDefault(splitTable: Bool, hideVPNIcon: Bool) -> Bool {
+        hideVPNIcon && !splitTable
+    }
+
+     
+     
+     
+     
+     
+     
+    public static let v4HostMask = "255.255.255.255"
+
+     
+     
+     
+     
+     
+     
+     
+    public static func v4DeclaresHostAddress(leftOut: [V4]?, excluded: [V4], dnsServer: String) -> Bool {
+        guard leftOut != nil, let server = bytes(dnsServer, AF_INET) else { return false }
+        return !v4Prefixes(excluded).contains { samePrefix($0.bytes, server, $0.length) }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func v4LeftOutBesideLoopback(_ effective: [V4], keeping: [V4] = []) -> [V4]? {
+        let prefixes = v4Prefixes(effective)
+        guard prefixes.contains(where: { holdsTheZeroAddress($0) }) else { return nil }
+        return uncovered(prefixes + v4Prefixes(keeping), bits: 32).map { block in
+            let mask = block.length == 0 ? UInt32(0) : ~UInt32(0) << (32 - block.length)
+            return V4(address: block.bytes.map(String.init).joined(separator: "."),
+                      mask: [24, 16, 8, 0].map { String((mask >> $0) & 0xff) }.joined(separator: "."))
+        }
     }
 
      
@@ -178,7 +270,24 @@ public enum ClashTunnelRouteShaping {
      
      
      
-    public static func v4Included(_ effective: [V4], loopback: [V4]) -> [V4] {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func v4Included(_ effective: [V4], loopback: [V4], wholeAsDefault: Bool = false, besideLoopback: Bool = false) -> [V4] {
+        let prefixes = v4Prefixes(effective)
+        if (besideLoopback && prefixes.contains(where: { holdsTheZeroAddress($0) }))
+            || (wholeAsDefault && takesEveryAddress(prefixes, bits: 32)) {
+            let whole = V4(address: "0.0.0.0", mask: "0.0.0.0")
+            return [whole] + loopback.filter { $0 != whole }
+        }
         let routes = unique(effective.flatMap { route -> [V4] in
             guard let length = v4Length(route.mask), length > 0, startsAtZero(route.address, length, AF_INET) else { return [route] }
             return v4SplitTable.filter { (v4Length($0.mask) ?? 0) > length }
@@ -186,7 +295,15 @@ public enum ClashTunnelRouteShaping {
         return routes + loopback.filter { !routes.contains($0) }
     }
 
-    public static func v6Included(_ effective: [V6], loopback: [V6]) -> [V6] {
+     
+     
+    public static func v6Included(_ effective: [V6], loopback: [V6], wholeAsDefault: Bool = false) -> [V6] {
+        if wholeAsDefault, takesEveryAddress(effective.compactMap { route in
+            bytes(route.address, AF_INET6).map { ($0, route.prefix) }
+        }, bits: 128) {
+            let whole = V6(address: "::", prefix: 0)
+            return [whole] + loopback.filter { $0 != whole }
+        }
         let routes = unique(effective.flatMap { route -> [V6] in
             guard route.prefix > 0, startsAtZero(route.address, route.prefix, AF_INET6) else { return [route] }
             return v6SplitTable.filter { $0.prefix > route.prefix }
@@ -198,17 +315,62 @@ public enum ClashTunnelRouteShaping {
         routes.reduce(into: []) { kept, route in if !kept.contains(route) { kept.append(route) } }
     }
 
+    private static func v4Prefixes(_ routes: [V4]) -> [(bytes: [UInt8], length: Int)] {
+        routes.compactMap { route in v4Length(route.mask).flatMap { length in bytes(route.address, AF_INET).map { ($0, length) } } }
+    }
+
+     
+    private static func samePrefix(_ a: [UInt8], _ b: [UInt8], _ length: Int) -> Bool {
+        a.count == b.count && (0..<min(length, a.count * 8)).allSatisfy { (a[$0 / 8] ^ b[$0 / 8]) & UInt8(0x80 >> ($0 % 8)) == 0 }
+    }
+
+     
+    private static func holdsTheZeroAddress(_ prefix: (bytes: [UInt8], length: Int)) -> Bool {
+        (0..<min(prefix.length, prefix.bytes.count * 8)).allSatisfy { prefix.bytes[$0 / 8] & UInt8(0x80 >> ($0 % 8)) == 0 }
+    }
+
     private static func v4Length(_ mask: String) -> Int? {
         var s = in_addr()
         guard inet_pton(AF_INET, mask, &s) == 1 else { return nil }
         return (~UInt32(bigEndian: s.s_addr)).leadingZeroBitCount
     }
 
+    private static func bytes(_ address: String, _ family: Int32) -> [UInt8]? {
+        var bytes = [UInt8](repeating: 0, count: family == AF_INET ? 4 : 16)
+        return inet_pton(family, address, &bytes) == 1 ? bytes : nil
+    }
+
+     
+     
+    private static func takesEveryAddress(_ prefixes: [(bytes: [UInt8], length: Int)], bits: Int) -> Bool {
+        uncovered(prefixes, bits: bits).isEmpty
+    }
+
+     
+     
+     
+     
+     
+     
+    private static func uncovered(_ prefixes: [(bytes: [UInt8], length: Int)], bits: Int) -> [(bytes: [UInt8], length: Int)] {
+        func left(_ block: [UInt8], _ length: Int, _ reaching: [(bytes: [UInt8], length: Int)]) -> [(bytes: [UInt8], length: Int)] {
+            if reaching.contains(where: { $0.length <= length }) { return [] }
+            guard length < bits, !reaching.isEmpty else { return [(block, length)] }
+            let bit = UInt8(0x80 >> (length % 8))
+            var upper = block
+            upper[length / 8] |= bit
+            let (low, high) = reaching.reduce(into: ([(bytes: [UInt8], length: Int)](), [(bytes: [UInt8], length: Int)]())) { split, prefix in
+                if prefix.bytes[length / 8] & bit == 0 { split.0.append(prefix) } else { split.1.append(prefix) }
+            }
+            return left(block, length + 1, low) + left(upper, length + 1, high)
+        }
+        return left([UInt8](repeating: 0, count: bits / 8), 0,
+                    prefixes.filter { (0...bits).contains($0.length) && $0.bytes.count == bits / 8 })
+    }
+
      
     private static func startsAtZero(_ address: String, _ length: Int, _ family: Int32) -> Bool {
-        var bytes = [UInt8](repeating: 0, count: family == AF_INET ? 4 : 16)
-        guard inet_pton(family, address, &bytes) == 1 else { return false }
-        return (0..<min(length, bytes.count * 8)).allSatisfy { bytes[$0 / 8] & UInt8(0x80 >> ($0 % 8)) == 0 }
+        bytes(address, family).map { holdsTheZeroAddress(($0, length)) } ?? false
     }
 }
 

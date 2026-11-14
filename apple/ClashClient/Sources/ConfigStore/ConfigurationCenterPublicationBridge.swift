@@ -166,7 +166,14 @@ enum ConfigurationCenterPublicationBridge {
                                           publicationUnderWay: !(snapshot.pendingPublications?.isEmpty ?? true)) else {
             try profileStore.remove(id: profile.id); return
         }
-        guard snapshot.pendingPublications?.isEmpty ?? true else { throw ConfigurationLibraryError.busy }
+         
+         
+         
+         
+         
+        guard !(snapshot.pendingPublications ?? []).contains(where: { $0.profileID == profile.id }) else {
+            throw ConfigurationLibraryError.busy
+        }
          
          
          

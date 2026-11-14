@@ -81,17 +81,52 @@ struct ClashWidgetSetModeIntent: AppIntent {
 
     func perform() async throws -> some IntentResult {
         if let mode = ClashWidgetMode(rawValue: mode) {
-            do {
-                try ClashWidgetMailboxClient.store.writeModeChoice(ClashWidgetModeChoice(mode: mode, at: Date()))
-            } catch {
-                ClashLogStore.shared.append("widget: mode choice not written  \(error.localizedDescription)", stream: .app, level: .warning)
+            let store = ClashWidgetMailboxClient.store
+            store.clearNotice()
+            let active = await ClashVPNControlDriver.state(journal: false)?.active == true
+            if mode == .global, active {
+                 
+                 
+                 
+                 
+                 
+                if await ClashWidgetMailboxClient.requestAndWait(.setMode(mode), group: nil)?.mode == .global {
+                    Self.keep(mode, in: store)
+                } else if store.readNotice() == nil {
+                     
+                     
+                     
+                    try? store.writeNotice(ClashWidgetNotice(exit: nil, at: Date()))
+                }
+                return .result()
             }
              
-            if await ClashVPNControlDriver.state(journal: false)?.active == true {
+             
+             
+             
+             
+             
+            if mode == .global, case .refuse(let exit) = store.readAppFacts()?.globalVerdict ?? .keep {
+                try? store.writeNotice(ClashWidgetNotice(exit: exit.rawValue, at: Date()))
+                ClashLogStore.shared.append(#"widget: mode global not kept: GLOBAL's stored choice is \#(exit.rawValue)"#,
+                                            stream: .app, level: .info)
+                return .result()
+            }
+            Self.keep(mode, in: store)
+             
+            if active {
                 _ = await ClashWidgetMailboxClient.requestAndWait(.setMode(mode), group: nil)
             }
         }
         return .result()
+    }
+
+    private static func keep(_ mode: ClashWidgetMode, in store: ClashWidgetMailboxStore) {
+        do {
+            try store.writeModeChoice(ClashWidgetModeChoice(mode: mode, at: Date()))
+        } catch {
+            ClashLogStore.shared.append("widget: mode choice not written  \(error.localizedDescription)", stream: .app, level: .warning)
+        }
     }
 }
 

@@ -55,14 +55,17 @@ public enum ClashMacConfigurationWizardRules {
      
      
      
+     
     public static func suggestedLabel(
         _ draft: ConfigurationCreationDraft,
         in snapshot: ConfigurationLibrarySnapshot,
-        fallback: String = "Profile"
+        fallback: String = "Profile",
+        locale: Locale = .current
     ) -> String {
         let typed = draft.label.trimmingCharacters(in: .whitespacesAndNewlines)
         if !typed.isEmpty { return typed }
-        let fromSource = (draft.newSources.first?.record.label ?? chosenSources(draft, in: snapshot).first?.label ?? "")
+        let fromSource = ((draft.newSources.first?.record ?? chosenSources(draft, in: snapshot).first)
+            .map { $0.displayLabel(locale: locale) } ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return fromSource.isEmpty ? fallback : fromSource
     }
@@ -384,7 +387,7 @@ public struct ClashMacConfigurationWizardSheet: View {
                 get: { chosen },
                 set: { isOn in if isOn != draft.selectedSourceIDs.contains(source.id) { draft.toggleSource(source.id) } }
             )) {
-                Text(verbatim: source.label)
+                Text(clash: ClashConfigurationSourceCopy.name(source))
                 Text(verbatim: ClashConfigurationSourceCopy.summary(source, locale: locale))
             }
             .toggleStyle(.checkbox)
@@ -399,10 +402,10 @@ public struct ClashMacConfigurationWizardSheet: View {
     private var originalCandidate: (id: String, label: String)? {
         guard draft.selectedSourceIDs.count == 1, let id = draft.selectedSourceIDs.first else { return nil }
         if let staged = draft.newSources.first(where: { $0.record.id == id }) {
-            return staged.record.nodeChain == nil ? (id, staged.record.label) : nil
+            return staged.record.nodeChain == nil ? (id, staged.record.displayLabel(locale: locale)) : nil
         }
         guard let record = model.snapshot.sources.first(where: { $0.id == id }), record.nodeChain == nil else { return nil }
-        return (id, record.label)
+        return (id, record.displayLabel(locale: locale))
     }
 
      
@@ -482,18 +485,19 @@ public struct ClashMacConfigurationWizardSheet: View {
                      
                      
                     LabeledContent {
-                        Text(verbatim: draft.newSources.first { $0.record.id == originalID }?.record.label
-                            ?? model.snapshot.sources.first { $0.id == originalID }?.label ?? "")
+                        Text(verbatim: (draft.newSources.first { $0.record.id == originalID }?.record
+                            ?? model.snapshot.sources.first { $0.id == originalID })
+                            .map { $0.displayLabel(locale: locale) } ?? "")
                     } label: {
                         Text(clash: .copy("Original Configuration"))
                     }
                     .accessibilityIdentifier("configuration-center.wizard.original-source")
                 } else {
                     LabeledContent {
-                        Text(verbatim: (draft.newSources.map(\.record.label)
+                        Text(verbatim: (draft.newSources.map(\.record)
                             + ClashMacConfigurationWizardRules.chosenSources(draft, in: model.snapshot)
-                                .filter { record in !draft.newSources.contains { $0.record.id == record.id } }
-                                .map(\.label))
+                                .filter { record in !draft.newSources.contains { $0.record.id == record.id } })
+                            .map { $0.displayLabel(locale: locale) }
                             .joined(separator: ", "))
                     } label: {
                         Text(clash: .copy("Node Sources"))
@@ -558,7 +562,7 @@ public struct ClashMacConfigurationWizardSheet: View {
      
     private var suggestedLabel: String {
         ClashMacConfigurationWizardRules.suggestedLabel(
-            draft, in: model.snapshot, fallback: ClashCopy.string("Profile", locale: locale)
+            draft, in: model.snapshot, fallback: ClashCopy.string("Profile", locale: locale), locale: locale
         )
     }
 

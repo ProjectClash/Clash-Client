@@ -21,6 +21,9 @@ enum MacVPNDisconnectErrorPresentation {
     struct Verdict: Equatable {
         let message: String
         let offersVPNProfileReset: Bool
+         
+         
+        var refusal: CoreStartRefusal? = nil
     }
 
     static let extensionDidNotStartMessage =
@@ -32,11 +35,24 @@ enum MacVPNDisconnectErrorPresentation {
     static let genericStartFailureMessage =
         "The VPN could not start. Check the configuration and try again."
 
-    static func verdict(for error: NSError?, status: NEVPNStatus) -> Verdict {
+     
+     
+     
+     
+     
+     
+    static func verdict(for error: NSError?, status: NEVPNStatus, record: StartupOutcomeRecord? = nil,
+                        issuedAt: Date? = nil) -> Verdict {
         if status == .invalid {
             return Verdict(message: configurationNotFoundMessage, offersVPNProfileReset: true)
         }
         guard let error else {
+            return Verdict(message: genericStartFailureMessage, offersVPNProfileReset: false)
+        }
+        if let refusal = CoreStartRefusal.from(error: error, record: record, issuedAt: issuedAt) {
+            return Verdict(message: refusal.message, offersVPNProfileReset: false, refusal: refusal)
+        }
+        if error.domain == ClashTunnelStart.startErrorDomain {
             return Verdict(message: genericStartFailureMessage, offersVPNProfileReset: false)
         }
         if error.domain == NEVPNConnectionErrorDomain {

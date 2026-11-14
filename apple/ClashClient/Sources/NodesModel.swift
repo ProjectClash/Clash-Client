@@ -49,9 +49,25 @@ struct ProxyGroup: Identifiable, Equatable {
      
      
     let hiddenMembers: Set<String>
+     
+     
+     
+     
+     
+    let outOfPlace: Set<String>
+     
+     
+     
+     
+     
+     
+     
+    let listsEveryGroup: Bool
     var id: String { name }
      
     var hasEveryMember: Bool { members.count + hiddenMembers.count >= memberTotal }
+     
+    var carriedSelection: String? { outOfPlace.contains(now) ? now : nil }
      
     var shownMemberTotal: Int { max(memberTotal - hiddenMembers.count, members.count) }
      
@@ -90,6 +106,62 @@ struct ProxyGroup: Identifiable, Equatable {
         return now == member
     }
 
+     
+     
+     
+     
+     
+     
+    func pinOfAMemberGone(among groups: [ProxyGroup]) -> String? {
+        guard ProxyGroupControlKind(rawType: type).canBeUnpinned, let pin = fixed, !pin.isEmpty,
+              !hiddenMembers.contains(pin),
+              membership(of: pin, among: groups) == .notMember else { return nil }
+        return pin
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func membership(of name: String, among groups: [ProxyGroup]) -> GroupMembership {
+        membership(of: name, isGroup: groups.contains { $0.name == name })
+    }
+
+     
+     
+     
+    func membership(of name: String, isGroup: @autoclosure () -> Bool) -> GroupMembership {
+        GroupMembership.judged(
+            held: members.contains(name),
+            holdsEveryMember: hasEveryMember,
+            listsEveryGroup: listsEveryGroup,
+            isOtherGroup: name != self.name && isGroup()
+        )
+    }
+
+     
+     
+    func lists(_ name: String, among groups: [ProxyGroup]) -> Bool {
+        membership(of: name, among: groups) == .member
+    }
+
+     
+     
+     
+     
+    func knownMembers(among groups: [ProxyGroup]) -> [String] {
+        guard listsEveryGroup, !hasEveryMember else { return members }
+        var seen = Set(members)
+        seen.insert(name)
+        return members + groups.map(\.name).filter { seen.insert($0).inserted }
+    }
+
     init(name: String, type: String, now: String, members: [String],
          resolvedNow: String? = nil, memberTypes: [String: String] = [:],
          memberGroupNames: Set<String> = [],
@@ -102,9 +174,13 @@ struct ProxyGroup: Identifiable, Equatable {
          emptyFallback: String? = nil,
          fixed: String? = nil,
          memberTotal: Int? = nil,
-         hiddenMembers: Set<String> = []) {
+         hiddenMembers: Set<String> = [],
+         outOfPlace: Set<String> = [],
+         listsEveryGroup: Bool = false) {
         self.memberTotal = max(memberTotal ?? members.count + hiddenMembers.count, members.count + hiddenMembers.count)
         self.hiddenMembers = hiddenMembers
+        self.outOfPlace = outOfPlace.intersection(members)
+        self.listsEveryGroup = listsEveryGroup
         self.hidden = hidden
         self.memberPlaceholderTypes = memberPlaceholderTypes
         self.testURL = testURL
@@ -148,7 +224,18 @@ protocol NodesCommanding: AnyObject, Sendable {
      
      
     var lastCommandError: String { get }
+     
+     
+     
+     
+    var lastSelectionFailure: SelectionFailure { get }
+     
+     
     func closeConnectionsAfterProxySelection() async
+     
+     
+     
+    func closeConnectionsMoved(by picks: [ProxyGroupPick]) async
     func reconnectAfterRuntimeChange()
      
      
@@ -197,6 +284,26 @@ protocol NodesCommanding: AnyObject, Sendable {
 }
 
  
+enum SelectionFailure: Equatable, Sendable {
+     
+     
+     
+     
+    case notListed
+     
+     
+     
+    case notAnswered
+     
+     
+     
+     
+     
+     
+    case notHeld
+}
+
+ 
 enum DelayPageRead {
     case page(Data)
      
@@ -240,8 +347,15 @@ extension NodesCommanding {
 extension ClashCommandClient: NodesCommanding {
      
      
-    var coreSession: String? {
-        guard let diagnostics = runtimeDiagnostics, diagnostics.processIdentifier > 0, diagnostics.startTimeUnix > 0 else { return nil }
+     
+     
+     
+     
+    var coreSession: String? { Self.coreSession(of: runtimeDiagnostics) }
+
+     
+    nonisolated static func coreSession(of diagnostics: ClashRuntimeDiagnostics?) -> String? {
+        guard let diagnostics, diagnostics.processIdentifier > 0, diagnostics.startTimeUnix > 0 else { return nil }
         return "\(diagnostics.processIdentifier)-\(diagnostics.startTimeUnix)"
     }
 
@@ -332,6 +446,7 @@ extension NodesCommanding {
     var mode: String { "rule" }
     func unfix(group: String) async -> Bool { false }
     var lastCommandError: String { "" }
+    var lastSelectionFailure: SelectionFailure { .notAnswered }
     func reconnectAfterRuntimeChange() {}
     func nodesProviderCatalog() async throws -> ProviderRuntimeCatalog { .empty }
     func nodesHealthCheckProvider(named name: String) async -> [String: Int] { [:] }
@@ -365,6 +480,29 @@ struct NodesRuntimeIdentity: Equatable {
             profileID: pointer.profileID,
             revision: pointer.revision
         )
+    }
+}
+
+ 
+ 
+enum AutomaticPins {
+     
+    static let defaultsKey = "nodes.automaticPins.restoredKey"
+
+     
+     
+     
+     
+    static func key(coreSession: String, profileID: String, pins: [String: String]) -> String {
+        let spelled = (try? JSONEncoder.sortedKeys.encode(pins)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        return coreSession + "|" + profileID + "|" + spelled
+    }
+
+     
+     
+     
+    static func goneKey(coreSession: String, group: String, pin: String) -> String {
+        key(coreSession: coreSession, profileID: "", pins: [group: pin])
     }
 }
 
@@ -965,7 +1103,7 @@ enum OfflineProxyCatalogLoader {
                       (entry.payloadURL ?? entry.url) == url else { continue }
                 let file = directory.appendingPathComponent(entry.path)
                 guard FileManager.default.fileExists(atPath: file.path) else { continue }
-                if let library = files[entry.name], modified(library) >= modified(file) { continue }
+                if let library = files[entry.name], modified(library).timeIntervalSince(modified(file)) >= 0 { continue }
                 files[entry.name] = file
             }
         }
@@ -1414,42 +1552,74 @@ enum GlobalProxySelectionPolicy {
      
     static func remembers(group: String) -> Bool { group != groupName }
 
+     
+    enum Decision: Equatable {
+         
+         
+         
+         
+         
+        case none
+         
+        case keep(String)
+         
+        case write(String)
+         
+         
+         
+         
+        case handToKernel(String)
+    }
+
+     
+     
+     
+     
+     
+    static func decide(
+        groups: [ProxyGroup],
+        preferredGroupName: String?
+    ) -> Decision {
+        guard let global = globalGroup(in: groups),
+              ProxyGroupControlKind(rawType: global.type) == .manual else {
+            return .none
+        }
+        let byName = index(groups)
+        let hasSafeCurrentRoute = isProxyMember(global.now, of: global, byName: byName)
+         
+         
+         
+         
+        if hasSafeCurrentRoute, isExplicitProxyChoice(global.now, groups: groups) {
+            return .keep(global.now)
+        }
+        if let preferredGroupName, remembers(group: preferredGroupName),
+           isSafeManualGroup(preferredGroupName, groups: groups),
+           routesToAProxy(preferredGroupName, of: global, byName: byName) {
+            switch global.membership(of: preferredGroupName, isGroup: byName[preferredGroupName] != nil) {
+            case .member: return .write(preferredGroupName)
+            case .unknown: return .handToKernel(preferredGroupName)
+            case .notMember: break
+            }
+        }
+        return hasSafeCurrentRoute ? .keep(global.now) : .none
+    }
+
+     
+     
     static func target(
         groups: [ProxyGroup],
         preferredGroupName: String?
     ) -> String? {
-        guard let global = globalGroup(in: groups),
-              ProxyGroupControlKind(rawType: global.type) == .manual else {
-            return nil
-        }
-
-        let hasSafeCurrentRoute = isProxyMember(
-            global.now,
-            of: global,
-            allGroups: groups
-        )
-
-         
-         
-         
-         
-        if hasSafeCurrentRoute,
-           isExplicitProxyChoice(global.now, groups: groups) {
-            return global.now
-        }
-        if let preferredGroupName,
-           isProxyMember(preferredGroupName, of: global, allGroups: groups),
-           isSafeManualGroup(preferredGroupName, groups: groups) {
-            return preferredGroupName
-        }
-        if hasSafeCurrentRoute {
-            return global.now
-        }
-        return global.members.first {
-            isProxyMember($0, of: global, allGroups: groups)
+        switch decide(groups: groups, preferredGroupName: preferredGroupName) {
+        case .keep(let route), .write(let route): return route
+        case .handToKernel, .none: return nil
         }
     }
 
+     
+     
+     
      
      
      
@@ -1468,33 +1638,49 @@ enum GlobalProxySelectionPolicy {
      
      
     static func refusal(groups: [ProxyGroup]) -> String? {
-        guard let global = globalGroup(in: groups) else {
-             
-             
-            return """
-                The core has not reported the built-in GLOBAL group yet. \
-                Reconnect and try again.
-                """
+         
+         
+         
+         
+         
+        ClashTunnelOutboundMode.unusableKey(group: walk(groups))
+    }
+
+     
+     
+     
+     
+    static func walk(_ groups: [ProxyGroup]) -> (String) -> ClashTunnelOutboundMode.WalkedGroup? {
+        let byName = index(groups)
+        let global = globalGroup(in: groups)
+        let globalMembers = global?.knownMembers(among: groups)
+        return { name in
+            if let group = byName[name] {
+                 
+                 
+                 
+                return ClashTunnelOutboundMode.WalkedGroup(
+                    now: group.now, members: name == groupName ? globalMembers ?? group.members : group.members,
+                    listsEveryMember: group.hasEveryMember || (name == groupName && group.listsEveryGroup))
+            }
+            if let leaf = global?.memberResolvedNames[name], leaf != name {
+                return ClashTunnelOutboundMode.WalkedGroup(now: leaf, members: nil)
+            }
+            return nil
         }
-         
-         
-         
-         
-        guard global.members.contains(where: {
-            isProxyMember($0, of: global, allGroups: groups)
-        }) else {
-            return """
-                The GLOBAL group has no proxy or policy group to select. Global \
-                mode sends every flow through GLOBAL, so this profile needs at \
-                least one outbound.
-                """
-        }
-        return nil
     }
 
     static func isProxySelected(groups: [ProxyGroup]) -> Bool {
-        guard let global = globalGroup(in: groups) else { return false }
-        return isProxyMember(global.now, of: global, allGroups: groups)
+        exit(groups: groups) == .proxy
+    }
+
+     
+     
+     
+     
+    static func exit(groups: [ProxyGroup]) -> ClashTunnelOutboundMode.GlobalExit? {
+        guard globalGroup(in: groups) != nil else { return nil }
+        return ClashTunnelOutboundMode.exit(following: groupName, group: walk(groups))
     }
 
     static func isSafeManualGroup(
@@ -1505,12 +1691,7 @@ enum GlobalProxySelectionPolicy {
               ProxyGroupControlKind(rawType: group.type) == .manual else {
             return false
         }
-        let resolved = group.resolvedNow
-        guard !resolved.isEmpty,
-              !BuiltinProxyName.all.contains(resolved) else {
-            return false
-        }
-        return !groups.contains { $0.name == resolved }
+        return ClashTunnelOutboundMode.exit(following: name, group: walk(groups)) == .proxy
     }
 
     private static func globalGroup(in groups: [ProxyGroup]) -> ProxyGroup? {
@@ -1529,22 +1710,48 @@ enum GlobalProxySelectionPolicy {
         return isSafeManualGroup(name, groups: groups)
     }
 
+     
+     
+     
+     
+     
     private static func isProxyMember(
         _ member: String,
         of global: ProxyGroup,
-        allGroups: [ProxyGroup]
+        byName: [String: ProxyGroup]
     ) -> Bool {
-        guard !member.isEmpty, global.members.contains(member) else {
+        guard !member.isEmpty,
+              global.membership(of: member, isGroup: byName[member] != nil) == .member else {
             return false
         }
-        let resolved = global.memberResolvedNames[member] ?? member
-        guard !resolved.isEmpty,
-              !BuiltinProxyName.all.contains(resolved) else {
-            return false
-        }
+        return routesToAProxy(member, of: global, byName: byName)
+    }
+
+     
+     
+     
+    private static func routesToAProxy(
+        _ member: String,
+        of global: ProxyGroup,
+        byName: [String: ProxyGroup]
+    ) -> Bool {
          
-         
-        return !allGroups.contains { $0.name == resolved }
+        ClashTunnelOutboundMode.exit(following: member) { name in
+            if let group = byName[name] {
+                return ClashTunnelOutboundMode.WalkedGroup(now: group.now, members: group.members,
+                                                           listsEveryMember: group.hasEveryMember)
+            }
+            if let leaf = global.memberResolvedNames[name], leaf != name {
+                return ClashTunnelOutboundMode.WalkedGroup(now: leaf, members: nil)
+            }
+            return nil
+        } == .proxy
+    }
+
+     
+     
+    private static func index(_ groups: [ProxyGroup]) -> [String: ProxyGroup] {
+        Dictionary(groups.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
     }
 }
 
@@ -1897,7 +2104,7 @@ enum NodeInventory {
             String: (
                 type: String, now: String, members: [String], hidden: Bool,
                 testURL: String?, iconURL: String?, emptyFallback: String?, fixed: String?,
-                total: Int?
+                total: Int?, outOfPlace: [String], listsEveryGroup: Bool
             )
         ] = [:]
         var proxyTypes: [String: String] = [:]
@@ -1994,7 +2201,11 @@ enum NodeInventory {
                     (proxy["fixed"] as? String).flatMap { $0.isEmpty ? nil : native($0) },
                      
                      
-                    proxy["total"] as? Int
+                    proxy["total"] as? Int,
+                     
+                    ((proxy["outOfPlace"] as? [String]) ?? []).map(native),
+                     
+                    proxy["listsEveryGroup"] as? Bool ?? false
                 )
             }
         }
@@ -2033,7 +2244,13 @@ enum NodeInventory {
                 emptyFallback: value.emptyFallback,
                 fixed: value.fixed,
                 memberTotal: value.total,
-                hiddenMembers: hiddenByGroup[name] ?? []
+                hiddenMembers: hiddenByGroup[name] ?? [],
+                outOfPlace: Set(value.outOfPlace),
+                 
+                 
+                 
+                 
+                listsEveryGroup: value.listsEveryGroup && configuredOrder.groupIndex(of: name) == nil
             )
         }
          
@@ -2255,8 +2472,23 @@ final class NodesModel: ObservableObject {
         didSet {
             ClashPerf.count("pub.nodes.groups")
             deriveGroupSelections()
+             
+             
+             
+             
+             
+             
+            if globalOverDirectConsent.holdsAny, isRuntimeAvailable,
+               groups.contains(where: { $0.name == GlobalProxySelectionPolicy.groupName }),
+               GlobalProxySelectionPolicy.isProxySelected(groups: groups) {
+                globalOverDirectConsent.revoke(profileID: observedRuntimeIdentity?.profileID ?? activeProfileID)
+            }
         }
     }
+
+     
+     
+    var activeProfileID: String? { preferences?.activeProfileKey() }
      
      
      
@@ -2294,6 +2526,16 @@ final class NodesModel: ObservableObject {
     private var runRecordKeys: [String: String] = [:]
      
     private var runDecidingURLs: [String] = []
+
+     
+     
+     
+     
+    nonisolated static func sweepTally(of table: [String: Int], total: Int) -> (ok: Int, failed: Int, untested: Int) {
+        let nodes = table.filter { !NodeInventory.isURLRecordKey($0.key) }
+        let ok = nodes.values.filter { $0 > 0 }.count
+        return (ok, nodes.count - ok, max(0, total - nodes.count))
+    }
 
      
      
@@ -2409,7 +2651,12 @@ final class NodesModel: ObservableObject {
      
     private var extendedMembers: [String: (list: String, members: [NodeMember], from: Int)] = [:]
      
-    @Published private(set) var membersLoading: Set<String> = []
+     
+     
+     
+     
+     
+    private(set) var membersLoading: Set<String> = []
      
      
     private var searchedMembers: [String: [NodeMember]] = [:]
@@ -2523,6 +2770,7 @@ final class NodesModel: ObservableObject {
      
      
      
+     
     static var postSweepSelectionSyncNanoseconds: UInt64 = 11_000_000_000
     private var postSweepSelectionSync: Task<Void, Never>?
     @Published private(set) var latencyCompletedCount = 0
@@ -2571,6 +2819,47 @@ final class NodesModel: ObservableObject {
     private(set) var inventoryApplications = 0
     private var observedRuntimeIdentity: NodesRuntimeIdentity?
     private var restoredRuntimeKey: String?
+     
+     
+     
+    private var restoredAutomaticPinsKey: String?
+    private let automaticPinsDefaults: UserDefaults?
+     
+     
+    private(set) var notesOfAnUnnamedCore = 0
+     
+     
+     
+    private struct AnsweredAutomaticPins {
+        let key: String
+        var groups: Set<String> = []
+    }
+    private var answeredAutomaticPins: AnsweredAutomaticPins?
+     
+     
+     
+    private var unnamedCoreSkipped: [String]?
+     
+     
+    private var automaticPinsReadPending = false
+     
+    private var automaticPinsReadFailureNoted = false
+     
+    private var restoringAutomaticPins = false
+    private var automaticPinsAskedAgain = false
+     
+     
+    private var pinsOfMembersGoneAsked: Set<String> = []
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @Published private(set) var groupsAreTheCores = false
     private var providerCatalogGeneration: UInt64 = 0
     private var providerArrivalTask: Task<Void, Never>?
     private let providerCatalogRetryDelayNanoseconds: UInt64
@@ -2580,6 +2869,10 @@ final class NodesModel: ObservableObject {
     private var subscriptionHealth: SubscriptionHealthRuns?
     private var latencyCancellation: LatencyProbeCancellation?
     private let shouldCloseConnectionsOnSwitch: () -> Bool
+     
+     
+     
+    let globalOverDirectConsent: GlobalOverDirectConsent
 
     init(
         preferences: NodeProfilePreferencesStore? = .live(),
@@ -2611,8 +2904,14 @@ final class NodesModel: ObservableObject {
         },
         memorySentrySleep: @escaping @Sendable (UInt64) async throws -> Void = {
             try await Task.sleep(nanoseconds: $0)
-        }
+        },
+        globalOverDirectConsent: GlobalOverDirectConsent = .shared,
+         
+         
+        automaticPinsDefaults: UserDefaults? = nil
     ) {
+        self.globalOverDirectConsent = globalOverDirectConsent
+        self.automaticPinsDefaults = automaticPinsDefaults
         self.preferences = preferences
         self.protocolDetailsLoader = protocolDetailsLoader
         self.groupConfigurationDetailsLoader = groupConfigurationDetailsLoader
@@ -2669,6 +2968,7 @@ final class NodesModel: ObservableObject {
             guard let self, let command else { return }
             await self.restoreActiveProfileSelectionIfNeeded(command: command)
             await self.loadProviderSources(command: command, token: providerToken)
+            await self.restoreAutomaticPinsIfNeeded(command: command)
         }
     }
 
@@ -2745,8 +3045,16 @@ final class NodesModel: ObservableObject {
              
              
              
-             
             restoredRuntimeKey = nil
+             
+             
+            if groupsAreTheCores { groupsAreTheCores = false }
+             
+             
+            answeredAutomaticPins = nil
+            automaticPinsReadPending = false
+            automaticPinsReadFailureNoted = false
+            noteAnUnnamedCoreAtTheEnd()
         }
         providerCatalogGeneration &+= 1
         let providerToken = providerCatalogGeneration
@@ -2768,6 +3076,9 @@ final class NodesModel: ObservableObject {
         await loadProviderSources(command: command, token: providerToken)
          
          
+        await restoreAutomaticPinsIfNeeded(command: command)
+         
+         
          
          
         FrameLogFile.append(
@@ -2775,24 +3086,121 @@ final class NodesModel: ObservableObject {
         )
     }
 
-    func select(group: String, name: String) async {
+     
+    enum PickOutcome: Equatable, Sendable {
+         
+         
+        case taken
+         
+        case notListed
+         
+        case notAnswered
+         
+         
+         
+        case letGo
+         
+         
+        case notSent
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    private(set) var readerGlobalRoute: String?
+     
+     
+     
+     
+     
+     
+    private var readerGlobalSerial: UInt64 = 0
+     
+     
+     
+    private var readerGlobalPicksInFlight = 0
+     
+     
+     
+     
+    private var globalModePutsInFlight = 0
+    private var globalModePutSerial: UInt64 = 0
+     
+     
+    private var globalPutHeldBackByAPick = false
+
+     
+     
+    private func pickMovesGlobal(_ group: String, command: NodesCommanding) -> Bool {
+        if group == GlobalProxySelectionPolicy.groupName { return true }
+        guard command.mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "global",
+              let global = groups.first(where: { $0.name == GlobalProxySelectionPolicy.groupName }) else { return false }
+        return GlobalProxySelectionPolicy.isSafeManualGroup(group, groups: groups)
+            && global.membership(of: group, among: groups) != .notMember
+    }
+
+    @discardableResult
+    func select(group: String, name: String, byReader: Bool = true) async -> PickOutcome {
+         
+         
+         
+         
+         
         guard let command, !isSwitchingProxy,
               let targetGroup = groups.first(where: { $0.name == group }),
-              ProxyGroupControlKind(rawType: targetGroup.type).acceptsMemberChoice,
-              targetGroup.members.contains(name) else { return }
+              ProxyGroupControlKind(rawType: targetGroup.type).acceptsMemberChoice else { return .notSent }
+        let listed = targetGroup.membership(of: name, among: groups)
+        guard listed != .notMember else { return .notSent }
+        let automatic = ProxyGroupControlKind(rawType: targetGroup.type).canBeUnpinned
+         
+         
+        var moved = [ProxyGroupPick(group: group, member: name)]
+         
+         
+         
+         
+        defer { isSwitchingProxy = false }
+        let overTheChannel = command.isConnected
         if command.isConnected {
             isSwitchingProxy = true
-            defer { isSwitchingProxy = false }
-            let confirmed = await command.select(
+            let movesGlobal = byReader && pickMovesGlobal(group, command: command)
+            if movesGlobal {
+                readerGlobalSerial &+= 1
+                readerGlobalPicksInFlight += 1
+            }
+            defer {
+                if movesGlobal {
+                    readerGlobalPicksInFlight -= 1
+                    if readerGlobalPicksInFlight == 0 { globalPutHeldBackByAPick = false }
+                }
+            }
+            let putsAtSend = (inFlight: globalModePutsInFlight, sent: globalModePutSerial)
+            var confirmed = await command.select(
                 group: group,
                 name: name
             )
+            let crossedAPut = putsAtSend.inFlight > 0 || globalModePutsInFlight > 0 || globalModePutSerial != putsAtSend.sent
              
              
              
              
             if confirmed { noteKernelAcceptedSelection(group: group, name: name) }
             await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+             
+             
+             
+             
+            if confirmed || crossedAPut, movesGlobal, group == GlobalProxySelectionPolicy.groupName,
+               groups.first(where: { $0.name == group })?.holdsSelection(name) == false {
+                confirmed = await command.select(group: group, name: name)
+                if confirmed { noteKernelAcceptedSelection(group: group, name: name) }
+                await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+            }
              
              
              
@@ -2804,11 +3212,36 @@ final class NodesModel: ObservableObject {
                  
                  
                  
-                refuse(group: group, verb: .select, coreSaid: command.lastCommandError,
-                       otherwise: "The running proxy group did not confirm the selected route.")
-                return
+                 
+                 
+                 
+                let letGo = !confirmed && command.lastSelectionFailure == .notHeld
+                let outcome = letGo ? PickOutcome.letGo : Self.outcome(of: confirmed, failure: command.lastSelectionFailure)
+                ClashLogStore.shared.append(
+                    "pick not taken  group=\(group) -> \(name)  outcome=\(outcome)  core=\(command.lastCommandError)",
+                    stream: .app, level: .warning)
+                 
+                 
+                 
+                let unanswered = automatic && !confirmed && command.lastSelectionFailure == .notAnswered
+                if movesGlobal { await putBackTheReadersRouteAfterAFailedPick(command: command) }
+                if letGo {
+                     
+                     
+                     
+                     
+                    await leaveTheGroupOnTheCoresChoice(
+                        group, after: name, was: targetGroup.now, byReader: byReader, command: command)
+                } else {
+                    refuse(group: group, verb: .select,
+                           appSaid: .copy(outcome == .notListed ? Self.groupDoesNotListThePick : Self.notPassedToTheCore))
+                }
+                if unanswered { forgetAutomaticPinsKey() }
+                return outcome
             }
+            if byReader, group == GlobalProxySelectionPolicy.groupName { readerGlobalRoute = name }
 
+            var globalSays: String?
             if command.mode.trimmingCharacters(
                 in: .whitespacesAndNewlines
             ).lowercased() == "global",
@@ -2817,81 +3250,350 @@ final class NodesModel: ObservableObject {
                     $0.name == GlobalProxySelectionPolicy.groupName
                }),
                !global.holdsSelection(group),
-               global.members.contains(group),
                GlobalProxySelectionPolicy.isSafeManualGroup(
                     group,
                     groups: groups
-               ) {
-                let retargeted = await command.select(
+               ),
+                
+                
+                
+                
+                
+               case let globalLists = global.membership(of: group, among: groups),
+               globalLists != .notMember {
+                let retargetPutsAtSend = (inFlight: globalModePutsInFlight, sent: globalModePutSerial)
+                var retargeted = await command.select(
                     group: global.name,
                     name: group
                 )
+                let retargetCrossedAPut = retargetPutsAtSend.inFlight > 0 || globalModePutsInFlight > 0
+                    || globalModePutSerial != retargetPutsAtSend.sent
                 if retargeted { noteKernelAcceptedSelection(group: global.name, name: group) }
                 await command.refreshMetadata()
                 await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
-                guard retargeted,
-                      groups.first(where: {
-                          $0.name == GlobalProxySelectionPolicy.groupName
-                      })?.holdsSelection(group) == true else {
-                    refuse(group: group, verb: .select, coreSaid: command.lastCommandError,
-                           otherwise: "The running proxy group did not confirm the selected route.")
-                    return
+                 
+                 
+                if retargeted || retargetCrossedAPut,
+                   groups.first(where: { $0.name == GlobalProxySelectionPolicy.groupName })?.holdsSelection(group) == false {
+                    retargeted = await command.select(group: global.name, name: group)
+                    if retargeted { noteKernelAcceptedSelection(group: global.name, name: group) }
+                    await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+                }
+                if retargeted,
+                   groups.first(where: { $0.name == GlobalProxySelectionPolicy.groupName })?.holdsSelection(group) == true {
+                    moved.append(ProxyGroupPick(group: global.name, member: group))
+                    if byReader { readerGlobalRoute = group }
+                } else {
+                     
+                     
+                     
+                    let outcome = Self.outcome(of: retargeted, failure: command.lastSelectionFailure)
+                    ClashLogStore.shared.append(
+                        "GLOBAL not put on group=\(group)  outcome=\(outcome)  core=\(command.lastCommandError)",
+                        stream: .app, level: .warning)
+                    if movesGlobal { await putBackTheReadersRouteAfterAFailedPick(command: command) }
+                    globalSays = outcome == .notListed ? Self.globalLeavesTheGroupOut : Self.notPassedToTheCore
                 }
             }
             actionRefusals[group] = nil
+            if let globalSays {
+                refuse(group: group, verb: .select, appSaid: .copy(globalSays))
+            }
         }
-        preferences?.saveSelection(group: group, proxy: name)
+         
+         
+         
+        let keyBefore = automatic && overTheChannel ? automaticPinsKeyNow(command: command) : nil
+        let carriesKey = automatic && overTheChannel && automaticPinsKeyIsCurrent(command: command)
+        if byReader {
+            preferences?.saveSelection(group: group, proxy: name)
+        } else {
+             
+             
+             
+             
+            preferences?.restoreSelection(group: group, proxy: name)
+        }
+        if automatic {
+            if overTheChannel {
+                carryAnsweredAutomaticPins(from: keyBefore, group: group, pinned: true, command: command)
+            } else {
+                 
+                 
+                answeredAutomaticPins = nil
+            }
+        }
+        if carriesKey { moveAutomaticPinsKey(command: command) }
         noteRouteChanged()
         ClashLogStore.shared.append(
             "node switched  group=\(group) -> \(name)",
             stream: .app
         )
         if GlobalProxySelectionPolicy.remembers(group: group) { currentGroupName = group }
-        if !command.isConnected {
+         
+         
+         
+        if !command.isConnected, listed == .member {
             applyOfflineSelection(group: group, name: name)
         }
+         
+         
+         
+         
         if command.isConnected, shouldCloseConnectionsOnSwitch() {
-            await command.closeConnectionsAfterProxySelection()
+            await command.closeConnectionsMoved(by: moved)
         }
+        return .taken
     }
 
      
      
+     
+     
+     
+    func pickFromPage(group: String, member: String) {
+         
+         
+        let waits = picks.pick(group, member, repick: .madeAtOnce) { [weak self] group, member in
+            _ = await self?.select(group: group, name: member)
+        }
+        guard waits else { return }
+         
+         
+        ClashLogStore.shared.append(
+            "proxy pick waits its turn  group=\(group) member=\(member)",
+            stream: .app, level: .info)
+    }
+
+     
+     
+     
+     
+    private(set) lazy var picks: ClashNodePicks = ClashNodePicks(nodes: self)
+
+     
+     
+     
+    private func putBackTheReadersRouteAfterAFailedPick(command: NodesCommanding) async {
+        guard globalPutHeldBackByAPick, readerGlobalPicksInFlight == 1 else { return }
+        globalPutHeldBackByAPick = false
+        let group = GlobalProxySelectionPolicy.groupName
+        guard let wanted = readerGlobalRoute,
+              groups.first(where: { $0.name == group })?.holdsSelection(wanted) == false else { return }
+        if await command.select(group: group, name: wanted) { noteKernelAcceptedSelection(group: group, name: wanted) }
+        await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+        ClashLogStore.shared.append(#"GLOBAL put back on \#(wanted)  the reader's pick did not take"#, stream: .app, level: .info)
+    }
+
+     
+     
+    nonisolated static func outcome(of taken: Bool, failure: SelectionFailure) -> PickOutcome {
+        taken ? .notAnswered : (failure == .notListed ? .notListed : .notAnswered)
+    }
+
+     
+     
+     
+     
+     
+     
+    private func putGlobal(_ route: String, command: NodesCommanding) async -> PickOutcome {
+        let group = GlobalProxySelectionPolicy.groupName
+        let globalSerial = readerGlobalSerial
+        globalModePutSerial &+= 1
+        globalModePutsInFlight += 1
+        let taken = await command.select(group: group, name: route)
+        globalModePutsInFlight -= 1
+         
+         
+         
+         
+         
+        guard readerGlobalSerial == globalSerial else {
+            await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+             
+             
+             
+            if readerGlobalPicksInFlight > 0 { globalPutHeldBackByAPick = true }
+            if readerGlobalPicksInFlight == 0, let wanted = readerGlobalRoute,
+               groups.first(where: { $0.name == group })?.holdsSelection(wanted) == false,
+               await command.select(group: group, name: wanted) {
+                noteKernelAcceptedSelection(group: group, name: wanted)
+                await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+            }
+            ClashLogStore.shared.append(
+                #"GLOBAL not put on \#(route)  a pick of the reader's came first"#, stream: .app, level: .info)
+            return .notSent
+        }
+        if taken { noteKernelAcceptedSelection(group: group, name: route) }
+        await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+        guard taken, groups.first(where: { $0.name == group })?.holdsSelection(route) == true else {
+            let outcome = Self.outcome(of: taken, failure: command.lastSelectionFailure)
+            ClashLogStore.shared.append(
+                "GLOBAL not put on \(route)  outcome=\(outcome)  core=\(command.lastCommandError)",
+                stream: .app, level: .info)
+            return outcome
+        }
+        preferences?.restoreSelection(group: group, proxy: route)
+        noteRouteChanged()
+        ClashLogStore.shared.append("node switched  group=\(group) -> \(route)  by Global mode", stream: .app)
+        if shouldCloseConnectionsOnSwitch() {
+            await command.closeConnectionsMoved(by: [ProxyGroupPick(group: group, member: route)])
+        }
+        return .taken
+    }
+
+     
+     
+     
+    static let groupDoesNotListThePick = "This group doesn't include that node, so it kept its current choice."
+
+     
+     
+    static let globalLeavesTheGroupOut =
+        "In Global mode, GLOBAL doesn't include this group, so Global mode still uses GLOBAL's own choice."
+
+     
+     
+    static let groupUsesAnotherAfterAFailedPick =
+        "“%@” didn't pass this group's test just now, so the group is using “%@” instead."
+
+     
+    static let groupIsNotPinnedAfterAFailedPick =
+        "“%@” didn't pass this group's test just now, so the group isn't pinned to it."
+
+     
+     
+     
+    static let notPassedToTheCore = "Clash couldn't pass this to the core just now. Try again."
+
+     
+    enum GlobalModeCheck: Equatable, Sendable {
+         
+        case proxy
+         
+         
+        case notProxy
+         
+         
+        case notYetKnown
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    func checkGlobalMode() async -> GlobalModeCheck {
+        guard let command, command.isConnected else { return .notYetKnown }
+        await command.refreshMetadata()
+        await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+        guard let global = groups.first(where: { $0.name == GlobalProxySelectionPolicy.groupName }) else {
+            return .notYetKnown
+        }
+        guard GlobalProxySelectionPolicy.refusal(groups: groups) == nil else { return .notProxy }
+
+        if let state = preferences?.load(), state.globalPickedByReader {
+             
+            if let stored = state.selectedMap[global.name], !global.holdsSelection(stored),
+               global.membership(of: stored, among: groups) != .notMember {
+                if await putGlobal(stored, command: command) == .notAnswered { return .notYetKnown }
+            }
+            return await globalModeJudged(command: command)
+        }
+        switch GlobalProxySelectionPolicy.decide(groups: groups, preferredGroupName: currentGroupName) {
+        case .write(let route), .handToKernel(let route):
+             
+            if await putGlobal(route, command: command) == .notAnswered { return .notYetKnown }
+        case .keep, .none:
+            break
+        }
+         
+         
+         
+         
+         
+         
+         
+        return await globalModeJudged(command: command)
+    }
+
      
      
     @discardableResult
     func ensureGlobalProxySelection() async -> Bool {
-        guard let command, command.isConnected else { return false }
-        await command.refreshMetadata()
-        await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
-
-        guard GlobalProxySelectionPolicy.refusal(groups: groups) == nil,
-              let global = groups.first(where: {
-                  $0.name == GlobalProxySelectionPolicy.groupName
-              }) else {
-            return false
-        }
-
-         
-         
-         
-         
-        if let target = GlobalProxySelectionPolicy.target(
-            groups: groups,
-            preferredGroupName: currentGroupName
-        ), global.now != target {
-            await select(group: global.name, name: target)
-        }
-         
-         
-         
-         
-         
-         
-         
-        return GlobalProxySelectionPolicy.isProxySelected(groups: groups)
+        await checkGlobalMode() == .proxy
     }
 
+     
+     
+     
+     
+    var globalRoutesToNoProxy: Bool {
+         
+         
+        guard let exit = GlobalProxySelectionPolicy.exit(groups: groups) else { return false }
+        return exit != .proxy
+    }
+
+     
+     
+     
+    var globalNotKnownOnAProxy: Bool {
+        groups.contains { $0.name == GlobalProxySelectionPolicy.groupName }
+            && GlobalProxySelectionPolicy.exit(groups: groups) != .proxy
+    }
+
+     
+     
+     
+     
+    private func globalModeJudged(command: NodesCommanding) async -> GlobalModeCheck {
+        guard let exit = await globalExitReadWhole(command: command) else { return .notYetKnown }
+        return exit == .proxy ? .proxy : .notProxy
+    }
+
+     
+     
+     
+     
+     
+     
+    private func globalExitReadWhole(command: NodesCommanding) async -> ClashTunnelOutboundMode.GlobalExit? {
+        for _ in 0..<ClashTunnelOutboundMode.readRounds {
+            let walk = GlobalProxySelectionPolicy.walk(groups)
+            if let exit = ClashTunnelOutboundMode.exit(following: GlobalProxySelectionPolicy.groupName, group: walk) {
+                return exit
+            }
+            let wanting = ClashTunnelOutboundMode.groupsToRead(following: GlobalProxySelectionPolicy.groupName, group: walk)
+            guard !wanting.isEmpty else { return nil }
+             
+             
+             
+            func held() -> [[Int]] {
+                wanting.map { name in
+                    groups.first { $0.name == name }.map { [$0.members.count + $0.hiddenMembers.count, $0.hasEveryMember ? 1 : 0] } ?? []
+                }
+            }
+            let before = held()
+            await loadRemainingMembers(ofEvery: wanting)
+             
+            let after = held()
+            guard after != before else { return nil }
+        }
+        return ClashTunnelOutboundMode.exit(following: GlobalProxySelectionPolicy.groupName,
+                                            group: GlobalProxySelectionPolicy.walk(groups))
+    }
+
+     
+     
+    var globalExit: ClashTunnelOutboundMode.GlobalExit? {
+        GlobalProxySelectionPolicy.exit(groups: groups)
+    }
+
+     
      
      
      
@@ -2903,6 +3605,10 @@ final class NodesModel: ObservableObject {
      
      
     func unfix(group: String) async {
+         
+         
+         
+        picks.withdraw(group: group)
          
          
          
@@ -2924,6 +3630,9 @@ final class NodesModel: ObservableObject {
              
              
             if forgotten { actionRefusals[group] = nil }
+             
+             
+            if forgotten { answeredAutomaticPins = nil }
             ClashLogStore.shared.append(
                 "unfix  tunnel down  group=\(group)  profile pin forgotten=\(forgotten)",
                 stream: .app, level: .info
@@ -2937,7 +3646,7 @@ final class NodesModel: ObservableObject {
         }
         guard ProxyGroupControlKind(rawType: target.type).canBeUnpinned else {
             ClashLogStore.shared.append("unfix refused  group=\(group) type=\(target.type) cannot be unpinned", stream: .app, level: .warning)
-            refuse(group: group, verb: .unfix, appSaid: "A \(target.type) group has no pin to release.")
+            refuse(group: group, verb: .unfix, appSaid: .format("A %@ group has no pin to release.", [target.type]))
             return
         }
          
@@ -2970,6 +3679,8 @@ final class NodesModel: ObservableObject {
             )
             await test(group: target)
         }
+        let keyBefore = automaticPinsKeyNow(command: command)
+        let carriesKey = automaticPinsKeyIsCurrent(command: command)
         if let preferences, let pinned = preferences.load()?.selectedMap[group] {
             guard preferences.clearSelection(group: group) else {
                  
@@ -3016,6 +3727,10 @@ final class NodesModel: ObservableObject {
             }
         }
         actionRefusals[group] = nil
+         
+         
+        carryAnsweredAutomaticPins(from: keyBefore, group: group, pinned: false, command: command)
+        if carriesKey { moveAutomaticPinsKey(command: command) }
          
          
         ClashLogStore.shared.append("unfix  group=\(group)  released", stream: .app)
@@ -3127,8 +3842,10 @@ final class NodesModel: ObservableObject {
     }
 
      
-    private func refuse(group: String, verb: ClashGroupActionRefusal.RefusedVerb, appSaid sentence: String) {
-        actionRefusals[group] = ClashGroupActionRefusal(verb: verb, coreSentence: nil, appSentence: .copy(sentence))
+     
+     
+    private func refuse(group: String, verb: ClashGroupActionRefusal.RefusedVerb, appSaid sentence: ClashDisplayText) {
+        actionRefusals[group] = ClashGroupActionRefusal(verb: verb, coreSentence: nil, appSentence: sentence)
     }
 
      
@@ -3159,7 +3876,11 @@ final class NodesModel: ObservableObject {
         var next = readerFoldBase
         if expanded {
             next.insert(group)
-            currentGroupName = group
+             
+             
+             
+             
+            if GlobalProxySelectionPolicy.remembers(group: group) { currentGroupName = group }
         } else {
             next.remove(group)
         }
@@ -3396,6 +4117,17 @@ final class NodesModel: ObservableObject {
         }
     }
 
+     
+     
+     
+     
+     
+    nonisolated static func probedSelection(of group: ProxyGroup, groupNames: Set<String>) -> String? {
+        guard group.membership(of: group.now, isGroup: groupNames.contains(group.now)) == .member else { return nil }
+        if let resolved = group.memberResolvedNames[group.now] { return resolved }
+        return group.members.contains(group.now) ? group.now : nil
+    }
+
     func makeLatencyPlan(
         groups: [ProxyGroup],
         visibleGroupNames: [String]
@@ -3404,15 +4136,14 @@ final class NodesModel: ObservableObject {
          
          
          
+        let groupNames = Set(groups.map(\.name))
         var probeGroups = groups.map { group in
             LatencyProbeGroup(
                 name: group.name,
                 members: group.members.map {
                     group.memberResolvedNames[$0] ?? $0
                 },
-                selectedName: group.members.contains(group.now)
-                    ? (group.memberResolvedNames[group.now] ?? group.now)
-                    : nil
+                selectedName: Self.probedSelection(of: group, groupNames: groupNames)
             )
         }
          
@@ -4079,8 +4810,9 @@ final class NodesModel: ObservableObject {
             sweepDelays.merge(newDelays) { _, new in new }
              
              
+            let tally = Self.sweepTally(of: sweepDelays, total: summary.totalCount)
             ClashLogStore.shared.append(
-                "sweep finished  completed=\(summary.completedCount)/\(summary.totalCount)  cancelled=\(summary.cancellationReason.map(String.init(describing:)) ?? "no")  ok=\(sweepDelays.values.filter { $0 > 0 }.count)  failed=\(sweepDelays.values.filter { $0 <= 0 }.count)  untested=\(max(0, summary.totalCount - sweepDelays.count))",
+                "sweep finished  completed=\(summary.completedCount)/\(summary.totalCount)  cancelled=\(summary.cancellationReason.map(String.init(describing:)) ?? "no")  ok=\(tally.ok)  failed=\(tally.failed)  untested=\(tally.untested)",
                 stream: .app, level: .info)
              
              
@@ -4171,21 +4903,51 @@ final class NodesModel: ObservableObject {
      
      
      
+     
+     
+     
+     
+     
     private func schedulePostSweepSelectionSync() {
         postSweepSelectionSync?.cancel()
+         
+         
+         
+        let readsAtTheEnd = lastRunMeasuredAnAutomaticGroupsMember
         postSweepSelectionSync = Task { @MainActor [weak self] in
+            if readsAtTheEnd { await self?.readGroupSelectionsAfterASweep(when: "run-end") }
             try? await Task.sleep(nanoseconds: Self.postSweepSelectionSyncNanoseconds)
-            guard !Task.isCancelled, let self, let command = self.command,
-                  command.isConnected, !self.isTestingLatency
-            else { return }
-            await command.refreshMetadata()
-            guard !Task.isCancelled, command.isConnected, !self.isTestingLatency else { return }
-            await self.reloadInventoryOffMain(command: command)
-            let groupCount = self.groups.count
-            ClashLogStore.shared.append(
-                "sweep follow-up  group selections re-read  groups=\(groupCount)",
-                stream: .app, level: .info)
+            await self?.readGroupSelectionsAfterASweep(when: "pick-cache-expired")
         }
+    }
+
+     
+     
+     
+     
+     
+    private var lastRunMeasuredAnAutomaticGroupsMember: Bool {
+        let measured = runEndpoints
+        guard !measured.isEmpty else { return false }
+        return groups.contains { group in
+            guard ProxyGroupControlKind(rawType: group.type).canBeUnpinned else { return false }
+            if !group.hasEveryMember { return true }
+            return measured.keys.contains { group.membership(of: $0, isGroup: false) != .notMember }
+                || group.memberResolvedNames.values.contains { measured[$0] != nil }
+        }
+    }
+
+     
+     
+    private func readGroupSelectionsAfterASweep(when: String) async {
+        guard !Task.isCancelled, let command, command.isConnected, !isTestingLatency else { return }
+        await command.refreshMetadata()
+        guard !Task.isCancelled, command.isConnected, !isTestingLatency else { return }
+        await reloadInventoryOffMain(command: command)
+        let groupCount = groups.count
+        ClashLogStore.shared.append(
+            "sweep follow-up  group selections re-read  groups=\(groupCount)  when=\(when)",
+            stream: .app, level: .info)
     }
 
      
@@ -4709,6 +5471,7 @@ final class NodesModel: ObservableObject {
     ) {
         appliedProxiesData = data
         appliedProviderCatalog = providerCatalog
+        noteWhetherGroupsAreTheCores()
         appliedProtocolDetails = protocolDetailsByNodeName
         appliedGroupDetails = groupConfigurationDetailsByName
          
@@ -4722,6 +5485,7 @@ final class NodesModel: ObservableObject {
             rebuildCatalog(from: proxies, providerCatalog: providerCatalog)
         }
         settleUnansweredUnfixes()
+        askAboutPinsOfMembersGone()
     }
 
      
@@ -4736,8 +5500,26 @@ final class NodesModel: ObservableObject {
         isRuntimeAvailable = true
         lastRuntimeInventory = data
         await applyInventoryOffMain(data, reason: .periodicRefresh, stillWanted: stillWanted)
+         
+         
+        noteWhetherGroupsAreTheCores()
         if let stillWanted, !stillWanted() { return }
         scheduleConnectedProjection()
+    }
+
+     
+     
+    private func noteWhetherGroupsAreTheCores() {
+        let fromTheCore = appliedProxiesData != nil && command?.isConnected == true
+            && command?.proxiesData == appliedProxiesData
+        if groupsAreTheCores != fromTheCore { groupsAreTheCores = fromTheCore }
+         
+         
+         
+         
+        if fromTheCore, automaticPinsReadPending, let command {
+            Task { [weak self] in await self?.restoreAutomaticPinsIfNeeded(command: command) }
+        }
     }
 
     private func rebuildCatalog(from proxies: [String: Any]?, providerCatalog: ProviderRuntimeCatalog) {
@@ -4784,6 +5566,7 @@ final class NodesModel: ObservableObject {
              
             lastRuntimeInventory = data
             applyInventory(data)
+            noteWhetherGroupsAreTheCores()
             scheduleConnectedProjection()
             return
         }
@@ -5027,8 +5810,463 @@ final class NodesModel: ObservableObject {
                 ? name
                 : current.fixed,
             memberTotal: current.memberTotal,
-            hiddenMembers: current.hiddenMembers
+            hiddenMembers: current.hiddenMembers,
+            outOfPlace: current.outOfPlace,
+            listsEveryGroup: current.listsEveryGroup
         )
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func restoreAutomaticPins() async {
+        guard let command else { return }
+         
+         
+        await restoreAutomaticPinsIfNeeded(command: command)
+    }
+
+    private func restoreAutomaticPinsIfNeeded(command: NodesCommanding) async {
+         
+         
+        guard !restoringAutomaticPins else {
+            automaticPinsAskedAgain = true
+            return
+        }
+        restoringAutomaticPins = true
+        defer { restoringAutomaticPins = false }
+        repeat {
+            automaticPinsAskedAgain = false
+            await restoreAutomaticPinsOnce(command: command)
+             
+             
+            await releasePinsOfMembersGone(command: command)
+        } while automaticPinsAskedAgain
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func pinsOfMembersGone(core: String) -> [(group: String, pin: String)] {
+        guard isRuntimeAvailable, groupsAreTheCores else { return [] }
+        let waits = aSubscriptionHoldsNoNodeYet
+        var recorded: [String: String]?
+        return groups.compactMap { group in
+            guard let pin = group.pinOfAMemberGone(among: groups),
+                  !pinsOfMembersGoneAsked.contains(AutomaticPins.goneKey(coreSession: core, group: group.name, pin: pin))
+            else { return nil }
+            if waits {
+                if recorded == nil { recorded = preferences?.load()?.selectedMap ?? [:] }
+                guard recorded?[group.name] == pin else { return nil }
+            }
+            return (group.name, pin)
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    private var aSubscriptionHoldsNoNodeYet: Bool {
+        if runtimeProviderCatalog.proxyProviders.isEmpty { return true }
+        if configuredOrder.providerNames.contains(where: { runtimeProviderCatalog.proxyProviders[$0] == nil }) { return true }
+        return runtimeProviderCatalog.proxyProviders.values.contains { !$0.isKernelInternal && $0.nodeCount == 0 }
+    }
+
+     
+     
+    private func askAboutPinsOfMembersGone() {
+         
+         
+        guard !restoringAutomaticPins, let command, command.isConnected, let core = command.coreSession,
+              !pinsOfMembersGone(core: core).isEmpty else { return }
+        Task { [weak self] in await self?.restoreAutomaticPinsIfNeeded(command: command) }
+    }
+
+     
+     
+     
+     
+     
+     
+    private func releasePinsOfMembersGone(command: NodesCommanding) async {
+        guard command.isConnected, !isSwitchingProxy, let core = command.coreSession,
+              !pinsOfMembersGone(core: core).isEmpty else { return }
+         
+         
+         
+        guard await command.nodesRefreshMetadata(), command.isConnected else { return }
+        await reloadInventoryOffMain(command: command)
+         
+         
+         
+         
+        var passedOver: Set<String> = []
+        while let (group, pin) = pinsOfMembersGone(core: core).first(where: { !passedOver.contains($0.group) }) {
+            guard command.isConnected, !isSwitchingProxy, command.coreSession == core else { return }
+            passedOver.insert(group)
+             
+            guard !unfixingGroups.contains(group), let before = groups.first(where: { $0.name == group }) else { continue }
+            let released = await command.unfix(group: group)
+            await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+            let after = groups.first { $0.name == group }
+             
+             
+             
+            if !released {
+                pinsOfMembersGoneAsked.insert(AutomaticPins.goneKey(coreSession: core, group: group, pin: pin))
+            }
+             
+            ClashLogStore.shared.append(
+                "pin of a member gone  group=\(group)  the core held \(pin), which the group does not list  released=\(released)  now=\(before.now) -> \(after?.now ?? "")"
+                    + (released ? "" : "  core=\(command.lastCommandError)"),
+                stream: .app, level: .warning)
+            if let now = after?.now, now != before.now { noteRouteChanged() }
+        }
+    }
+
+     
+     
+     
+     
+    private func automaticPinsKey(of state: ActiveNodeProfileState, core: String) -> String {
+        let hidden = ModuleRouteHiding.hiddenNames()
+        var pins: [String: String] = [:]
+        for group in groups where ProxyGroupControlKind(rawType: group.type).canBeUnpinned {
+            guard let stored = state.selectedMap[group.name], !hidden.contains(stored),
+                  group.membership(of: stored, among: groups) != .notMember else { continue }
+            pins[group.name] = stored
+        }
+        return AutomaticPins.key(coreSession: core, profileID: state.profileID, pins: pins)
+    }
+
+     
+     
+    private func automaticPinsKeyIsCurrent(command: NodesCommanding) -> Bool {
+        guard let kept = restoredAutomaticPinsKey ?? automaticPinsDefaults?.string(forKey: AutomaticPins.defaultsKey),
+              let core = command.coreSession,
+              let state = preferences?.load() else { return false }
+        return kept == automaticPinsKey(of: state, core: core)
+    }
+
+     
+     
+     
+     
+    private func moveAutomaticPinsKey(command: NodesCommanding) {
+        guard let key = automaticPinsKeyNow(command: command) else { return }
+        restoredAutomaticPinsKey = key
+        automaticPinsDefaults?.set(key, forKey: AutomaticPins.defaultsKey)
+    }
+
+     
+     
+    private func automaticPinsKeyNow(command: NodesCommanding) -> String? {
+        guard let core = command.coreSession, let state = preferences?.load() else { return nil }
+        return automaticPinsKey(of: state, core: core)
+    }
+
+     
+     
+     
+     
+     
+    private func carryAnsweredAutomaticPins(
+        from before: String?, group: String, pinned: Bool, command: NodesCommanding
+    ) {
+        guard let before, let answered = answeredAutomaticPins, answered.key == before,
+              let after = automaticPinsKeyNow(command: command) else {
+            answeredAutomaticPins = nil
+            return
+        }
+        var groups = answered.groups
+        if pinned { groups.insert(group) } else { groups.remove(group) }
+        answeredAutomaticPins = AnsweredAutomaticPins(key: after, groups: groups)
+    }
+
+     
+     
+    private func forgetAutomaticPinsKey() {
+        restoredAutomaticPinsKey = nil
+        automaticPinsDefaults?.removeObject(forKey: AutomaticPins.defaultsKey)
+        answeredAutomaticPins = nil
+    }
+
+     
+     
+     
+     
+    private func passOverAnUnnamedCore(state: ActiveNodeProfileState) {
+        let pinned = groups.filter {
+            ProxyGroupControlKind(rawType: $0.type).canBeUnpinned && state.selectedMap[$0.name] != nil
+        }.map(\.name)
+        guard !pinned.isEmpty else { return }
+        unnamedCoreSkipped = pinned
+    }
+
+     
+     
+    private func noteAnUnnamedCoreAtTheEnd() {
+        guard let skipped = unnamedCoreSkipped else { return }
+        unnamedCoreSkipped = nil
+        notesOfAnUnnamedCore &+= 1
+         
+        ClashLogStore.shared.append(
+            "automatic pins not put to the core  groups=\(skipped.joined(separator: ","))  no core named for the connection that ended (its diagnostics not read)",
+            stream: .app, level: .warning)
+    }
+
+     
+     
+     
+     
+     
+    private func automaticPinsWork(
+        command: NodesCommanding, overItsRead: Bool
+    ) -> (core: String, state: ActiveNodeProfileState, key: String)? {
+        guard command.isConnected else { return nil }
+        if overItsRead {
+            guard isRuntimeAvailable, groupsAreTheCores,
+                  let applied = appliedProxiesData, applied == command.proxiesData else { return nil }
+        }
+        guard let state = preferences?.load() else { return nil }
+         
+         
+        guard let core = command.coreSession else {
+            passOverAnUnnamedCore(state: state)
+            return nil
+        }
+        unnamedCoreSkipped = nil
+         
+        if let identity = observedRuntimeIdentity, identity.profileID != state.profileID { return nil }
+        return (core, state, automaticPinsKey(of: state, core: core))
+    }
+
+     
+     
+    private func automaticPinsDone(_ key: String) -> Bool {
+        if key == restoredAutomaticPinsKey { return true }
+        guard let defaults = automaticPinsDefaults,
+              defaults.string(forKey: AutomaticPins.defaultsKey) == key else { return false }
+        restoredAutomaticPinsKey = key
+        return true
+    }
+
+    private func restoreAutomaticPinsOnce(command: NodesCommanding) async {
+         
+         
+         
+        guard let preferences, let asked = automaticPinsWork(command: command, overItsRead: false) else { return }
+        guard !automaticPinsDone(asked.key) else {
+            automaticPinsReadPending = false
+            return
+        }
+        let core = asked.core
+         
+         
+        guard !isSwitchingProxy else { return }
+         
+         
+         
+         
+         
+         
+        let read = await command.nodesRefreshMetadata()
+        guard read else {
+             
+             
+             
+             
+            automaticPinsReadPending = true
+            if !automaticPinsReadFailureNoted {
+                automaticPinsReadFailureNoted = true
+                ClashLogStore.shared.append(
+                    "automatic pins: the core's document not read back  core=\(core)  asked again when a document is applied",
+                    stream: .app, level: .info)
+            }
+            return
+        }
+        automaticPinsReadPending = false
+        guard command.isConnected else { return }
+        await reloadInventoryOffMain(command: command)
+         
+        guard let work = automaticPinsWork(command: command, overItsRead: true),
+              !automaticPinsDone(work.key) else { return }
+        let state = work.state
+        let key = work.key
+         
+         
+         
+        func stillTheSame() -> Bool {
+            command.isConnected && !isSwitchingProxy && command.coreSession == core
+                && preferences.load().map { automaticPinsKey(of: $0, core: core) } == key
+        }
+        guard stillTheSame() else { return }
+         
+         
+         
+        restoredAutomaticPinsKey = nil
+        automaticPinsDefaults?.removeObject(forKey: AutomaticPins.defaultsKey)
+        let hidden = ModuleRouteHiding.hiddenNames()
+        if answeredAutomaticPins?.key != key { answeredAutomaticPins = AnsweredAutomaticPins(key: key) }
+        var done = true
+        var refused: [String] = []
+        let automatic = groups.filter { ProxyGroupControlKind(rawType: $0.type).canBeUnpinned }.map(\.name)
+        for name in automatic {
+            guard let stored = state.selectedMap[name], !hidden.contains(stored),
+                  let group = groups.first(where: { $0.name == name }) else { continue }
+            if group.holdsSelection(stored) { continue }
+             
+             
+            if group.membership(of: stored, among: groups) == .notMember { continue }
+             
+            if answeredAutomaticPins?.groups.contains(name) == true { continue }
+            let confirmed = await command.select(group: name, name: stored)
+            let failure = command.lastSelectionFailure
+            if confirmed { noteKernelAcceptedSelection(group: name, name: stored) }
+            await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+             
+             
+            let answered = confirmed || failure == .notHeld
+            if answered, answeredAutomaticPins?.key == key { answeredAutomaticPins?.groups.insert(name) }
+            guard stillTheSame() else { return }
+            if answered { continue }
+            ClashLogStore.shared.append(
+                "automatic pin not taken  group=\(name) -> \(stored)  failure=\(failure)  core=\(command.lastCommandError)",
+                stream: .app, level: .warning)
+            if failure == .notListed, !hasPendingProviderNodes {
+                 
+                 
+                 
+                 
+                refuse(group: name, verb: .select, appSaid: .copy(Self.groupDoesNotListThePick))
+                refused.append(name)
+            } else {
+                 
+                 
+                 
+                 
+                done = false
+            }
+        }
+        guard done else { return }
+        for name in refused { _ = preferences.clearSelection(group: name) }
+         
+        guard let latest = preferences.load() else { return }
+        let finished = automaticPinsKey(of: latest, core: core)
+        restoredAutomaticPinsKey = finished
+        automaticPinsDefaults?.set(finished, forKey: AutomaticPins.defaultsKey)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func leaveTheGroupOnTheCoresChoice(
+        _ group: String, after name: String, was before: String?, byReader: Bool, command: NodesCommanding
+    ) async {
+        let keyBefore = automaticPinsKeyNow(command: command)
+        let carriesKey = automaticPinsKeyIsCurrent(command: command)
+        let recorded = preferences?.load()?.selectedMap[group]
+        if byReader {
+            preferences?.saveSelection(group: group, proxy: name)
+        } else {
+            preferences?.restoreSelection(group: group, proxy: name)
+        }
+        carryAnsweredAutomaticPins(from: keyBefore, group: group, pinned: true, command: command)
+        if carriesKey { moveAutomaticPinsKey(command: command) }
+         
+         
+         
+        let settled = await command.nodesRefreshMetadata()
+        await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
+        let now = groups.first { $0.name == group }?.now
+        let inUse = settled ? now.flatMap { $0.isEmpty || $0 == name ? nil : $0 } : nil
+        refuse(group: group, verb: .select,
+               appSaid: inUse.map { .format(Self.groupUsesAnotherAfterAFailedPick, [name, $0]) }
+                   ?? .format(Self.groupIsNotPinnedAfterAFailedPick, [name]))
+        ClashLogStore.shared.append(
+            "pick let go of  group=\(group) -> \(name)  now=\(now ?? "")  settled=\(settled)  the record's pin \(recorded ?? "(none)") -> \(name)",
+            stream: .app, level: .info)
+        guard let inUse, inUse != before else { return }
+        noteRouteChanged()
+        if command.isConnected, shouldCloseConnectionsOnSwitch() {
+            await command.closeConnectionsMoved(by: [ProxyGroupPick(group: group, member: inUse)])
+        }
     }
 
     private func restoreActiveProfileSelectionIfNeeded(command: NodesCommanding) async {
@@ -5044,7 +6282,7 @@ final class NodesModel: ObservableObject {
          
          
          
-        let runtimeKey = selectionRuntimeKey(state)
+        var runtimeKey = selectionRuntimeKey(state)
         guard runtimeKey != restoredRuntimeKey else { return }
          
          
@@ -5073,11 +6311,10 @@ final class NodesModel: ObservableObject {
          
         guard isRuntimeAvailable else { return }
 
-        var restorePlan: [(group: String, member: String)] = []
          
          
          
-        var leftOpen = false
+        var restorePlan: [(group: String, member: String, judgedByKernel: Bool)] = []
          
          
          
@@ -5088,26 +6325,44 @@ final class NodesModel: ObservableObject {
              
             if let preferred = state.selectedMap[group.name], !hidden.contains(preferred) { continue }
             guard let shown = group.members.first(where: { !hidden.contains($0) }) else { continue }
-            restorePlan.append((group.name, shown))
+            restorePlan.append((group.name, shown, false))
         }
         for group in groups where !restorePlan.contains(where: { $0.group == group.name }) {
             guard let preferred = state.selectedMap[group.name], group.acceptsMemberChoice, !hidden.contains(preferred) else { continue }
              
              
              
-            let listed = await groupLists(preferred, in: group, runtimeKey: runtimeKey)
-            guard stillTheSame() else { return }
-            switch listed {
-            case true?: restorePlan.append((group.name, preferred))
-            case false?:
+             
+             
+             
+            guard !ProxyGroupControlKind(rawType: group.type).canBeUnpinned
+                || group.membership(of: preferred, among: groups) == .notMember else { continue }
+            switch group.membership(of: preferred, among: groups) {
+            case .member:
+                restorePlan.append((group.name, preferred, false))
+            case .unknown:
+                 
+                 
+                 
+                 
+                restorePlan.append((group.name, preferred, true))
+            case .notMember:
                  
                  
                 if hidden.contains(group.now), let shown = group.members.first(where: { !hidden.contains($0) }) {
-                    restorePlan.append((group.name, shown))
+                    restorePlan.append((group.name, shown, false))
                 }
-            case nil: leftOpen = true
             }
         }
+         
+         
+         
+         
+        var leftOpen = false
+         
+         
+         
+        var refusedStored: [String] = []
         var restoredManualGroup: String?
         for item in restorePlan {
             guard let current = groups.first(
@@ -5131,9 +6386,24 @@ final class NodesModel: ObservableObject {
             guard confirmed,
                   groups.first(where: { $0.name == item.group })?
                     .holdsSelection(item.member) == true else {
-                 
-                 
-                return
+                let outcome = Self.outcome(of: confirmed, failure: command.lastSelectionFailure)
+                ClashLogStore.shared.append(
+                    "restore not taken  group=\(item.group) -> \(item.member)  outcome=\(outcome)  core=\(command.lastCommandError)",
+                    stream: .app, level: .warning)
+                if outcome == .notListed {
+                     
+                     
+                     
+                     
+                     
+                     
+                    refuse(group: item.group, verb: .select, appSaid: .copy(Self.groupDoesNotListThePick))
+                    refusedStored.append(item.group)
+                } else {
+                     
+                    leftOpen = true
+                }
+                continue
             }
         }
 
@@ -5142,30 +6412,50 @@ final class NodesModel: ObservableObject {
         ).lowercased() == "global",
            let global = groups.first(where: {
                $0.name == GlobalProxySelectionPolicy.groupName
-           }) {
+           }),
+            
+            
+            
+            
+            
+            
+            
+            
+           !state.globalPickedByReader {
             let candidates = [
                 state.currentGroupName,
                 restoredManualGroup,
             ].compactMap { $0 }
-            let preferred = candidates.first {
-                global.members.contains($0)
-                    && GlobalProxySelectionPolicy.isSafeManualGroup(
-                        $0,
-                        groups: groups
-                    )
-            }
-            if let preferred, !global.holdsSelection(preferred) {
-                let confirmed = await command.select(
-                    group: global.name,
-                    name: preferred
-                )
-                if confirmed { noteKernelAcceptedSelection(group: global.name, name: preferred) }
-                await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
-                guard confirmed,
-                      groups.first(where: {
-                          $0.name == GlobalProxySelectionPolicy.groupName
-                      })?.holdsSelection(preferred) == true else {
-                    return
+             
+             
+             
+             
+             
+             
+            asking: for candidate in candidates
+            where GlobalProxySelectionPolicy.remembers(group: candidate)
+                && GlobalProxySelectionPolicy.isSafeManualGroup(candidate, groups: groups) {
+                 
+                 
+                 
+                switch global.membership(of: candidate, among: groups) {
+                case .notMember:
+                    continue
+                case .member, .unknown:
+                    if groups.first(where: { $0.name == GlobalProxySelectionPolicy.groupName })?
+                        .holdsSelection(candidate) == true {
+                        break asking
+                    }
+                    guard stillTheSame() else { return }
+                    let outcome = await putGlobal(candidate, command: command)
+                     
+                     
+                    if outcome == .taken, let latest = preferences?.load() {
+                        runtimeKey = selectionRuntimeKey(latest)
+                    }
+                    guard stillTheSame() else { return }
+                    if outcome == .notAnswered { leftOpen = true }
+                    break asking
                 }
             }
         }
@@ -5173,9 +6463,26 @@ final class NodesModel: ObservableObject {
         await applyInventoryOffMain(command.proxiesData, reason: .selectionReadback)
          
          
+         
+         
+         
+        if command.mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "global",
+           globalNotKnownOnAProxy {
+            replaysEndedOnGlobalWithoutAProxy &+= 1
+        }
+         
+         
         guard !leftOpen, stillTheSame() else { return }
-        restoredRuntimeKey = runtimeKey
+        for group in refusedStored {
+            _ = preferences?.clearSelection(group: group)
+            if group == GlobalProxySelectionPolicy.groupName { readerGlobalRoute = nil }
+        }
+        restoredRuntimeKey = preferences?.load().map(selectionRuntimeKey) ?? runtimeKey
     }
+
+     
+     
+    @Published private(set) var replaysEndedOnGlobalWithoutAProxy = 0
 
      
      
@@ -5190,44 +6497,6 @@ final class NodesModel: ObservableObject {
             "\($0.profileID)|\($0.revision)"
         } ?? state.profileID) + "|" + selectionFingerprint
     }
-
-     
-     
-     
-    private func groupLists(_ name: String, in group: ProxyGroup, runtimeKey: String) async -> Bool? {
-        if group.members.contains(name) { return true }
-        guard !group.hasEveryMember else { return false }
-        guard let source = memberPages else { return nil }
-         
-         
-         
-         
-         
-        let progressKey = runtimeKey + "\u{0}" + group.name + "\u{0}" + name
-        var offset = membershipSearchOffset[progressKey] ?? 0
-        for _ in 0..<20 {
-            guard let page = try? await source.searchGroupMembers(group.name, query: name, offset: offset, limit: NodePaging.page)
-            else {
-                membershipSearchOffset[progressKey] = offset
-                return nil
-            }
-            if page.members.contains(where: { $0.name == name }) {
-                membershipSearchOffset[progressKey] = nil
-                return true
-            }
-            offset += page.members.count
-            if page.members.isEmpty || offset >= page.total {
-                membershipSearchOffset[progressKey] = nil
-                return false
-            }
-        }
-        membershipSearchOffset[progressKey] = offset
-        return nil
-    }
-
-     
-     
-    private var membershipSearchOffset: [String: Int] = [:]
 
     private func currentRuntimeIdentity() -> NodesRuntimeIdentity? {
         if let identity = runtimeIdentityLoader() {
@@ -5261,6 +6530,8 @@ final class NodesModel: ObservableObject {
          
         inventoryProjectionGeneration &+= 1
         restoredRuntimeKey = nil
+         
+        readerGlobalRoute = nil
          
          
          
@@ -5374,6 +6645,13 @@ final class NodesModel: ObservableObject {
                     self.providerNamesByProxy = ProxyProviderAttribution.uniqueProviderNames(in: catalog)
                     self.runtimeProviderCatalog = self.withLoadedProviderNodes(catalog)
                     if let data = command.proxiesData { await self.applyInventoryOffMain(data, reason: .periodicRefresh) }
+                     
+                     
+                     
+                     
+                     
+                    guard token == self.providerCatalogGeneration, command.isConnected, !Task.isCancelled else { return }
+                    await self.restoreAutomaticPinsIfNeeded(command: command)
                 }
                 if !self.hasPendingProviderNodes { return }
             }
@@ -5504,7 +6782,7 @@ private actor SubscriptionHealthRuns {
         guard let catalog = try? await command.nodesProviderCatalog(),
               let live = catalog.proxyProviders[provider] else { return }
         for proxy in live.proxies {
-            guard let measuredAt = proxy.measuredAt, measuredAt >= startedAt else { continue }
+            guard let measuredAt = proxy.measuredAt, measuredAt.timeIntervalSince(startedAt) >= 0 else { continue }
             if let delay = proxy.latestDelayMilliseconds, delay > 0 {
                 early[proxy.name] = delay
             } else if proxy.alive == false {
@@ -5642,13 +6920,41 @@ extension NodesModel {
      
      
     func loadRemainingMembers(of groupName: String, landing: MemberLanding = .asItLands) async {
+        await loadRemainingMembers(of: groupName, landing: landing, into: nil)
+    }
+
+     
+    private final class MemberReads {
+         
+         
+         
+         
+        var pages: [(group: String, members: [NodeMember], read: [NodeMember], from: Int)] = []
+         
+         
+        var source: (command: NodesCommanding?, connected: Bool, list: String?)?
+         
+         
+         
+        var claimed: Set<String> = []
+    }
+
+     
+     
+    private func isSameSource(_ command: NodesCommanding?, connected: Bool, list: String?) -> Bool {
+        self.command === command && (command?.isConnected == true) == connected && nodeListIdentity == list
+    }
+
+    private func loadRemainingMembers(of groupName: String, landing: MemberLanding, into reads: MemberReads?) async {
         let command = self.command
         guard let source = memberPages,
               let current = groups.first(where: { $0.name == groupName }), !current.hasEveryMember,
               !membersLoading.contains(groupName)
         else { return }
         membersLoading.insert(groupName)
-        defer { membersLoading.remove(groupName) }
+        defer {
+            if let reads { reads.claimed.insert(groupName) } else { membersLoading.remove(groupName) }
+        }
         let connected = command?.isConnected == true
         let revision = command?.nodeListRevision
         let list = nodeListIdentity
@@ -5656,17 +6962,35 @@ extension NodesModel {
          
          
          
-        let firstPageWhole = current.members.count + current.hiddenMembers.count >= min(NodePaging.firstMembers, current.memberTotal)
+         
+         
+         
+        let firstPageWhole = current.members.count - current.outOfPlace.count + current.hiddenMembers.count
+            >= min(NodePaging.firstMembers, current.memberTotal)
         let from = kept?.from ?? (firstPageWhole ? NodePaging.firstMembers : 0)
         var read = kept?.members ?? []
         var pending: [NodeMember] = []
         var nextLanding = max(Self.firstMemberLanding, read.count * 2)
         func land() {
+            if let reads {
+                 
+                guard !pending.isEmpty else { return }
+                 
+                 
+                if let earlier = reads.source,
+                   earlier.command !== command || earlier.connected != connected || earlier.list != list {
+                    reads.pages.removeAll()
+                }
+                reads.source = (command, connected, list)
+                reads.pages.append((groupName, pending, read, from))
+                pending.removeAll(keepingCapacity: true)
+                return
+            }
              
              
             if let list { extendedMembers[groupName] = (list, read, from) }
             guard !pending.isEmpty, let index = groups.firstIndex(where: { $0.name == groupName }) else { return }
-            groups[index] = Self.extending(groups[index], with: pending, in: groups)
+            groups[index] = Self.extending(groups[index], with: pending, in: groups, inOrder: true)
             pending.removeAll(keepingCapacity: true)
         }
         var offset = from + read.count
@@ -5675,13 +6999,13 @@ extension NodesModel {
                   !page.members.isEmpty
             else {
                  
-                if self.command === command, (command?.isConnected == true) == connected, nodeListIdentity == list { land() }
+                if isSameSource(command, connected: connected, list: list) { land() }
                 return
             }
              
              
              
-            guard self.command === command, (command?.isConnected == true) == connected, nodeListIdentity == list else { return }
+            guard isSameSource(command, connected: connected, list: list) else { return }
             if let pageRevision = page.revision, let revision, pageRevision != revision { return }
             read += page.members
             pending += page.members
@@ -5697,10 +7021,28 @@ extension NodesModel {
      
      
      
+     
+     
+     
+     
     func loadRemainingMembers(ofEvery names: [String]) async {
+        let reads = MemberReads()
+        defer { membersLoading.subtract(reads.claimed) }
         for name in names {
-            await loadRemainingMembers(of: name, landing: .whenDone)
+            await loadRemainingMembers(of: name, landing: .whenDone, into: reads)
         }
+         
+         
+        guard let source = reads.source, !reads.pages.isEmpty,
+              isSameSource(source.command, connected: source.connected, list: source.list)
+        else { return }
+        var landed = groups
+        for page in reads.pages {
+            if let list = source.list { extendedMembers[page.group] = (list, page.read, page.from) }
+            guard let index = landed.firstIndex(where: { $0.name == page.group }) else { continue }
+            landed[index] = Self.extending(landed[index], with: page.members, in: landed, inOrder: true)
+        }
+        groups = landed
     }
 
      
@@ -5713,15 +7055,33 @@ extension NodesModel {
         guard !extendedMembers.isEmpty || !searchedMembers.isEmpty else { return fresh }
         return fresh.map { group in
             guard !group.hasEveryMember else { return group }
-            let extra = (extendedMembers[group.name]?.members ?? []) + (searchedMembers[group.name] ?? [])
-            return extra.isEmpty ? group : Self.extending(group, with: extra, in: fresh)
+             
+             
+             
+            var extended = group
+            if let read = extendedMembers[group.name]?.members, !read.isEmpty {
+                extended = Self.extending(extended, with: read, in: fresh, inOrder: true)
+            }
+            if let hits = searchedMembers[group.name], !hits.isEmpty {
+                extended = Self.extending(extended, with: hits, in: fresh)
+            }
+            return extended
         }
     }
 
      
      
      
-    nonisolated static func extending(_ group: ProxyGroup, with page: [NodeMember], in groups: [ProxyGroup]) -> ProxyGroup {
+     
+     
+     
+     
+     
+     
+     
+     
+    nonisolated static func extending(_ group: ProxyGroup, with page: [NodeMember], in groups: [ProxyGroup],
+                                      inOrder: Bool = false) -> ProxyGroup {
         let byName = Dictionary(groups.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         func resolve(_ name: String) -> String {
             var current = name
@@ -5733,6 +7093,18 @@ extension NodesModel {
         }
         var members = group.members
         var seen = Set(members)
+        var outOfPlace = group.outOfPlace
+        if inOrder, !outOfPlace.isEmpty {
+             
+             
+             
+            let moving = outOfPlace.intersection(page.lazy.map(\.name))
+            if !moving.isEmpty {
+                members.removeAll { moving.contains($0) }
+                seen.subtract(moving)
+                outOfPlace.subtract(moving)
+            }
+        }
         var types = group.memberTypes
         var groupNames = group.memberGroupNames
         var resolved = group.memberResolvedNames
@@ -5745,8 +7117,11 @@ extension NodesModel {
                 hiddenMembers.insert(member.name)
                 continue
             }
+             
+             
             guard seen.insert(member.name).inserted else { continue }
             members.append(member.name)
+            if !inOrder { outOfPlace.insert(member.name) }
             types[member.name] = byName[member.name]?.type ?? member.type
             if byName[member.name] != nil {
                 groupNames.insert(member.name)
@@ -5761,7 +7136,8 @@ extension NodesModel {
             memberResolvedNames: resolved, memberPlaceholderTypes: placeholders,
             configurationDetails: group.configurationDetails, hidden: group.hidden,
             testURL: group.testURL, iconURL: group.iconURL, emptyFallback: group.emptyFallback,
-            fixed: group.fixed, memberTotal: group.memberTotal, hiddenMembers: hiddenMembers
+            fixed: group.fixed, memberTotal: group.memberTotal, hiddenMembers: hiddenMembers,
+            outOfPlace: outOfPlace, listsEveryGroup: group.listsEveryGroup
         )
     }
 }

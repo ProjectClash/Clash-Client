@@ -41,7 +41,7 @@ struct ConfigurationObjectListView: View {
                     }
                 }
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         ConfigurationObjectItemView(session: session, location: location, index: index)
                             .configurationPushedAlertHost(session)
                     } label: {
@@ -67,7 +67,7 @@ struct ConfigurationObjectListView: View {
             }
         }
         .disabled(session.isSaving)
-        .sheet(isPresented: $adding) {
+        .clashSheet(isPresented: $adding) {
             ConfigurationNewListItemForm(session: session, location: location) { item in
                 write(location.items(in: session.settingsDocument) + [item])
             }
@@ -408,6 +408,7 @@ struct ConfigurationNewItemFields: View {
  
  
  
+ 
 struct ConfigurationObjectItemView: View {
     @ObservedObject var session: ConfigurationEditorSession
     let location: ConfigurationListLocation
@@ -492,7 +493,7 @@ struct ConfigurationObjectItemView: View {
                     }
                 } else {
                      
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         ConfigurationItemValueView(title: ConfigurationObjectList.title(of: item, index: index), field: nil,
                                                    value: item, document: document, save: { writeItem($0) }, useDefault: nil)
                             .configurationPushedAlertHost(session)
@@ -503,7 +504,6 @@ struct ConfigurationObjectItemView: View {
             }
         }
         .navigationTitle(Text(verbatim: item.map { ConfigurationObjectList.title(of: $0, index: index) } ?? ""))
-        .disabled(session.isSaving)
     }
 
      
@@ -554,13 +554,13 @@ struct ConfigurationObjectItemView: View {
              
             label(row)
         } else if let field = row.field, field.kind == .objectList {
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationObjectListView(session: session, location: .inItem(location, index: index, path: row.path), title: title(of: row))
                     .configurationPushedAlertHost(session)
             } label: { label(row) }
             .accessibilityIdentifier("configuration-editor.item-key.\(row.id)")
         } else if let field = row.field, field.kind == .map {
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationItemMapView(session: session, location: location, index: index, path: row.path, title: title(of: row))
                     .configurationPushedAlertHost(session)
             } label: { label(row) }
@@ -572,7 +572,7 @@ struct ConfigurationObjectItemView: View {
                                         useDefault: isDefault ? nil : { writeField(row.path, nil) }, field: field)
             .swipeActions(edge: .trailing, allowsFullSwipe: false) { useDefault(row) }
         } else {
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationItemValueView(title: title(of: row), field: row.field, value: row.value, document: document,
                                            save: { writeField(row.path, $0) },
                                            useDefault: isDefault ? nil : { writeField(row.path, nil) })
@@ -604,20 +604,55 @@ struct ConfigurationObjectItemView: View {
 
      
      
+     
+     
+     
     private func writeField(_ path: [String], _ value: OrderedJSON?) {
-        let items = location.items(in: session.settingsDocument)
-        guard items.indices.contains(index) else { return }
-        var next = items
-        next[index] = items[index].setting(path: path, to: value)
-        session.edit([location.edit(writing: next, in: session.settingsDocument)])
+        session.edit(reading: Self.writing(location, index, pressedOn: session.settingsDocument, read: session.settingsAsRead) {
+            $0.setting(path: path, to: value)
+        })
     }
 
     private func writeItem(_ value: OrderedJSON) {
-        let items = location.items(in: session.settingsDocument)
-        guard items.indices.contains(index) else { return }
-        var next = items
-        next[index] = value
-        session.edit([location.edit(writing: next, in: session.settingsDocument)])
+        session.edit(reading: Self.writing(location, index, pressedOn: session.settingsDocument, read: session.settingsAsRead) { _ in value })
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func writing(_ location: ConfigurationListLocation, _ index: Int, pressedOn shown: OrderedJSON,
+                        read: OrderedJSON? = nil,
+                        _ change: @escaping (OrderedJSON) -> OrderedJSON) -> ConfigurationEditorSession.SettingsChange {
+        func name(in document: OrderedJSON?) -> OrderedJSON? {
+            guard let document else { return nil }
+            let items = location.items(in: document)
+            return items.indices.contains(index) ? items[index].topLevelValue("name") : nil
+        }
+        let names = [name(in: shown), name(in: read)].compactMap { $0 }
+        return { document in
+            let items = location.items(in: document)
+            let position: Int?
+            if !names.isEmpty {
+                 
+                 
+                 
+                if items.indices.contains(index), let there = items[index].topLevelValue("name"), names.contains(there) {
+                    position = index
+                } else {
+                    position = names.lazy.compactMap { name in items.firstIndex { $0.topLevelValue("name") == name } }.first
+                }
+            } else {
+                position = items.indices.contains(index) ? index : nil
+            }
+            guard let position else { throw ConfigurationEditorSession.SettingsChangeLost() }
+            var next = items
+            next[position] = change(items[position])
+            return [location.edit(writing: next, in: document)]
+        }
     }
 }
 
@@ -652,7 +687,7 @@ struct ConfigurationItemMapView: View {
             Section {
                 ForEach(entries.indices, id: \.self) { position in
                     let entry = entries[position]
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         ConfigurationItemValueView(title: entry.key, field: entryField(entry.key), value: entry.value, document: document,
                                                    save: { write(entry.key, $0) }, useDefault: nil)
                             .configurationPushedAlertHost(session)
@@ -686,7 +721,7 @@ struct ConfigurationItemMapView: View {
             }
         }
         .disabled(session.isSaving)
-        .sheet(isPresented: $adding) {
+        .clashSheet(isPresented: $adding) {
             ConfigurationNewKeyForm(suggestions: mapField?.key?.values ?? [], taken: Set(entries.map(\.key)), document: document,
                                     entryField: entryField("\u{1F}"), keyFormat: mapField?.key?.format) { key, value in
                 write(key, value)

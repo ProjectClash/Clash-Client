@@ -264,7 +264,6 @@ public enum ClashPlatformLayout {
      
      
      
-     
     public static var columnStableSliceLength: Int? {
 #if os(macOS)
         60

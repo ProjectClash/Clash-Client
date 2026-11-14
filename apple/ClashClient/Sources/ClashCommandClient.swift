@@ -60,7 +60,7 @@ private final class CoreCallRace<Value>: @unchecked Sendable {
     }
 }
 
-struct ClashTrafficSnapshot {
+struct ClashTrafficSnapshot: Equatable {
     var upload: Int64 = 0
     var download: Int64 = 0
     var uploadTotal: Int64 = 0
@@ -412,6 +412,71 @@ actor RuntimeRouteEvidenceJournal {
     }
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@propertyWrapper
+struct ClashMeteredValue<Value> {
+    private let subject: CurrentValueSubject<Value, Never>
+    private let publisher: AnyPublisher<Value, Never>
+    private let isUnchanged: ((Value, Value) -> Bool)?
+
+    init(wrappedValue: Value) {
+        subject = CurrentValueSubject(wrappedValue)
+        publisher = subject.eraseToAnyPublisher()
+        isUnchanged = nil
+    }
+
+    init(wrappedValue: Value) where Value: Equatable {
+        subject = CurrentValueSubject(wrappedValue)
+        publisher = subject.eraseToAnyPublisher()
+        isUnchanged = { $0 == $1 }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    var wrappedValue: Value {
+        get { subject.value }
+        nonmutating set {
+            if let isUnchanged, isUnchanged(subject.value, newValue) { return }
+            subject.send(newValue)
+        }
+    }
+
+    var projectedValue: AnyPublisher<Value, Never> { publisher }
+}
+
+extension ClashCommandClient {
+     
+     
+     
+     
+    func clearLastError() {
+        if !lastError.isEmpty { lastError = "" }
+    }
+}
+
+extension ClashCommandClient {
+     
+     
+     
+    var logCountPublisher: AnyPublisher<Int, Never> { logCountStream }
+}
+
 @MainActor
 final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
     @Published private(set) var isConnected = false
@@ -427,8 +492,10 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
      
     @Published private(set) var channelAttachFailed = false
     @Published private(set) var lastError = ""
-    @Published private(set) var traffic = ClashTrafficSnapshot() {
-        didSet { ClashPerf.count("pub.cmd.traffic") }
+     
+     
+    @ClashMeteredValue private(set) var traffic = ClashTrafficSnapshot() {
+        didSet { if traffic != oldValue { ClashPerf.count("pub.cmd.traffic") } }
     }
      
      
@@ -462,10 +529,37 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
               now - sample.receivedAt < 3_000_000_000 else { return 0 }
         return sample.bytes
     }
-    @Published private(set) var memoryBytes: Int64 = 0 {
-        didSet { ClashPerf.count("pub.cmd.memory") }
+     
+    @ClashMeteredValue private(set) var memoryBytes: Int64 = 0 {
+        didSet { if memoryBytes != oldValue { ClashPerf.count("pub.cmd.memory") } }
     }
     @Published private(set) var mode = "—"
+     
+     
+     
+    @Published private(set) var runningListenerPorts: RunningListenerPorts?
+    var runningListenerPortsChanges: AnyPublisher<RunningListenerPorts?, Never> {
+        $runningListenerPorts.eraseToAnyPublisher()
+    }
+     
+     
+     
+    private var configsRequests: UInt64 = 0
+    private var listenersAdoptedFrom: UInt64 = 0
+
+     
+     
+    func refreshRunningListenerPorts() async {
+        guard let client else { return }
+        let token = generation
+        configsRequests &+= 1
+        let request = configsRequests
+        let modeWritesAtRequest = localModeWrites
+        guard let configsJSON = try? await Task.detached(operation: { try Self.getConfigs(client) }).value,
+              token == generation, self.client === client, isConnected else { return }
+        applyConfigs(configsJSON, source: "configs-listeners", modeWritesAtRequest: modeWritesAtRequest,
+                     request: request)
+    }
     @Published private(set) var peerSchemaVersion: Int32 = 0
     @Published private(set) var peerCoreVersion = "—"
     @Published private(set) var peerCapabilities: [String] = []
@@ -487,7 +581,16 @@ final class ClashCommandClient: ObservableObject, ProxyShareCommanding {
      
      
     @Published private(set) var ruleHits: [ClashRule] = []
-    @Published private(set) var logs: [String] = []
+     
+     
+     
+    @ClashMeteredValue private(set) var logs: [String] = []
+     
+    fileprivate lazy var logCountStream: AnyPublisher<Int, Never> = $logs
+        .map(\.count)
+        .removeDuplicates()
+        .throttle(for: .seconds(1), scheduler: DispatchQueue.main, latest: true)
+        .eraseToAnyPublisher()
     @Published private(set) var isCollectingMemory = false
     @Published private(set) var memoryActionMessage = ""
 
@@ -848,6 +951,7 @@ return
         isConnecting = false
         closeNativeControlAttempt()
         isConnected = false
+        runningListenerPorts = nil
          
          
          
@@ -1176,7 +1280,6 @@ return
             "headers": headers,
             "timeoutMilliseconds": Int(seconds * 1000),
             "maximumBytes": min(max(maxBytes, 1), 268_435_456),
-            "acceptAnyServerCertificate": true,
         ]
         switch redirectPolicy {
          
@@ -1433,6 +1536,8 @@ return
         guard let client else { return false }
         let token = generation
         let modeWritesAtRequest = localModeWrites
+        configsRequests &+= 1
+        let request = configsRequests
         do {
             async let configs = Task.detached { try Self.getConfigs(client) }.value
             let proxies: Data?
@@ -1448,12 +1553,13 @@ return
             applyConfigs(
                 configsJSON,
                 source: "configs-poll",
-                modeWritesAtRequest: modeWritesAtRequest
+                modeWritesAtRequest: modeWritesAtRequest,
+                request: request
             )
              
             if listNotNow { return false }
             proxiesData = proxies
-            lastError = ""
+            clearLastError()
             return true
         } catch {
              
@@ -1664,7 +1770,7 @@ return
         do {
             try await Task.detached { try flush(client) }.value
             guard token == generation, self.client === client, isConnected else { return }
-            lastError = ""
+            clearLastError()
         } catch {
             guard token == generation, self.client === client, isConnected else { return }
             lastError = error.localizedDescription
@@ -1687,7 +1793,7 @@ return
             rules = fetched.first
             rulesTotal = fetched.total > fetched.first.count ? fetched.total : nil
             ruleHits = fetched.hits
-            lastError = ""
+            clearLastError()
         } catch {
             guard token == generation, self.client === client, isConnected else { return }
             if error.localizedDescription.localizedCaseInsensitiveContains("EOF") { return }
@@ -2054,7 +2160,7 @@ return
         do {
             try await ClashClient(session: providerSession).forceGarbageCollection()
             memoryActionMessage = "Memory released"
-            lastError = ""
+            clearLastError()
             await refreshRuntimeDiagnostics()
         } catch {
             memoryActionMessage = ""
@@ -2114,18 +2220,24 @@ return
      
      
      
+     
+     
+     
+     
+     
+     
     @discardableResult
-    func setMode(_ newMode: String) async -> Bool {
+    func setMode(_ newMode: String, closesConnections: Bool = true) async -> Bool {
         let previous = modeSendChain
         let link = Task { [weak self] in
             _ = await previous?.value
-            return await self?.sendModeNow(newMode) ?? false
+            return await self?.sendModeNow(newMode, closesConnections: closesConnections) ?? false
         }
         modeSendChain = link
         return await link.value
     }
 
-    private func sendModeNow(_ newMode: String) async -> Bool {
+    private func sendModeNow(_ newMode: String, closesConnections: Bool) async -> Bool {
         recordRouteControl(
             kind: .modeRequested,
             requestedMember: newMode
@@ -2139,14 +2251,33 @@ return
             return false
         }
         do {
-            try await Task.detached { try client.setMode(newMode) }.value
+             
+             
+             
+             
+            let closes = closesConnections && NodeSwitchSettings.autoCloseOnSwitch()
+            let before = try await Task.detached { () -> String? in
+                let running = closes ? Self.runningMode(client) : nil
+                try client.setMode(newMode)
+                return running
+            }.value
             mode = newMode
             localModeWrites &+= 1
-            lastError = ""
+            clearLastError()
             recordRouteControl(
                 kind: .modeConfirmed,
                 confirmedMember: newMode
             )
+             
+             
+             
+             
+             
+             
+             
+            if ClashConnectionsOnSwitch.closesAfterModeSwitch(from: before, to: newMode, settingIsOn: closes) {
+                await closeConnectionsAfterProxySelection()
+            }
             return true
         } catch {
             lastError = error.localizedDescription
@@ -2170,6 +2301,48 @@ return
      
     var lastCommandError: String { lastError }
 
+     
+    private(set) var lastSelectionFailure: SelectionFailure = .notAnswered
+
+     
+     
+     
+     
+     
+    nonisolated static func selectionFailure(from error: Error) -> SelectionFailure {
+        let text = (error as NSError).localizedDescription
+        guard let range = text.range(of: #"HTTP (\d{3})"#, options: .regularExpression) else { return .notAnswered }
+        return text[range].hasSuffix("400") ? .notListed : .notAnswered
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    nonisolated static func failureOfAPickNotHeld(inTheSameSession sameSession: Bool, readBack: ProxyGroup?) -> SelectionFailure {
+        guard sameSession, let readBack, ProxyGroupControlKind(rawType: readBack.type).canBeUnpinned else {
+            return .notAnswered
+        }
+        return .notHeld
+    }
+
+     
+     
+     
+     
+     
+     
+    nonisolated static func failureOfAnAnsweredPick(
+        inTheSameSession sameSession: Bool, readFresh: Bool, readBack: ProxyGroup?, name: String
+    ) -> SelectionFailure? {
+        guard sameSession, readFresh else { return .notAnswered }
+        if readBack?.holdsSelection(name) == true { return nil }
+        return failureOfAPickNotHeld(inTheSameSession: true, readBack: readBack)
+    }
+
     func unfix(group: String) async -> Bool {
         guard let client, isConnected else {
             lastError = "Proxy control is not connected."
@@ -2180,7 +2353,7 @@ return
              
              
             await refreshMetadata()
-            lastError = ""
+            clearLastError()
             return true
         } catch {
             lastError = error.localizedDescription
@@ -2196,6 +2369,7 @@ return
         )
         guard let client, isConnected else {
             lastError = "Proxy control is not connected."
+            lastSelectionFailure = .notAnswered
             recordRouteControl(
                 kind: .selectionRejected,
                 selectionGroup: group,
@@ -2207,22 +2381,24 @@ return
         let token = generation
         do {
             try await Task.detached { try client.selectProxy(group, name: name) }.value
-            await refreshMetadata()
-            let confirmedGroup = NodeInventory.parse(proxiesData).0.first(
-                where: { $0.name == group }
-            )
-            guard token == generation,
-                  self.client === client,
-                  isConnected,
-                   
-                   
-                   
-                   
-                   
-                   
-                  confirmedGroup?.holdsSelection(name) == true else {
+            let readFresh = await refreshMetadataReadingProxies()
+            let sameSession = token == generation && self.client === client && isConnected
+             
+            let confirmedGroup = readFresh
+                ? NodeInventory.parse(proxiesData).0.first(where: { $0.name == group })
+                : nil
+             
+             
+             
+             
+             
+             
+            if let failure = Self.failureOfAnAnsweredPick(
+                inTheSameSession: sameSession, readFresh: readFresh, readBack: confirmedGroup, name: name
+            ) {
                 lastError =
                     "The running proxy group did not confirm the selected route."
+                lastSelectionFailure = failure
                 recordRouteControl(
                     kind: .selectionRejected,
                     selectionGroup: group,
@@ -2233,7 +2409,7 @@ return
                 )
                 return false
             }
-            lastError = ""
+            clearLastError()
             recordRouteControl(
                 kind: .selectionConfirmed,
                 selectionGroup: group,
@@ -2245,14 +2421,16 @@ return
         } catch {
             guard token == generation,
                   self.client === client else {
+                lastSelectionFailure = .notAnswered
                 return false
             }
             lastError = error.localizedDescription
+            lastSelectionFailure = Self.selectionFailure(from: error)
             recordRouteControl(
                 kind: .selectionRejected,
                 selectionGroup: group,
                 requestedMember: name,
-                failureCategory: "core-rejected"
+                failureCategory: lastSelectionFailure == .notListed ? "core-refused-member" : "core-rejected"
             )
             return false
         }
@@ -2263,7 +2441,43 @@ return
      
      
      
+     
+     
+     
     func closeConnectionsAfterProxySelection() async {
+        await closeOnTheCoreChannel { try $0.closeConnections() }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func closeConnectionsMoved(by picks: [ProxyGroupPick]) async {
+        await closeOnTheCoreChannel { client in
+            var error: NSError?
+            let table = client.getConnections(&error)
+            guard error == nil,
+                  let ids = ProxySelectionConnections.ids(in: Data(table.utf8), movedBy: picks) else {
+                try client.closeConnections()
+                return
+            }
+            let refusals = ProxySelectionConnections.Refusals()
+            DispatchQueue.concurrentPerform(iterations: ids.count) { index in
+                do { try client.closeConnection(ids[index]) } catch { refusals.note(error) }
+            }
+            if !ids.isEmpty, let last = refusals.all(of: ids.count) { throw last }
+        }
+    }
+
+     
+     
+    private func closeOnTheCoreChannel(_ work: @escaping @Sendable (ClashAPIClient) throws -> Void) async {
         guard let client, isConnected else {
             lastError = "Proxy control is not connected."
             return
@@ -2271,14 +2485,14 @@ return
         let token = generation
         do {
             try await Task.detached {
-                try client.closeConnections()
+                try work(client)
             }.value
             guard token == generation,
                   self.client === client,
                   isConnected else {
                 return
             }
-            lastError = ""
+            clearLastError()
         } catch {
             guard token == generation,
                   self.client === client,
@@ -2292,7 +2506,7 @@ return
     func urlTest(name: String, url: String = "") async -> Int {
         let outcome = await probeOutcome(name: name, url: url)
         if outcome.succeeded {
-            lastError = ""
+            clearLastError()
         } else {
             lastError = Self.urlTestFailureMessage(category: outcome.failureCategory)
         }
@@ -2856,6 +3070,13 @@ return
         return options
     }
 
+     
+    private nonisolated static func runningMode(_ client: ClashAPIClient) -> String? {
+        guard let json = try? getConfigs(client),
+              let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else { return nil }
+        return object["mode"] as? String
+    }
+
     private nonisolated static func getConfigs(_ client: ClashAPIClient) throws -> String {
         var error: NSError?
         let result = client.getConfigs(&error)
@@ -3100,6 +3321,7 @@ return
         connectTask = nil
         closeNativeControlAttempt()
         isConnected = false
+        runningListenerPorts = nil
         lastError = error.localizedDescription
         noteConnectFailure("connect-failed:" + error.localizedDescription)
          
@@ -3121,7 +3343,7 @@ return
          
          
         isReopeningControlSession = false
-        lastError = ""
+        clearLastError()
         trafficReducer = ClashTrafficReducer()
         traffic = ClashTrafficSnapshot()
         recordRouteControl(kind: .runtimeControlConnected)
@@ -3147,6 +3369,7 @@ return
         modeStreamSettler.cancel()
         closeNativeControlAttempt()
         isConnected = false
+        runningListenerPorts = nil
         trafficReducer = ClashTrafficReducer()
         traffic = ClashTrafficSnapshot()
         publishMemory(MemoryState(inuse: 0, footprint: nil))
@@ -3628,12 +3851,21 @@ return
     func applyConfigs(
         _ json: String,
         source: String = "?",
-        modeWritesAtRequest: UInt64? = nil
+        modeWritesAtRequest: UInt64? = nil,
+        request: UInt64? = nil
     ) {
         guard let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let currentMode = object["mode"] as? String
         else { return }
+         
+         
+         
+         
+        if let ports = RunningListenerPorts.read(configs: object), request.map({ $0 >= listenersAdoptedFrom }) ?? true {
+            if let request { listenersAdoptedFrom = request }
+            if ports != runningListenerPorts { runningListenerPorts = ports }
+        }
          
          
          
@@ -4193,11 +4425,18 @@ extension ClashCommandClient {
         guard isConnected,
               let state = read,
               PendingProviderCompile.waits(in: state, excluding: pendingCompilesHandedOn),
-              let sha256 = state.running?.configSHA256,
-              let configuration = await Task.detached(priority: .utility, operation: {
-                  NodeLibraries.storedConfiguration(sha256: sha256, container: container)
-              }).value
+              let sha256 = state.running?.configSHA256
         else { return [] }
+         
+         
+         
+         
+        guard let configuration = await Task.detached(priority: .utility, operation: {
+            Self.runningConfiguration(sha256: sha256, container: container)
+        }).value else {
+            handOnWhatTheCompileWouldTake(in: state, because: #"no stored configuration hashes to the running \#(sha256)"#)
+            return []
+        }
         do {
             let compiled = try await compilePendingProviders(configuration: configuration,
                                                              targetProfile: clashAppleRuntimeProfileName)
@@ -4221,8 +4460,40 @@ extension ClashCommandClient {
             if !message.contains(ClashSideUpdateStalePrefix) {
                 ClashLogStore.shared.append("pending compile not run  reason=\(message)", stream: .app, level: .warning)
             }
+             
+             
+             
+             
+             
+            if !message.contains(ClashSideUpdateStalePrefix), !Task.isCancelled, !(error is CancellationError),
+               !(error is NodePageSourceError), !(error is CoreCallDeadline) {
+                handOnWhatTheCompileWouldTake(in: state, because: message)
+            }
             return []
         }
+    }
+
+     
+     
+     
+     
+    nonisolated static func runningConfiguration(sha256: String, container: URL) -> String? {
+        NodeLibraries.storedConfiguration(sha256: sha256, container: container,
+                                          runsAs: ClashTunnelOutboundMode.firstTextWithAModeWrittenIn)
+    }
+
+     
+     
+     
+     
+    private func handOnWhatTheCompileWouldTake(in state: ProviderRefreshState, because reason: String) {
+        let handedOn = PendingProviderCompile.compileTakes(in: state, excluding: pendingCompilesHandedOn)
+        guard !handedOn.isEmpty, let takes = takesWhatTheCompileCouldNotTake else { return }
+        ClashLogStore.shared.append(
+            #"pending compile handed to a publication  sets=\#(handedOn.map(\.name).joined(separator: ","))  reason=\#(reason)"#,
+            stream: .app, level: .warning)
+        pendingCompilesHandedOn.formUnion(handedOn.map(\.key))
+        takes(handedOn)
     }
 
      
@@ -4281,5 +4552,69 @@ final class PendingCompileSlot: @unchecked Sendable {
         lock.lock()
         taken = false
         lock.unlock()
+    }
+}
+
+ 
+struct ProxyGroupPick: Equatable, Sendable {
+    let group: String
+    let member: String
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ProxySelectionConnections {
+     
+     
+     
+    static func ids(in table: Data, movedBy picks: [ProxyGroupPick]) -> [String]? {
+        guard let root = try? JSONSerialization.jsonObject(with: table) as? [String: Any] else { return nil }
+        let connections: [[String: Any]]
+        switch root["connections"] {
+        case let rows as [[String: Any]]: connections = rows
+        case is NSNull: connections = []
+        default: return nil
+        }
+        guard !picks.isEmpty else { return [] }
+        var seen = Set<String>()
+        return connections.compactMap { connection in
+            guard let id = connection["id"] as? String, !id.isEmpty, !seen.contains(id),
+                  let chains = connection["chains"] as? [String],
+                  picks.contains(where: { moved(chains, by: $0) }) else { return nil }
+            seen.insert(id)
+            return id
+        }
+    }
+
+    private static func moved(_ chains: [String], by pick: ProxyGroupPick) -> Bool {
+        guard let at = chains.firstIndex(of: pick.group) else { return false }
+        return at == 0 || chains[at - 1] != pick.member
+    }
+
+     
+    final class Refusals: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        private var last: Error?
+
+        func note(_ error: Error) {
+            lock.lock(); defer { lock.unlock() }
+            count += 1
+            last = error
+        }
+
+         
+        func all(of attempts: Int) -> Error? {
+            lock.lock(); defer { lock.unlock() }
+            return count == attempts ? last : nil
+        }
     }
 }

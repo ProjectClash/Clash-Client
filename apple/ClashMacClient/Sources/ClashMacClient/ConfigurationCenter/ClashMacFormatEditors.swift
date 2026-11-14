@@ -331,7 +331,7 @@ struct ClashMacTimeMenuRow<Label: View>: View {
      
      
     static func unit(of control: ClashMacFieldControl?, field: ConfigurationField?) -> String? {
-        guard case .number(_, _, let unit?)? = control, let field,
+        guard case .number(_, _, let unit?, _)? = control, let field,
               !ConfigurationFormatPresets.common(path: field.path, unit: unit).isEmpty else { return nil }
         return unit
     }

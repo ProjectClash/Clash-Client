@@ -1,3 +1,4 @@
+import ClashClientUI
 import Foundation
 
  
@@ -16,9 +17,12 @@ struct ClashMacInstallLinkPrompt {
      
      
     let pending: String
+     
+    let rules: InstallLinkRuleScheme?
 
-    init(pending: String) {
+    init(pending: String, rules: InstallLinkRuleScheme? = nil) {
         self.pending = pending
+        self.rules = rules
     }
 
      
@@ -40,13 +44,21 @@ struct ClashMacInstallLinkPrompt {
     }
 
      
+     
+     
+    var ruleLine: ClashDisplayText? {
+        ProfileImportRouter.confirmationRuleLine(for: rules)
+    }
+
+     
     var link: String {
         ProfileImportRouter.confirmationText(for: pending)
     }
 
      
+     
     var message: String {
-        lead + link
+        lead + (ruleLine.map { $0.rawValue + "\n\n" } ?? "") + link
     }
 
      

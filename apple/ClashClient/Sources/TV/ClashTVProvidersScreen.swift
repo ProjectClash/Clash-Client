@@ -204,6 +204,13 @@ struct ClashTVProvidersScreen: View {
                     }
                     return Line(text: sentence, tone: .information, label: label)
                 }
+                 
+                 
+                 
+                 
+                 
+                 
+                return Line(text: String(localized: "Updating…"), tone: .information)
             case .updated? where record.countAfter == 0 && (record.countBefore ?? 0) > 0:
                 if let said {
                     return Line(text: AuthoredText.app(said.key, arguments: said.arguments).text, tone: .information,

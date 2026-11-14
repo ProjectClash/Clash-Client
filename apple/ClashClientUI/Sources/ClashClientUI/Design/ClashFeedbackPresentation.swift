@@ -331,7 +331,7 @@ public struct ClashFeedbackCenterState: Equatable, Sendable {
      
     @discardableResult
     public mutating func expire(now: Date) -> Bool {
-        guard let deadline = current?.deadline, deadline <= now else { return false }
+        guard let deadline = current?.deadline, deadline.timeIntervalSince(now) <= 0 else { return false }
         uncover(now: now)
         return true
     }

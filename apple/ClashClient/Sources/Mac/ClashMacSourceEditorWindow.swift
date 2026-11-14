@@ -63,6 +63,19 @@ struct ClashMacSourceEditorWindow: View {
      
      
     @State private var tooLarge = false
+     
+     
+     
+     
+    @State private var savesIndependentSource = false
+
+     
+     
+     
+    static func savesIndependentSource(profileID: String, in snapshot: ConfigurationLibrarySnapshot) -> Bool {
+        guard let recipe = snapshot.recipes.first(where: { $0.id == profileID }) else { return false }
+        return recipe.preservesOriginal != true
+    }
 
     var body: some View {
         if let collection = request.collection {
@@ -81,6 +94,12 @@ struct ClashMacSourceEditorWindow: View {
                     }).value {
                         tooLarge = true
                         return
+                    }
+                    if let library = profiles.configurationLibraryStore {
+                        let id = profile.id
+                        savesIndependentSource = (try? await Task.detached(priority: .userInitiated) {
+                            Self.savesIndependentSource(profileID: id, in: try library.snapshot())
+                        }.value) ?? false
                     }
                      
                      
@@ -112,7 +131,8 @@ struct ClashMacSourceEditorWindow: View {
             ClashWindowDepartureHost {
                 ProfileEditView(
                     profile: profile,
-                    rawYAML: rawYAML
+                    rawYAML: rawYAML,
+                    savesIndependentSource: savesIndependentSource
                 ) { updated, rawYAML, resources, disablingAutoUpdate in
                     try await profiles.updateEdited(
                         updated,
@@ -168,7 +188,7 @@ struct ClashMacNodeSourceEditorWindow: View {
             } windowGuard: { controller in
                 ClashMacWindowCloseGuard(controller: controller)
             }
-            .navigationTitle(Text(verbatim: loaded.record.label))
+            .navigationTitle(Text(clash: ClashConfigurationSourceCopy.name(loaded.record)))
             .navigationSubtitle(Text(clash: .copy("Edit Nodes Source")))
             .frame(minWidth: 640, minHeight: 480)
         } else if let errorMessage {

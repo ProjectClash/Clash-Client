@@ -35,6 +35,11 @@ struct ProfileNetworkSettingsView: View {
     private let ownsNavigationContainer: Bool
      
      
+     
+     
+    private let landsOnSniffer: Bool
+     
+     
     private let profileForDeviations: Profile
     @State private var deviations: ConfigDeviationReport?
 
@@ -46,9 +51,11 @@ struct ProfileNetworkSettingsView: View {
         profile: Profile,
         draft: ProfileNetworkDraft? = nil,
         ownsNavigationContainer: Bool = true,
+        landsOnSniffer: Bool = false,
         save: @escaping (ProfileNetworkDraft) throws -> Void
     ) {
         let draft = draft ?? ProfileNetworkDraft(profile: profile, sourceYAML: nil)
+        self.landsOnSniffer = landsOnSniffer
         self.save = save
         profileForDeviations = profile
         profileName = profile.label
@@ -68,13 +75,83 @@ struct ProfileNetworkSettingsView: View {
         profile: Profile,
         sourceYAML: String?,
         ownsNavigationContainer: Bool = true,
+        landsOnSniffer: Bool = false,
         save: @escaping (ProfileNetworkDraft) throws -> Void
     ) -> some View {
         ProfileEditorDraftLoader(identifier: "profile-network.loading") {
             ProfileNetworkDraft(profile: profile, sourceYAML: sourceYAML)
         } content: { draft in
             ProfileNetworkSettingsView(profile: profile, draft: draft,
-                                       ownsNavigationContainer: ownsNavigationContainer, save: save)
+                                       ownsNavigationContainer: ownsNavigationContainer, landsOnSniffer: landsOnSniffer, save: save)
+        }
+    }
+
+     
+    private var hub: some View {
+        ClashMacSettingsFormContainer {
+            Section {
+                sectionRow(.sniffer) {
+                    DNSHubRow(title: "Sniffer",
+                              detail: "Finds the domain behind each connection before rules run",
+                              value: snifferSummary)
+                }
+                .accessibilityIdentifier("profile-network.traffic-recognition")
+            } footer: {
+                Text(
+                    "Sniffer discovers domains before this profile's rules are evaluated."
+                )
+            }
+
+            Section {
+                sectionRow(.ntp) {
+                    DNSHubRow(title: "NTP",
+                              detail: "Trusted time for protocol handshakes",
+                              value: ntpSummary)
+                }
+                .accessibilityIdentifier("profile-network.time-synchronization")
+            }
+
+            if !error.isEmpty {
+                Section {
+                    ClashStatusMessage(text: .copy(error), kind: .error)
+                }
+            }
+
+             
+             
+             
+             
+             
+             
+             
+            ConfigDeviationSection(
+                report: deviations,
+                fields: RunningCoreDeviations.fields(
+                    for: [.trafficRecognition, .timeSynchronization]
+                ),
+                identifierPrefix: "profile-network.deviation"
+            )
+        }
+        .clashPageTitle("Sniffer & NTP")
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private var landedOnSniffer: some View {
+        ProfileSnifferSettingsBody(draft: $draft, deviations: ConfigDeviationSection(
+            report: deviations,
+            fields: RunningCoreDeviations.fields(for: [.trafficRecognition]),
+            identifierPrefix: "profile-network.deviation"
+        ))
+        .alert(Text(clash: .copy(error)), isPresented: Binding(get: { !error.isEmpty }, set: { if !$0 { error = "" } })) {
+            Button("OK") { error = "" }
         }
     }
 
@@ -139,51 +216,13 @@ struct ProfileNetworkSettingsView: View {
         ClashFeatureNavigationContainer(
             ownsNavigationContainer: ownsNavigationContainer
         ) {
-            ClashMacSettingsFormContainer {
-                Section {
-                    sectionRow(.sniffer) {
-                        DNSHubRow(title: "Sniffer",
-                                  detail: "Finds the domain behind each connection before rules run",
-                                  value: snifferSummary)
-                    }
-                    .accessibilityIdentifier("profile-network.traffic-recognition")
-                } footer: {
-                    Text(
-                        "Sniffer discovers domains before this profile's rules are evaluated."
-                    )
+            Group {
+                if landsOnSniffer {
+                    landedOnSniffer
+                } else {
+                    hub
                 }
-
-                Section {
-                    sectionRow(.ntp) {
-                        DNSHubRow(title: "NTP",
-                                  detail: "Trusted time for protocol handshakes",
-                                  value: ntpSummary)
-                    }
-                    .accessibilityIdentifier("profile-network.time-synchronization")
-                }
-
-                if !error.isEmpty {
-                    Section {
-                        ClashStatusMessage(text: .copy(error), kind: .error)
-                    }
-                }
-
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                ConfigDeviationSection(
-                    report: deviations,
-                    fields: RunningCoreDeviations.fields(
-                        for: [.trafficRecognition, .timeSynchronization]
-                    ),
-                    identifierPrefix: "profile-network.deviation"
-                )
             }
-            .clashPageTitle("Sniffer & NTP")
              
              
              
@@ -239,7 +278,7 @@ struct ProfileNetworkSettingsView: View {
                             },
                             discard: { draft = openedWith }
                         )
-                        .clashProductModalRoot(title: modalTitle(for: route))
+                        .clashProductModalRoot(title: .copy(modalTitle(for: route)))
                 }
                 .clashPageSizedSheet()
             }
@@ -271,7 +310,7 @@ struct ProfileNetworkSettingsView: View {
                 let sidecar = RunningCoreDeviations.sidecarYAML(for: profile)
                 let finished = sidecar.flatMap {
                     try? ProfileRuntimeConfigBuilder.buildProductionStages(
-                        raw: $0, profile: profile, applyProxyChain: false
+                        raw: $0, profile: profile, applyProxyChain: false, scripts: .silent
                     ).finished()
                 }
                 let report = finished.flatMap {
@@ -546,7 +585,9 @@ private struct ProfileNTPSettingsBody: View {
  
  
  
-private struct ProfileSnifferSettingsView: View {
+ 
+ 
+struct ProfileSnifferSettingsView: View {
     @Binding var draft: ProfileNetworkDraft
 
     var body: some View {
@@ -566,6 +607,10 @@ private struct ProfileSnifferSettingsBody: View {
      
     @Environment(\.locale) private var locale
     @Binding var draft: ProfileNetworkDraft
+     
+     
+     
+    var deviations: ConfigDeviationSection? = nil
 
      
      
@@ -722,6 +767,8 @@ private struct ProfileSnifferSettingsBody: View {
                     Text("Kept so older profiles round-trip safely; new profiles use the sections above.")
                 }
             }
+
+            if let deviations { deviations }
         }
         
         .clashPageTitle("Sniffer")

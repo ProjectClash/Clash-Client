@@ -31,7 +31,7 @@ struct ModuleLogLimiter {
      
      
     mutating func admit(_ now: Date) -> Int? {
-        if let lastAt, now.timeIntervalSince(lastAt) < 1, now >= lastAt {
+        if let lastAt, (0..<1).contains(now.timeIntervalSince(lastAt)) {
             heldBack += 1
             return nil
         }
@@ -524,6 +524,11 @@ final class ModuleEngine {
     var passThroughOnly: Bool { !passThroughCauses.isEmpty }
      
     var passedThroughHosts: Set<String> = []
+     
+     
+     
+    lazy var systemPinning: ModuleSystemPinning = .system
+    private var saidSystemPinned: Set<String> = []
     var onCertificateHandedOut: ((String) -> Void)?
      
      
@@ -860,7 +865,17 @@ final class ModuleEngine {
     }
 
     func decrypts(host: String) -> Bool {
-        !passThroughOnly && settings.decryptsTLS && !passedThroughHosts.contains(host)
+        !passThroughOnly && settings.decryptsTLS && !passedThroughHosts.contains(host) && !systemPins(host)
+    }
+
+     
+     
+    private func systemPins(_ host: String) -> Bool {
+        guard systemPinning.pins(host) else { return false }
+        if saidSystemPinned.insert(host).inserted {
+            log.say("\(host): the system pins this site's certificate, so it is relayed untouched")
+        }
+        return true
     }
 
     func loopSuspected(_ target: ModuleConnectTarget) -> Bool {

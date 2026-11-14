@@ -41,6 +41,26 @@ public struct ConfigurationFieldCopy: Sendable {
         public static var app: Language {
             Language(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
         }
+
+         
+         
+         
+         
+         
+         
+        public static func shown(in locale: Locale) -> Language {
+            shown(table: ClashCopy.tableName(for: locale), launch: Bundle.main.preferredLocalizations.first)
+        }
+
+         
+         
+        static func shown(in locale: Locale, tables: (String) -> Bool, launch: String?) -> Language {
+            shown(table: ClashCopy.tableName(for: locale, has: tables), launch: launch)
+        }
+
+        private static func shown(table: String?, launch: String?) -> Language {
+            Language(locale: Locale(identifier: table ?? launch ?? "en"))
+        }
     }
 
      

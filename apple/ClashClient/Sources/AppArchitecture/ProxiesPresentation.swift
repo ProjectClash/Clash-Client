@@ -697,7 +697,8 @@ enum ProxiesRuntimeCatalogComposer {
                 isSynthesized: group.isSynthesized,
                 icon: group.icon,
                 drawsFromProviders: group.drawsFromProviders,
-                memberTotal: catalog.shownMemberTotal > members.count ? catalog.shownMemberTotal : nil
+                memberTotal: catalog.shownMemberTotal > members.count ? catalog.shownMemberTotal : nil,
+                carriedSelection: catalog.carriedSelection
             )
         }
     }
@@ -779,7 +780,8 @@ enum ProxiesRuntimeCatalogComposer {
                  
                 icon: group.iconURL ?? iconByGroup[group.name],
                 drawsFromProviders: providersByGroup[group.name] ?? [],
-                memberTotal: group.hasEveryMember ? nil : group.shownMemberTotal
+                memberTotal: group.hasEveryMember ? nil : group.shownMemberTotal,
+                carriedSelection: group.carriedSelection
             )
         }
     }

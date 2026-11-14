@@ -480,7 +480,14 @@ enum NodeLibraries {
      
      
      
-    static func storedConfiguration(sha256: String, container: URL) -> String? {
+     
+     
+     
+     
+     
+     
+    static func storedConfiguration(sha256: String, container: URL,
+                                    runsAs: (String, (String) -> Bool) -> String? = { _, _ in nil }) -> String? {
         let wanted = sha256.lowercased()
          
          
@@ -495,10 +502,42 @@ enum NodeLibraries {
             }
         }
         for url in urls {
-            guard let data = try? Data(contentsOf: url) else { continue }
-            if hex(SHA256.hash(data: data)) == wanted { return String(data: data, encoding: .utf8) }
+             
+             
+             
+             
+             
+             
+            let text: String
+            switch storedText(at: url, wanted: wanted) {
+            case .matches(let stored): return stored
+            case .other(let stored): text = stored
+            case .unreadable: continue
+            }
+            if let running = runsAs(text, { sha256Hex(of: $0) == wanted }) { return running }
         }
         return nil
+    }
+
+    private enum StoredText {
+         
+        case matches(String?)
+        case other(String)
+        case unreadable
+    }
+
+     
+     
+    private static func storedText(at url: URL, wanted: String) -> StoredText {
+        guard let data = try? Data(contentsOf: url) else { return .unreadable }
+        if hex(SHA256.hash(data: data)) == wanted { return .matches(String(data: data, encoding: .utf8)) }
+        return String(data: data, encoding: .utf8).map(StoredText.other) ?? .unreadable
+    }
+
+     
+    static func sha256Hex(of text: String) -> String {
+        var text = text
+        return hex(text.withUTF8 { SHA256.hash(data: UnsafeRawBufferPointer($0)) })
     }
 
     private static func hex(_ digest: SHA256.Digest) -> String {

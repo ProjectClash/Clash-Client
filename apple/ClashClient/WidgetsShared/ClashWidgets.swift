@@ -86,7 +86,8 @@ struct ClashWidgetView: View {
                     size: size, slots: slots, configuredMode: entry.storedMode,
                      
                     countsWiredByDefault: ClashWidgetPlatform.countsWired,
-                    throughputUnit: entry.throughputUnit
+                    throughputUnit: entry.throughputUnit,
+                    notice: entry.notice
                 )
             case .group:
                 ClashWidgetGroupView(snapshot: entry.snapshot, facts: entry.facts, group: entry.group, now: entry.date, size: size, slots: slots)

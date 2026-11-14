@@ -6,6 +6,7 @@ import Foundation
  
  
  
+ 
 enum ClashModuleCountLine {
      
      
@@ -32,11 +33,16 @@ enum ClashModuleCountLine {
                     : "%@ entries · in use once HTTPS Decryption is on"
                 case .notReady: key = waiting == 1 ? "%@ entry · in use once HTTPS Decryption is ready"
                     : "%@ entries · in use once HTTPS Decryption is ready"
+                case .onHold: key = waiting == 1 ? "%@ entry · on hold for now" : "%@ entries · on hold for now"
                 }
                 return [.format(key, [waitingCount])] + skippedPart
             }
-            let key = waitsFor == .off ? "%@ in use · %@ more once HTTPS Decryption is on"
-                : "%@ in use · %@ more once HTTPS Decryption is ready"
+            let key: String
+            switch waitsFor {
+            case .off: key = "%@ in use · %@ more once HTTPS Decryption is on"
+            case .notReady: key = "%@ in use · %@ more once HTTPS Decryption is ready"
+            case .onHold: key = "%@ in use · %@ more on hold for now"
+            }
             return [.format(key, [ClashCopy.count(inUse, locale: locale), waitingCount])] + skippedPart
         }
         guard details else { return [entries(inUse, locale: locale)] }

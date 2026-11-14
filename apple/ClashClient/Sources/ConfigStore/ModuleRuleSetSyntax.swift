@@ -1,4 +1,5 @@
 import ClashClientKit
+import ClashClientUI
 import Foundation
 
  
@@ -54,21 +55,10 @@ enum ModuleRuleSetSyntax {
      
      
      
-     
-     
-    #if os(macOS)
     static let maximumListRuleBytes = Int.max
-    #else
-    static let maximumListRuleBytes = 32 * 1024
-    #endif
      
      
-     
-    #if os(macOS)
     static let maximumModuleKeptBytes = Int.max
-    #else
-    static let maximumModuleKeptBytes = 240 * 1024
-    #endif
      
      
     static let maximumListBytes = 16 << 20
@@ -82,8 +72,8 @@ enum ModuleRuleSetSyntax {
     static let othersLimit = 20_000
 
      
-    static let lanProviderName = "module-builtin-lan"
-    static let systemProviderName = "module-builtin-system"
+    static let lanProviderName = ClashModuleRuleSetNames.lan
+    static let systemProviderName = ClashModuleRuleSetNames.system
      
      
     static let engineProviderPrefix = "module-engine-"
@@ -304,13 +294,7 @@ enum ModuleRuleSetSyntax {
      
      
     static func isModuleProviderName(_ name: String) -> Bool {
-        if name == lanProviderName || name == systemProviderName { return true }
-        let parts = name.split(separator: "-", omittingEmptySubsequences: false)
-        guard parts.count == 3, parts[0] == "module", parts[2].count == 8, parts[2].allSatisfy(\.isHexDigit),
-              parts[1] == "ruleset" || parts[1] == "engine"
-                || (parts[1].count == 8 && parts[1].allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) })
-        else { return false }
-        return true
+        ClashModuleRuleSetNames.isReserved(name)
     }
 
      

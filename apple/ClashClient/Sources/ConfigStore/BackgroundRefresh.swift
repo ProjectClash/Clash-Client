@@ -12,7 +12,7 @@ enum ProfilesDueForRefresh {
         profiles.filter { profile in
             guard profile.autoUpdate, case .url = profile.source else { return false }
             guard let last = profile.lastUpdatedAt else { return true }
-            return last.addingTimeInterval(TimeInterval(profile.updateIntervalHours) * 3600) <= now
+            return last.addingTimeInterval(TimeInterval(profile.updateIntervalHours) * 3600).timeIntervalSince(now) <= 0
         }
     }
 }
@@ -48,7 +48,7 @@ enum ConfigurationSourcesDueForRefresh {
         sources.filter { source in
             guard case .subscription = source.origin, source.isRetainedSnapshot != true,
                   let hours = source.updateIntervalHours, hours > 0 else { return false }
-            return source.updatedAt.addingTimeInterval(TimeInterval(hours) * 3600) <= now
+            return source.updatedAt.addingTimeInterval(TimeInterval(hours) * 3600).timeIntervalSince(now) <= 0
         }
     }
 }
@@ -455,7 +455,8 @@ enum BackgroundRefresh {
                             credentials: credentials,
                             workingDirectory: working,
                             now: now,
-                            expecting: decided
+                            expecting: decided,
+                            scripts: .silent
                         )
                         if result == .unchanged { outcome.unchanged += 1 } else { outcome.updated += 1 }
                     }
@@ -496,7 +497,8 @@ enum BackgroundRefresh {
                         credentials: credentials,
                         workingDirectory: working,
                         now: now,
-                        expecting: decided
+                        expecting: decided,
+                        scripts: .silent
                     )
                     if result == .unchanged {
                         outcome.unchanged += 1

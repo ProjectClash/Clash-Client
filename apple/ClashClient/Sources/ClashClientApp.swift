@@ -2,6 +2,7 @@ import Combine
 import ClashClientUI
 import SwiftUI
 import UIKit
+import UserNotifications
 import WidgetKit
 
 @main
@@ -34,6 +35,11 @@ struct ClashClientApp: App {
              
              
             ModuleTextPlatform.install()
+#if os(iOS)
+             
+             
+            ClashUIKitTextFieldAlert.install()
+#endif
         }
 
             Self.repairPersonalRulePlacement()
@@ -74,7 +80,7 @@ struct ClashClientApp: App {
      
      
     private static func repairPersonalRulePlacement() {
-        guard let container = ClashAppIdentifiers.appGroupContainer, let defaults = UserDefaults(suiteName: ClashAppIdentifiers.appGroup)
+        guard let container = ClashAppIdentifiers.appGroupContainer, let defaults = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
         else { return }
         let working = container.appendingPathComponent("working", isDirectory: true)
         PersonalRulePlacementMigration.runIfNeeded(
@@ -189,10 +195,22 @@ struct AppShellView: View {
     @StateObject private var profiles: ProfilesViewModel
     @StateObject private var command = ClashCommandClient()
     @StateObject private var stats = StatsModel()
-    @StateObject private var nodes = NodesModel()
+     
+     
+    @StateObject private var nodes = NodesModel(
+        automaticPinsDefaults: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
+    )
     @StateObject private var networkQuality = NetworkQualityModel()
     @StateObject private var stun = STUNTestModel()
-    @StateObject private var connections = ConnectionsModel()
+     
+     
+     
+     
+     
+     
+     
+    @StateObject private var connectionsOwner = ConnectionsModelOwner()
+    private var connections: ConnectionsModel { connectionsOwner.model }
     @StateObject private var proxyShare = ProxyShareModel()
     @StateObject private var profileImports = ProfileImportRouter()
     @State private var navigationState = ClashClientUI.AppleClientNavigationState()
@@ -254,7 +272,18 @@ struct AppShellView: View {
      
      
     @State private var railProxiesGroup: String?
+     
+     
+    @State private var railProxiesOpening: ProxyBrowsingVisibility.Opening = .browsing
+     
+     
+     
+     
+    @State private var railProxiesRequest = ClashClientUI.ClashRootOpenGroupSignal()
     @State private var profileRefreshToken = 0
+     
+     
+    @State private var nodeListRereads = NodeListRereads()
      
     private var isPickingProfile: Bool {
         get { profileSheets.isPicking }
@@ -334,6 +363,15 @@ struct AppShellView: View {
      
      
      
+    private func tapScriptNotificationIfRequested() async {
+
+
+    }
+
+     
+     
+     
+     
      
     private func compiledGeoIfRequested() async {
 
@@ -394,6 +432,7 @@ struct AppShellView: View {
             .task { await deleteProfilesIfRequested() }
             .task { await compiledGeoIfRequested() }
             .task { await backupTraceIfRequested() }
+            .task { await tapScriptNotificationIfRequested() }
          
          
          
@@ -407,7 +446,7 @@ struct AppShellView: View {
          
          
          
-        .sheet(item: shellSheet, onDismiss: activeRuntimeDidChange) {
+        .clashSheet(item: shellSheet, onDismiss: activeRuntimeDidChange) {
             shellSheetContent(for: $0)
                 .clashModalPresentation(.page)
         }
@@ -416,6 +455,10 @@ struct AppShellView: View {
          
          
         .background(secondPresenter)
+         
+         
+         
+        .background(ScriptNotificationPagePresenter(pages: .shared))
          
          
         .onDisappear { presentationRecovery.supersede() }
@@ -446,6 +489,7 @@ struct AppShellView: View {
              
              
             if !scenePhaseWitness.heardAChange { scenePhaseWitness.phase = scenePhase }
+            ModuleScriptNotificationPages.shared.sceneBecame(active: scenePhase == .active)
             command.syncConnectionObservationScene(isActive: scenePhase == .active, isBackground: scenePhase == .background)
 
 
@@ -457,7 +501,7 @@ struct AppShellView: View {
             proxyShare.bind(command: command)
              
              
-            LocalNetworkPermission.clearPublicationMirror(in: UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+            LocalNetworkPermission.clearPublicationMirror(in: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
              
              
              
@@ -468,7 +512,7 @@ struct AppShellView: View {
                     return profiles.effectiveYAMLIfReady(for: active)
                 },
                 lanListenerPermitted: {
-                    LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+                    LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
                 }
             )
              
@@ -528,6 +572,14 @@ struct AppShellView: View {
         }
         .onChange(of: command.channelAttachFailed) { failed in
             syncConnectionsForSelectedTab(channelFailed: failed)
+        }
+         
+         
+         
+         
+        .onChange(of: command.coreSession) { core in
+            guard core != nil else { return }
+            Task { await nodes.restoreAutomaticPins() }
         }
         .onChange(of: command.isConnected) { connected in
             syncConnectionsForSelectedTab(isConnected: connected)
@@ -685,6 +737,8 @@ struct AppShellView: View {
              
              
             if case .active = phase { ModuleScriptNotificationRelay.shared.drain() }
+             
+            ModuleScriptNotificationPages.shared.sceneBecame(active: phase == .active)
             if phase == .active {
                 Task {
                     await restoreTunnelControlSession()
@@ -832,6 +886,16 @@ struct AppShellView: View {
             guard let published = updates.compactMap(\.publishedIn).last else { return }
             Task { await PublishedRuntimeHandover.apply(vpn: vpn, profileID: published.profileID) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .clashProviderContentChanged)) { note in
+             
+             
+             
+             
+             
+             
+            guard PublishedRuntimeHandover.readsNodesAgain(after: note, isConnected: command.isConnected) else { return }
+            nodeListRereads.ask { await nodes.refresh() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: ProviderDownloadActivity.didChangeNotification)) { _ in
              
              
@@ -881,6 +945,14 @@ struct AppShellView: View {
          
         .environment(\.externalControllerCore, ExternalControllerCore.live(vpn: vpn, profiles: profiles))
         .environment(\.clashThroughputUnit, throughputUnit)
+         
+         
+         
+        .onReceive(NotificationCenter.default.publisher(for: .clashModeChosenElsewhere).receive(on: RunLoop.main)) { _ in
+            guard scenePhaseWitness.phase == .active, pendingOutboundMode == nil,
+                  let raw = ClashWidgetFactsPublisher.takeModeChosenOnACard() else { return }
+            pendingOutboundMode = raw
+        }
         .onReceive(NotificationCenter.default.publisher(for: ClashThroughputUnit.didChangeNotification)) { _ in
             throughputUnit = ClashThroughputUnit.stored(in: GlobalConfig.appGroupDefaults)
              
@@ -1096,6 +1168,21 @@ struct AppShellView: View {
 
      
      
+     
+     
+     
+     
+    private func openRailProxies(_ group: String?, _ opening: ProxyBrowsingVisibility.Opening) {
+        railProxiesGroup = group
+        railProxiesOpening = opening
+        railProxiesRequest = ClashClientUI.ClashRootOpenGroupSignal(
+            token: railProxiesRequest.token &+ 1, group: group,
+            opening: opening == .choosingInGlobal ? .choosingInGlobal : .browsing)
+        navigate(to: .proxies)
+    }
+
+     
+     
     private var sharedRegularNavigationBinding:
         Binding<ClashClientUI.AppleClientNavigationState>
     {
@@ -1141,16 +1228,17 @@ struct AppShellView: View {
                 profiles: profiles,
                 profileRefreshToken: profileRefreshToken,
                 avoidsLiveProviderStore: false,
-                stagedGroup: $railProxiesGroup
+                stagedGroup: $railProxiesGroup,
+                stagedOpening: $railProxiesOpening
             )
+            .environment(\.clashRegularRootOpenGroup, railProxiesRequest)
         case .rules:
             SessionRulesRailRoot(
                 command: command,
                 canInspectActiveRules: command.isConnected,
                 profiles: profiles,
                 openProxiesGroup: { group in
-                    railProxiesGroup = group
-                    navigate(to: .proxies)
+                    openRailProxies(group, .browsing)
                 }
             )
          
@@ -1180,6 +1268,8 @@ struct AppShellView: View {
         case .dnsQuery:
             DNSQueryView(command: command)
         case .utilities(let item):
+             
+             
             GoldenFlowUtilitiesDestinationAdapter(
                 vpn: vpn,
                 command: command,
@@ -1191,6 +1281,7 @@ struct AppShellView: View {
                 activityLens: $activityLens,
                 usesRegularDetailLayout: true
             )
+            .equatable()
         case .more(let item):
             GoldenFlowMoreDestinationAdapter(
                 vpn: vpn,
@@ -1300,9 +1391,16 @@ struct AppShellView: View {
                     navigate(to: .profiles)
                 }
             },
-            openProxies: { navigate(to: .proxies) },
+             
+             
+            openProxies: { openRailProxies(nil, .browsing) },
+             
+            openProxiesToChooseInGlobal: {
+                openRailProxies(GlobalProxySelectionPolicy.groupName, .choosingInGlobal)
+            },
             openRules: { navigate(to: .rules) },
             openActiveRules: { navigate(to: .activeRules) },
+            openOnDemand: { navigate(to: .more(.onDemand)) },
             openLogs: {
                  
                  
@@ -1543,9 +1641,9 @@ struct AppShellView: View {
          
          
         nodes.noteRouteChanged()
-        Task {
-            await nodes.refresh()
-        }
+         
+         
+        nodeListRereads.ask { await nodes.refresh() }
     }
 
      
@@ -1722,7 +1820,18 @@ struct AppShellView: View {
              
              
             let intent = ModeIntentClock.next()
-            pendingOutboundMode = mode.rawValue
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            if mode != .global { pendingOutboundMode = mode.rawValue }
             Task {
                  
                  
@@ -1738,38 +1847,11 @@ struct AppShellView: View {
                 for _ in 0..<100 where !command.isConnected {
                     try? await Task.sleep(nanoseconds: 100_000_000)
                 }
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                var globalConfirmed = mode != .global
+                guard ModeIntentClock.isCurrent(intent) else { return }
                 if mode == .global {
-                    for _ in 0..<20 {
-                        let confirmed = await nodes.ensureGlobalProxySelection()
-                        let verdict = GlobalModeConfirmation.verdict(
-                            groupCount: nodes.groups.count,
-                            selectionConfirmed: confirmed
-                        )
-                        if verdict != .notYetKnown {
-                            globalConfirmed = verdict == .confirmed
-                            break
-                        }
-                        try? await Task.sleep(nanoseconds: 100_000_000)
-                    }
-                }
-                if mode == .global, !globalConfirmed {
-                     
-                     
-                     
-                     
-                     
-                     
+                    pendingOutboundMode = mode.rawValue
                     return
                 }
-                guard ModeIntentClock.isCurrent(intent) else { return }
                 await command.setMode(mode.rawValue)
             }
         }
@@ -2053,6 +2135,7 @@ struct AppShellView: View {
          
          
         stats.bind(session: vpn.session, command: command)
+        stats.tunnelStatusChanged(status)
         command.sync(vpnStatus: status)
         publishVPNControlSnapshot(status: status)
          
@@ -2166,12 +2249,16 @@ struct ShellProfileCenter: View, Equatable {
  
  
  
-private struct WindowSheetPresenter<Content: View>: UIViewControllerRepresentable {
-    let item: ProfileSheetState.Sheet?
+ 
+ 
+ 
+ 
+private struct WindowSheetPresenter<Item: Identifiable, Content: View>: UIViewControllerRepresentable {
+    let item: Item?
      
     let dropClaim: () -> Void
     let onDismiss: () -> Void
-    @ViewBuilder let content: (ProfileSheetState.Sheet) -> Content
+    @ViewBuilder let content: (Item) -> Content
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -2189,7 +2276,7 @@ private struct WindowSheetPresenter<Content: View>: UIViewControllerRepresentabl
         let shown = item
         let root = AnyView(
             Color.clear
-                .sheet(
+                .clashSheet(
                     item: Binding(
                         get: { shown },
                         set: { [weak coordinator] in if $0 == nil { coordinator?.sheetDroppedItsClaim() } }
@@ -2216,7 +2303,7 @@ private struct WindowSheetPresenter<Content: View>: UIViewControllerRepresentabl
         var onDismiss: () -> Void = {}
         private var window: UIWindow?
         private var host: UIHostingController<AnyView>?
-        private(set) var item: ProfileSheetState.Sheet?
+        private(set) var item: Item?
          
          
         private var claimDropped = false
@@ -2225,7 +2312,7 @@ private struct WindowSheetPresenter<Content: View>: UIViewControllerRepresentabl
          
         private var generation = 0
 
-        func update(item: ProfileSheetState.Sheet?, root: AnyView, scene: UIWindowScene?) {
+        func update(item: Item?, root: AnyView, scene: UIWindowScene?) {
             let raised = self.item == nil && item != nil
             let dropped = self.item != nil && item == nil
              
@@ -2353,6 +2440,19 @@ private struct WindowSheetPresenter<Content: View>: UIViewControllerRepresentabl
 }
 
  
+ 
+ 
+private struct ScriptNotificationPagePresenter: View {
+    @ObservedObject var pages: ModuleScriptNotificationPages
+
+    var body: some View {
+        WindowSheetPresenter(item: pages.shown, dropClaim: { pages.close() }, onDismiss: {}) { text in
+            ModuleScriptNotificationPage(text: text) { pages.close() }
+        }
+    }
+}
+
+ 
 private final class PassthroughWindow: UIWindow {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard let hit = super.hitTest(point, with: event) else { return nil }
@@ -2406,3 +2506,11 @@ private final class ScenePhaseWitness {
 }
 
 
+
+ 
+ 
+ 
+@MainActor
+final class ConnectionsModelOwner: ObservableObject {
+    let model = ConnectionsModel()
+}

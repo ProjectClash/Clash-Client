@@ -164,6 +164,29 @@ public extension View {
      
      
      
+    func clashDeleteConfirmation<Item>(presenting item: Binding<Item?>, name: (Item) -> String,
+                                      actionTitle: ClashDisplayText = .copy("Delete"),
+                                      message: ((Item) -> ClashDisplayText?)? = nil,
+                                      identifier: String,
+                                      action: @escaping (Item) -> Void) -> some View {
+        alert(Text(clash: .format("Delete %@?", [item.wrappedValue.map(name) ?? ""])),
+              isPresented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }),
+              presenting: item.wrappedValue) { presented in
+            Button(role: .destructive) { action(presented) } label: { Text(clash: actionTitle) }
+                .accessibilityIdentifier(identifier)
+            Button("Cancel", role: .cancel) {}
+        } message: { presented in
+            if let text = message?(presented) { Text(clash: text) }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
      
      
     func clashSwipeToDelete(identifier: String? = nil, disabled: Bool = false,

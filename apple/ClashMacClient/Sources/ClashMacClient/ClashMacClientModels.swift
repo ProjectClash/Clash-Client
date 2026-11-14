@@ -442,7 +442,7 @@ public enum ClashMacSecondaryDestination: Hashable, Sendable {
         case .openRuntimeConfiguration:
             self = .runtimeConfiguration
         case .openProfiles, .performPrimaryAction, .showConnectionIssue,
-             .resetVPNProfile, .openProxies, .openRules, .setCards,
+             .resetVPNProfile, .openOnDemand, .openProxies, .openRules, .setCards,
              .setTrafficScope, .refreshExternalIP, .refreshLANIP:
             return nil
         }
@@ -490,6 +490,7 @@ public extension AppleClientActions {
                     customizeHome()
                 case .showConnectionIssue,
                      .resetVPNProfile,
+                     .openOnDemand,
                      .setCards,
                      .setTrafficScope,
                      .refreshExternalIP,

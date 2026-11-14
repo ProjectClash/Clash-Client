@@ -78,9 +78,13 @@ final class ClashMacSocketOwners: @unchecked Sendable {
         source: String,
         sourcePort: UInt16,
         destination: String = "",
-        destinationPort: UInt16 = 0
+        destinationPort: UInt16 = 0,
+        askedAt: UInt64? = nil
     ) -> ClashSocketOwner? {
-        let arrived = DispatchTime.now().uptimeNanoseconds
+         
+         
+         
+        let arrived = askedAt ?? DispatchTime.now().uptimeNanoseconds
         lock.lock()
         defer { lock.unlock() }
         let now = DispatchTime.now().uptimeNanoseconds
@@ -134,14 +138,17 @@ final class ClashMacSocketOwners: @unchecked Sendable {
 
     private func reread(_ now: UInt64) {
         readCount += 1
-        let listed = Self.readNettop()
-        if !listed.isEmpty {
-            records = listed
-            source = "nettop"
-        } else {
-            records = Self.read(proto: 6) + Self.read(proto: 17)
-            source = "pcblist"
+         
+         
+         
+         
+         
+        let (listed, from): ([ClashSocketRecord], String) = autoreleasepool {
+            let listed = Self.readNettop()
+            return listed.isEmpty ? (Self.read(proto: 6) + Self.read(proto: 17), "pcblist") : (listed, "nettop")
         }
+        records = listed
+        source = from
         byLocal = [:]
         for (index, record) in records.enumerated() {
             byLocal["\(record.proto)|\(record.localPort)", default: []].append(index)
@@ -207,6 +214,22 @@ final class ClashMacSocketOwners: @unchecked Sendable {
     }
 
      
+    private static let socketKinds: [Substring: (proto: UInt8, v6: Bool)] = [
+        "tcp4": (6, false), "tcp6": (6, true),
+        "udp4": (17, false), "udp6": (17, true),
+        "quic4": (17, false), "quic6": (17, true),
+    ]
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
      
      
     static func parseNettop(_ output: String) -> [ClashSocketRecord] {
@@ -215,21 +238,18 @@ final class ClashMacSocketOwners: @unchecked Sendable {
         for raw in output.split(separator: "\n") {
             let field = raw.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
             guard !field.isEmpty else { continue }
-            let kind = String(field.prefix(4))
-            let isSocket = field.dropFirst(4).first == " "
-                && ["tcp4", "tcp6", "udp4", "udp6"].contains(kind)
-            guard isSocket else {
+            guard field.contains("<->") else {
                 pid = field.lastIndex(of: ".").flatMap { Int32(field[field.index(after: $0)...]) }
                 continue
             }
-            guard let owner = pid else { continue }
-            let v6 = field.dropFirst(3).hasPrefix("6")
-            let ends = field.dropFirst(5).components(separatedBy: "<->")
-            guard ends.count == 2, let local = endpoint(ends[0], v6: v6) else { continue }
-            let remote = endpoint(ends[1], v6: v6)
+            let parts = field.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard parts.count == 2, let kind = socketKinds[parts[0]], let owner = pid else { continue }
+            let ends = parts[1].trimmingCharacters(in: .whitespaces).components(separatedBy: "<->")
+            guard ends.count == 2, let local = endpoint(ends[0], v6: kind.v6) else { continue }
+            let remote = endpoint(ends[1], v6: kind.v6)
             records.append(ClashSocketRecord(
-                proto: field.hasPrefix("tcp") ? 6 : 17,
-                local: local.host.isEmpty ? (v6 ? "::" : "0.0.0.0") : local.host,
+                proto: kind.proto,
+                local: local.host.isEmpty ? (kind.v6 ? "::" : "0.0.0.0") : local.host,
                 localPort: local.port,
                 remote: remote?.host ?? "", remotePort: remote?.port ?? 0,
                 pid: owner, uid: -1
@@ -359,13 +379,19 @@ final class ClashMacProcessAttribution: @unchecked Sendable {
         self.owners = owners
     }
 
+     
+     
+     
+     
+     
     func fill(_ connections: [ClashConnection]) -> [ClashConnection] {
         lock.lock()
         defer { lock.unlock() }
+        let askedAt = DispatchTime.now().uptimeNanoseconds
         var kept: [String: ClashSocketOwner] = [:]
         let result = connections.map { connection -> ClashConnection in
             guard connection.process.isEmpty else { return connection }
-            let owner = named[connection.id] ?? lookup(connection)
+            let owner = named[connection.id] ?? lookup(connection, askedAt: askedAt)
             guard let owner, !owner.path.isEmpty else { return connection }
             kept[connection.id] = owner
             return connection.attributed(
@@ -376,13 +402,14 @@ final class ClashMacProcessAttribution: @unchecked Sendable {
         return result
     }
 
-    private func lookup(_ connection: ClashConnection) -> ClashSocketOwner? {
+    private func lookup(_ connection: ClashConnection, askedAt: UInt64) -> ClashSocketOwner? {
         guard let port = UInt16(connection.sourcePort), !connection.sourceIP.isEmpty else { return nil }
         let proto: UInt8 = connection.network.lowercased() == "udp" ? 17 : 6
         return owners.owner(
             proto: proto, source: connection.sourceIP, sourcePort: port,
             destination: connection.destinationIP,
-            destinationPort: UInt16(connection.destinationPort) ?? 0
+            destinationPort: UInt16(connection.destinationPort) ?? 0,
+            askedAt: askedAt
         )
     }
 }

@@ -439,6 +439,14 @@ enum ClashVPNControlDriver {
      
      
      
+    static func providerSession() async -> NETunnelProviderSession? {
+        (await installed("session", journal: false) as? NETunnelProviderManager)?.connection as? NETunnelProviderSession
+    }
+
+     
+     
+     
+     
      
     static func isActive(journal: Bool = true) async -> Bool? {
         await state(journal: journal)?.active

@@ -87,6 +87,32 @@ enum ProxyShareAddressList {
         return rows.sorted { (lan.firstIndex(of: $0.address) ?? 0) < (lan.firstIndex(of: $1.address) ?? 0) }
     }
 
+     
+     
+     
+     
+     
+     
+    static func reach(lanRows: [Row], allowsLAN: Bool, bindAddress: String? = nil) -> [Row] {
+        guard allowsLAN else { return [Row(network: .thisDevice, address: loopback)] }
+        let own: [Row]
+        switch listening(bindAddress) {
+        case .everywhere, .everyIPv4: own = [Row(network: .thisDevice, address: loopback)]
+         
+         
+        case .only(let address): own = isThisDeviceOnly(address) ? [Row(network: .thisDevice, address: address)] : []
+        case .nowhere: own = []
+        }
+        return own + lanRows.filter { $0.network != .thisDevice && !isThisDeviceOnly($0.address) }
+    }
+
+     
+     
+     
+    static func everyRow(hosts: [String], interfaces: [String: String]) -> [Row] {
+        hosts.filter { !isThisDeviceOnly($0) }.map { Row(network: network(of: interfaces[$0]), address: $0) }
+    }
+
     private static func network(of interface: String?) -> Network {
         guard let interface else { return .other }
         if interface == "en0" { return .wifi }
@@ -244,6 +270,8 @@ struct ProxyShareView: View {
         .task {
             hydrateDraft(overwriteUsername: true)
             readCorePorts()
+             
+            model.refreshRunningListenerPorts()
             if showsRunningFacts {
                  
                  
@@ -597,14 +625,14 @@ struct ProxyShareView: View {
              
              
              
-            if sharing {
-                ForEach(ProxyShareAddressList.rows(hosts: addressHosts(access), interfaces: model.localInterfaces)) { row in
-                    OverviewValueRow(title: Self.title(of: row.network), value: .verbatim(row.address))
-                        .textSelection(.enabled)
-                        .accessibilityIdentifier("proxyShare.core.address")
-                }
+             
+             
+            ForEach(reachRows(access: access)) { row in
+                OverviewValueRow(title: Self.title(of: row.network), value: .verbatim(row.address))
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("proxyShare.core.address")
             }
-            portField(.mixed, key: "mixed-port", text: $corePortText, hint: String(KernelLANShare.defaultPort),
+            portField(.mixed, key: "mixed-port", text: $corePortText, hint: unsetWords("mixed-port"),
                       identifier: "proxyShare.core.port")
             portField(.http, key: "port", text: $coreHTTPPortText, hint: unsetWords("port"),
                       identifier: "proxyShare.core.httpPort")
@@ -618,27 +646,16 @@ struct ProxyShareView: View {
         } header: {
             Text("Listener")
         } footer: {
-            if sharing {
-                let rows = ProxyShareAddressList.rows(hosts: addressHosts(access), interfaces: model.localInterfaces)
-                if rows.first?.network != .thisDevice {
-                    if !rows.isEmpty {
-                        Text("Point the other device at one address above, over HTTP or SOCKS5.")
-                    }
-                } else if ProxyShareAddressList.waitsForOtherDevices(bindAddress: bindAddress(access)) {
-                    Text("Once a device joins your Personal Hotspot or you join Wi-Fi, the address other devices use appears here.")
-                } else {
-                    Text("Apps on this device use the address above, over HTTP or SOCKS5.")
-                }
+            let rows = reachRows(access: access)
+            let allowsLAN = model.kernelShareReach(running: isRunningConfiguration).allowsLAN
+            if rows.contains(where: { $0.network != .thisDevice }) {
+                Text("Point the other device at one address above, over HTTP or SOCKS5.")
+            } else if allowsLAN, !rows.isEmpty || !model.kernelShareReach(running: isRunningConfiguration).ports.isEmpty,
+                      ProxyShareAddressList.waitsForOtherDevices(bindAddress: bindAddress(access)) {
+                Text("Once a device joins your Personal Hotspot or you join Wi-Fi, the address other devices use appears here.")
+            } else if !rows.isEmpty {
+                Text("Apps on this device use the address above, over HTTP or SOCKS5.")
             }
-        }
-    }
-
-    private static func title(of network: ProxyShareAddressList.Network) -> ClashDisplayText {
-        switch network {
-        case .wifi: .verbatim("Wi-Fi")
-        case .hotspot: .copy("Personal Hotspot")
-        case .thisDevice: .copy("This Device")
-        case .other: .verbatim("IP")
         }
     }
 
@@ -647,6 +664,16 @@ struct ProxyShareView: View {
      
     private func bindAddress(_ access: ConfigurationEditorSession?) -> String? {
         ProxyShareListenAddressMenu.text(of: access?.settingsValue(at: [ProxyShareListenAddressRow.key]))
+    }
+
+     
+     
+    private func reachRows(access: ConfigurationEditorSession?) -> [ProxyShareAddressList.Row] {
+        let reach = model.kernelShareReach(running: isRunningConfiguration)
+        guard !reach.ports.isEmpty else { return [] }
+        return ProxyShareAddressList.reach(
+            lanRows: ProxyShareAddressList.rows(hosts: addressHosts(access), interfaces: model.localInterfaces),
+            allowsLAN: reach.allowsLAN, bindAddress: bindAddress(access))
     }
 
      
@@ -661,7 +688,7 @@ struct ProxyShareView: View {
      
     private func portField(_ port: KernelLANSharePort, key: String, text: Binding<String>, hint: String,
                            identifier: String) -> some View {
-        let closed = KernelLANSharePort.closes(text.wrappedValue) ? unsetWords(key) : ""
+        let subtitle = portStatus(port, key: key, typed: text.wrappedValue)
         return ClashFieldRow(
             fieldCopy.entry(forPath: key, language: .init(locale: locale))?.title ?? key,
             hint: hint,
@@ -669,7 +696,7 @@ struct ProxyShareView: View {
             monospaced: true,
             compactValue: true,
             identifier: identifier,
-            subtitle: closed.isEmpty ? nil : .verbatim(closed),
+            subtitle: subtitle,
             onEditingEnded: {
                 let typed = text.wrappedValue
                 Task {
@@ -685,6 +712,17 @@ struct ProxyShareView: View {
      
     private func unsetWords(_ key: String) -> String {
         fieldCopy.entry(forPath: key, language: .init(locale: locale))?.unset ?? ""
+    }
+
+     
+     
+    private func portStatus(_ port: KernelLANSharePort, key: String, typed: String) -> ClashDisplayText? {
+        switch model.kernelSharePortStatus(port, typed: typed, running: isRunningConfiguration) {
+        case .closed?: .verbatim(unsetWords(key))
+        case .notListening?: .copy("Not listening")
+        case .numberTakenByAnother?: .copy("Not listening: another port has this number")
+        case nil: nil
+        }
     }
 
      
@@ -709,6 +747,16 @@ struct ProxyShareView: View {
     }
 
 #endif
+
+     
+    private static func title(of network: ProxyShareAddressList.Network) -> ClashDisplayText {
+        switch network {
+        case .wifi: .verbatim("Wi-Fi")
+        case .hotspot: .copy("Personal Hotspot")
+        case .thisDevice: .copy("This Device")
+        case .other: .verbatim("IP")
+        }
+    }
 
      
      
@@ -741,14 +789,23 @@ struct ProxyShareView: View {
         Section {
             Toggle(isOn: Binding(
                 get: { kernelShare.isOn },
-                set: { on in Task { await model.setKernelShare(on: on) } }
+                set: { model.pressKernelShare(on: $0) }
             )) {
+                 
+                 
+                 
                 VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
-                    Text("Share on the Local Network")
+                    Text("Allow LAN Connections")
                     Text(clash: .copy(kernelShareSourceLine))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("proxyShare.allowLan.source")
+                    if !kernelShare.isOn, !model.kernelShareReach(running: isRunningConfiguration).ports.isEmpty {
+                        Text("When off, apps on this device can still use it (127.0.0.1)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("proxyShare.allowLan.thisDevice")
+                    }
                 }
             }
             .accessibilityIdentifier("proxyShare.allowLan")
@@ -758,7 +815,7 @@ struct ProxyShareView: View {
                     .accessibilityIdentifier("proxyShare.error")
             }
         } footer: {
-            Text("Follows the configuration until you change it here. A change here applies to this configuration only; clear a port to follow the configuration again. Takes effect the next time the tunnel starts.")
+            Text("Follows the configuration until you change it here. A change here applies to this configuration only. Leave a port empty or enter 0 to turn it off; enter the configuration's own port to follow it again. Takes effect the next time the tunnel starts.")
         }
     }
 
@@ -807,7 +864,7 @@ struct ProxyShareView: View {
      
     private func listenSection(listener: ProfileListenerPorts?, sharing: Bool) -> some View {
         Section {
-            portField(.mixed, key: "mixed-port", text: $corePortText, hint: String(KernelLANShare.defaultPort),
+            portField(.mixed, key: "mixed-port", text: $corePortText, hint: unsetWords("mixed-port"),
                       identifier: "proxyShare.core.port")
             portField(.http, key: "port", text: $coreHTTPPortText, hint: unsetWords("port"),
                       identifier: "proxyShare.core.httpPort")
@@ -816,18 +873,23 @@ struct ProxyShareView: View {
             if let settingsRows {
                 settingsRows(["bind-address"])
             }
-            if sharing, let listener {
-                addressRows(listener)
-            }
+            reachRows(sharing: sharing)
         } header: {
             Text("Listener")
         } footer: {
-            if sharing, listener != nil, !reachableAddresses.isEmpty {
-                Text("Point the other device at one address above, over HTTP or SOCKS5.")
+            let reach = model.kernelShareReach(running: isRunningConfiguration)
+            if !reach.ports.isEmpty {
+                if reach.allowsLAN, !reachableAddresses.isEmpty {
+                    Text("Point the other device at one address above, over HTTP or SOCKS5.")
+                } else {
+                    Text("Apps on this device use the address above, over HTTP or SOCKS5.")
+                }
             }
         }
     }
 
+     
+     
      
      
      
@@ -840,6 +902,7 @@ struct ProxyShareView: View {
             monospaced: true,
             compactValue: true,
             identifier: identifier,
+            subtitle: portStatus(port, key: key, typed: text.wrappedValue),
             onEditingEnded: {
                 let typed = text.wrappedValue
                 Task {
@@ -858,13 +921,26 @@ struct ProxyShareView: View {
 
      
      
+    private func portStatus(_ port: KernelLANSharePort, key: String, typed: String) -> ClashDisplayText? {
+        switch model.kernelSharePortStatus(port, typed: typed, running: isRunningConfiguration) {
+        case .closed?: .verbatim(unsetWords(key))
+        case .notListening?: .copy("Not listening")
+        case .numberTakenByAnother?: .copy("Not listening: another port has this number")
+        case nil: nil
+        }
+    }
+
+     
+     
      
      
     @ViewBuilder
     private func accessSection(listener: ProfileListenerPorts?, sharing: Bool) -> some View {
         if let settingsRows {
             Section {
-                settingsRows(Array(ConfigurationSectionKeys.lanShareAccessKeys.dropFirst()))
+                 
+                 
+                settingsRows(Array(ConfigurationSectionKeys.lanShareAccessKeys.dropFirst()), saysScope: true)
             } header: {
                 Text("Access Control")
             } footer: {
@@ -877,25 +953,29 @@ struct ProxyShareView: View {
 
      
      
+     
+     
     @ViewBuilder
-    private func addressRows(_ listener: ProfileListenerPorts) -> some View {
-        let ports = listener.mixedPort.map { [$0] } ?? [listener.httpPort, listener.socksPort].compactMap { $0 }
-        if reachableAddresses.isEmpty {
+    private func reachRows(sharing: Bool) -> some View {
+        let reach = model.kernelShareReach(running: isRunningConfiguration)
+        let rows = reach.ports.isEmpty ? [] : ProxyShareAddressList.reach(
+            lanRows: ProxyShareAddressList.everyRow(hosts: reachableAddresses, interfaces: model.localInterfaces),
+            allowsLAN: reach.allowsLAN, bindAddress: kernelShare.listener?.bindAddress)
+        ForEach(rows) { row in
+            OverviewValueRow(
+                title: Self.title(of: row.network),
+                value: .verbatim(reach.ports.map { ProxyShareEndpointFormatter.format(address: row.address, port: $0) }
+                    .joined(separator: " · ")))
+                .textSelection(.enabled)
+                 
+                .id("core:\(row.address)")
+                .accessibilityIdentifier("proxyShare.core.address")
+        }
+        if reach.allowsLAN, !reach.ports.isEmpty, reachableAddresses.isEmpty {
             ClashStatusMessage(
                 text: .copy("No usable Wi-Fi or Personal Hotspot address is available."),
                 kind: .information
             )
-        } else {
-            ForEach(reachableAddresses, id: \.self) { address in
-                ForEach(ports, id: \.self) { port in
-                    Text(ProxyShareEndpointFormatter.format(address: address, port: port))
-                        .font(ClashPlatformLayout.pageUsesSystemSettingsIdiom ? ClashMacSettingsType.mono : .subheadline.monospaced())
-                        .textSelection(.enabled)
-                         
-                         
-                        .id("core:\(address):\(port)")
-                }
-            }
         }
     }
 #endif
@@ -1135,7 +1215,7 @@ private struct ProxyShareConfigurationPage: View {
             guard let profiles, let profile = profiles.profiles.first(where: { $0.id == id }) else { return nil }
             return profiles.effectiveYAMLIfReady(for: profile)
         }, lanListenerPermitted: {
-            LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+            LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
         })
         model.bind(kernelShare: profiles.kernelLANShareBinding(for: id))
     }
@@ -1195,7 +1275,7 @@ private struct ProxyShareSettingRows: View {
              
             label
         } else {
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationValueView(session: session, path: [key])
                     .configurationPushedAlertHost(session)
             } label: { label }
@@ -1397,17 +1477,18 @@ extension EnvironmentValues {
 struct ProxyShareSettingsRows: Equatable {
     private let source: ObjectIdentifier
     private let profileID: String?
-    private let rows: ([String]) -> AnyView
+    private let rows: ([String], Bool) -> AnyView
 
      
      
-    init(from source: AnyObject, profileID: String? = nil, rows: @escaping ([String]) -> AnyView) {
+     
+    init(from source: AnyObject, profileID: String? = nil, rows: @escaping ([String], Bool) -> AnyView) {
         self.source = ObjectIdentifier(source)
         self.profileID = profileID
         self.rows = rows
     }
 
-    func callAsFunction(_ keys: [String]) -> AnyView { rows(keys) }
+    func callAsFunction(_ keys: [String], saysScope: Bool = false) -> AnyView { rows(keys, saysScope) }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.source == rhs.source && lhs.profileID == rhs.profileID
@@ -1467,7 +1548,7 @@ struct ProxyShareMacConfigurationPage: View {
             guard let profiles, let profile = profiles.profiles.first(where: { $0.id == id }) else { return nil }
             return profiles.effectiveYAMLIfReady(for: profile)
         }, lanListenerPermitted: {
-            LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+            LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
         })
         model.bind(kernelShare: profiles.kernelLANShareBinding(for: id))
     }

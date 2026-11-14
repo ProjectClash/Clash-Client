@@ -369,7 +369,8 @@ enum ModuleEngineAssembly {
             : ModuleRewriteProgram(published: inputs.modules, leavingOut: previous?.services.program.leftOutDuringRun ?? [],
                                     grownTooLarge: previous?.services.program.grewTooLargeDuringRun ?? [],
                                     scriptFile: { id, sha in locations.script(id, sha256: sha) },
-                                    moduleFile: { id, sha in locations.moduleFile(id, sha256: sha) })
+                                    moduleFile: { id, sha in locations.moduleFile(id, sha256: sha) },
+                                    room: inputs.room)
         let (leaves, fingerprint, problem) = certificate(engine, entry, previous: previous, locations: locations, storage: storage)
         settleCertificate(engine, reporter, decrypts: entry.assignment.decryptsTLS, fingerprint: fingerprint, problem: problem)
 
@@ -486,6 +487,20 @@ enum ModuleEngineAssembly {
             $0.rulesLeftOutTooLargeThisRun = handed?.leftOutTooLarge ?? 0
         }
         engine.log.say("rules ready: \(rewrites.rules) rewrites (\(rewrites.ungated) ungated, \(rewrites.gateLiterals) literals, \(rewrites.compileFailed) that do not compile, \(program.unsupported.count) not run), \(scriptsGate.rules) scripts, from \(inputs.modules.count) of \(entry.assignment.modules.count) modules")
+         
+         
+        let room = inputs.room.map { String(format: "%.2f MiB", Double($0) / 1_048_576) } ?? "no bound"
+        let taken = String(format: "%.2f MiB", Double(program.roomTaken) / 1_048_576)
+        let forMemoryReasons: Set<String> = [ModuleGatedMatcher.overBudgetReason, ModuleRewriteProgram.jqOverBudgetReason,
+                                             ModuleRewriteProgram.carriedForMemoryReason]
+        let forMemory = rewrites.overBudget + scriptsGate.overBudget > 0
+            ? program.leftOut.filter { forMemoryReasons.contains($0.reason) } : []
+        if forMemory.isEmpty {
+            engine.log.say("compiled as built: \(taken) of \(room)")
+        } else {
+            let byModule = Dictionary(grouping: forMemory, by: \.origin.moduleName).map { "\($0.key) \($0.value.count)" }.sorted()
+            engine.log.say("compiled as built: \(taken) of \(room); left out for memory: \(byModule.joined(separator: ", "))")
+        }
     }
 
      

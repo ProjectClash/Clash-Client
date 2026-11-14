@@ -29,7 +29,7 @@ This repository contains the Apple applications, their extensions, shared librar
 
 ## Versions and dependencies
 
-Client source is currently published by commit, without a separate release tag. App Store versions are managed separately for each platform; the kernel's `1.19.33` is not the Client app version. Pin a Client revision to reproduce a build, and keep its dependency lock unchanged.
+Client source is currently published by commit, without a separate release tag. App Store versions are managed separately for each platform; the kernel's `1.19.34` is not the Client app version. Pin a Client revision to reproduce a build, and keep its dependency lock unchanged.
 
 The latest accepted product builds corresponding to this source are:
 
@@ -43,8 +43,8 @@ These identify the product builds; availability on the App Store and TestFlight 
 
 | Dependency | Pinned source or tool version |
 | --- | --- |
-| [Clash Kernel](https://github.com/ProjectClash/Clash) | [`4b7d5f53c`](https://github.com/ProjectClash/Clash/commit/4b7d5f53cff448f01cd5012b5e3f7eddc7d43e33), built from source |
-| [Clash Adapter](https://github.com/ProjectClash/Clash-Adapter) | [`09fbc0d7e`](https://github.com/ProjectClash/Clash-Adapter/commit/09fbc0d7ec3a563758384fddef9c7cce94822b21) |
+| [Clash Kernel](https://github.com/ProjectClash/Clash) | [`c8f2fc1d5`](https://github.com/ProjectClash/Clash/commit/c8f2fc1d58bf9ac856a0bf161bc9489591821f45), built from source |
+| [Clash Adapter](https://github.com/ProjectClash/Clash-Adapter) | [`9ba5c2724`](https://github.com/ProjectClash/Clash-Adapter/commit/9ba5c2724b68c753d57496c1036f4dfb1587e482) |
 | Swift Certificates / Crypto / ASN.1 | **1.9.0 / 3.15.1 / 1.7.3**, pinned in the XcodeGen project |
 | gomobile / gobind | `github.com/sagernet/gomobile` **v0.1.13** |
 
@@ -58,7 +58,7 @@ The iOS and macOS projects wrap the static Core in a shared framework, with the 
 
 - macOS with Xcode 27.0 or later and the iOS, macOS and tvOS SDKs.
 - XcodeGen and Git available on your command path.
-- Go with automatic toolchain selection enabled, or the Go 1.26.10 toolchain selected by the pinned kernel's binding module.
+- Go with automatic toolchain selection enabled, or the Go 1.26.11 toolchain selected by the pinned kernel's binding module.
 - Python 3 with PyYAML.
 - Deployment targets: iOS/iPadOS 15+, macOS 13+ and tvOS 17+, as declared in [`project.yml`](apple/ClashClient/project.yml).
 

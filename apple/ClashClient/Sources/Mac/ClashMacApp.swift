@@ -31,11 +31,19 @@ private final class ClashMacApplicationDelegate: NSObject, NSApplicationDelegate
          
          
          
+        let atLogin = ClashMacLoginItem.launchedAsLoginItem(NSAppleEventManager.shared().currentAppleEvent)
+        if atLogin {
+            ClashMacSceneModel.current?.comeUpQuietlyAtLogin()
+        }
+         
+         
+         
         DispatchQueue.main.async {
+            guard !atLogin else { return }
             guard NSApplication.shared.windows.allSatisfy({
                 $0.level != .normal || !$0.canBecomeKey
             }) else { return }
-            ClashMacSceneModel.current?.openMainWindow()
+            ClashMacSceneModel.current?.openMainWindow(from: "launch")
         }
 
 
@@ -103,7 +111,7 @@ private final class ClashMacApplicationDelegate: NSObject, NSApplicationDelegate
         hasVisibleWindows: Bool
     ) -> Bool {
         guard !hasVisibleWindows else { return true }
-        ClashMacSceneModel.current?.openMainWindow()
+        ClashMacSceneModel.current?.openMainWindow(from: "dock-reopen")
         return true
     }
 
@@ -179,6 +187,11 @@ struct ClashMacApp: App {
     init() {
          
          
+         
+         
+        ClashMacExceptionRecorder.install()
+         
+         
         ClashPerfBootstrap.install()
 
 
@@ -240,6 +253,15 @@ struct ClashMacApp: App {
          
          
          
+         
+         
+         
+         
+         
+         
+         
+         
+        let _: Void = model.rememberWindowOpener(openWindow)
         Window("Clash", id: "main") {
             ClashMacRootView(
                 snapshot: model.snapshot,
@@ -271,6 +293,11 @@ struct ClashMacApp: App {
                     model.performLegacySettingsAttention(actionID: actionID)
                 }
             )
+             
+             
+             
+             
+            .modifier(ClashMacCentreWindowSheets(model: model))
             .environment(\.clashShellLayout, .regularSidebar)
             .environment(\.clashThroughputUnit, throughputUnit)
             .environment(\.clashFeedback, model.feedback)
@@ -303,13 +330,7 @@ struct ClashMacApp: App {
             .environment(\.clashTrafficFeed, model.trafficFeed)
             .modifier(ClashMacUIReviewEnvironment())
             .clashMacWindowChrome()
-             
-             
-             
-             
-             
             .onAppear {
-                model.rememberWindowOpener(openWindow)
                 model.mainWindowContentDidAppear()
             }
             .task {
@@ -395,11 +416,17 @@ struct ClashMacApp: App {
                 }
             } message: {
                 if let pending = model.profileImports.pendingConfirmation {
-                    let prompt = ClashMacInstallLinkPrompt(pending: pending)
+                    let prompt = ClashMacInstallLinkPrompt(pending: pending, rules: model.profileImports.pendingRules)
                      
                      
                      
-                    Text(clash: .copy(prompt.lead)) + Text(clash: .verbatim(prompt.link))
+                     
+                    if let line = prompt.ruleLine {
+                        Text(clash: .copy(prompt.lead)) + Text(clash: line) + Text(verbatim: "\n\n")
+                            + Text(clash: .verbatim(prompt.link))
+                    } else {
+                        Text(clash: .copy(prompt.lead)) + Text(clash: .verbatim(prompt.link))
+                    }
                 }
             }
              
@@ -1013,6 +1040,63 @@ private struct ClashMacCentreAddButton: View {
     }
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@MainActor
+private struct ClashMacCentreUpdateAllButton: View {
+    @ObservedObject var library: ClashMacConfigurationLibraryModel
+    let profiles: ProfilesViewModel
+     
+    @State private var linkedProfiles: Set<String>
+
+    init(library: ClashMacConfigurationLibraryModel, profiles: ProfilesViewModel) {
+        self.library = library
+        self.profiles = profiles
+        _linkedProfiles = State(initialValue: Self.linked(profiles.profiles))
+    }
+
+     
+     
+     
+    private var hasLegacyProfiles: Bool {
+        !linkedProfiles.subtracting(library.snapshot.recipes.map(\.id)).isEmpty
+    }
+
+    var body: some View {
+        Group {
+            if library.hasLinkedContent(legacyProfiles: hasLegacyProfiles) {
+                Button {
+                    Task { await library.updateEverything() }
+                } label: {
+                    Label {
+                        Text(clash: .copy("Update All"))
+                    } icon: {
+                        Image(systemName: ClashSymbol.arrowTriangle2Circlepath.name)
+                    }
+                }
+                .disabled(library.isUpdatingAll || library.isBusy)
+                .help(Text(clash: .copy("Update All")))
+                .accessibilityIdentifier("profile-center.sync-all")
+            }
+        }
+        .onReceive(profiles.$profiles.map(Self.linked).removeDuplicates()) { linkedProfiles = $0 }
+    }
+
+    nonisolated private static func linked(_ profiles: [Profile]) -> Set<String> {
+        Set(profiles.compactMap { profile in
+            if case .url = profile.source { return profile.id }
+            return nil
+        })
+    }
+}
+
 private struct ClashMacProxiesGhostChrome: View, Equatable {
     let model: ClashMacSceneModel
     @ObservedObject var channels: ClashRegularRootChannels
@@ -1153,6 +1237,164 @@ private struct ClashMacRulesEditButton: View {
     }
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashMacActivityLensHandoff {
+    static func binding(
+        _ lens: ClashActivityLens,
+        write: @escaping (ClashActivityLens) -> Void
+    ) -> Binding<ClashActivityLens> {
+        Binding(get: { lens }, set: write)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashMacMainWindowClock {
+    @MainActor
+    static func follow(
+        _ window: NSWindow,
+        isMain: @escaping (NSWindow) -> Bool,
+        isKey: @escaping (NSWindow) -> Bool = { $0.isKeyWindow },
+        pause: @escaping () -> Void,
+        resume: @escaping () -> Void
+    ) -> [AnyCancellable] {
+        DispatchQueue.main.async { [weak window] in
+            guard let window, isMain(window) else { return }
+            if isKey(window) { resume() } else { pause() }
+        }
+        return [
+            NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification, object: window)
+                .receive(on: DispatchQueue.main)
+                .sink { _ in resume() },
+            NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification, object: window)
+                .receive(on: DispatchQueue.main)
+                .sink { _ in pause() },
+        ]
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@MainActor
+final class ClashMacSceneRefresh {
+    private let refresh: (_ onlyIfChanged: Bool) -> Void
+    private var scheduled = false
+    private var mustPublish = false
+
+    init(refresh: @escaping (_ onlyIfChanged: Bool) -> Void) {
+        self.refresh = refresh
+    }
+
+    func ask(drawnOnlyThroughSnapshot: Bool = false) {
+        if !drawnOnlyThroughSnapshot { mustPublish = true }
+        guard !scheduled else { return }
+        scheduled = true
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            self.scheduled = false
+            let onlyIfChanged = !self.mustPublish
+            self.mustPublish = false
+            self.refresh(onlyIfChanged)
+        }
+    }
+}
+
+extension AppleClientSnapshot {
+     
+     
+     
+     
+     
+     
+    func drawsTheSame(as shown: AppleClientSnapshot) -> Bool {
+        guard home.traffic.coreStartedAtUnixSeconds == shown.home.traffic.coreStartedAtUnixSeconds
+        else { return false }
+        return AppleClientSnapshot(
+            revision: shown.revision,
+            selectedProfile: selectedProfile,
+            connection: connection,
+            home: home.carrying(traffic: shown.home.traffic),
+            profiles: profiles,
+            proxies: proxies,
+            activity: activity,
+            rules: rules,
+            dns: dns,
+            utilities: utilities,
+            more: more,
+            capabilities: capabilities,
+            activeOperations: activeOperations,
+            failure: failure
+        ) == shown
+    }
+}
+
+extension AppleClientHomeSnapshot {
+    func carrying(traffic: AppleClientTrafficSnapshot) -> AppleClientHomeSnapshot {
+        AppleClientHomeSnapshot(
+            routing: routing,
+            traffic: traffic,
+            proxyGroupCount: proxyGroupCount,
+            proxyCount: proxyCount,
+            ruleCount: ruleCount,
+            connection: connection,
+            initialSection: initialSection,
+            favoriteCards: favoriteCards,
+            trafficScope: trafficScope,
+            proxies: proxies,
+            rules: rules,
+            egress: egress,
+            lanAddress: lanAddress,
+            isProfileActionInFlight: isProfileActionInFlight,
+            selectedProfileIsSystemFallback: selectedProfileIsSystemFallback,
+            profilesLoaded: profilesLoaded,
+            profilesUnavailableReason: profilesUnavailableReason
+        )
+    }
+}
+
+ 
+enum ClashMacChooseNodePage {
+     
+     
+    static func switchedAway(to root: ClashRootDestination?, pending: ClashMacSecondaryDestination?) -> Bool {
+        guard let root, root != .proxies else { return false }
+        if case .proxies? = pending { return false }
+        return true
+    }
+}
+
 @MainActor
 private final class ClashMacSceneModel: ObservableObject {
      
@@ -1234,17 +1476,11 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
      
-    private var refreshScheduled = false
-
-    private func scheduleRefresh() {
-        guard !refreshScheduled else { return }
-        refreshScheduled = true
-        Task { @MainActor [weak self] in
-            await Task.yield()
-            guard let self else { return }
-            self.refreshScheduled = false
-            self.refreshSnapshot()
-        }
+     
+     
+     
+    private lazy var sceneRefresh = ClashMacSceneRefresh { [weak self] onlyIfChanged in
+        self?.refreshSnapshot(onlyIfChanged: onlyIfChanged)
     }
 
     private func publish(_ value: AppleClientSnapshot) {
@@ -1441,14 +1677,16 @@ private final class ClashMacSceneModel: ObservableObject {
         default: break
         }
         let locale = preferences.language.locale
-        let isChain: Bool = {
-            guard case .source(let id) = item else { return false }
-            return configurationLibrary.snapshot.sources.first { $0.id == id }?.nodeChain != nil
+        let record: ConfigurationSourceRecord? = {
+            guard case .source(let id) = item else { return nil }
+            return configurationLibrary.snapshot.sources.first { $0.id == id }
         }()
+        let isChain = record?.nodeChain != nil
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = ClashMacDeleteCopy.title(item, isChain: isChain, locale: locale)
-        alert.informativeText = ClashMacDeleteCopy.message(item, isChain: isChain, locale: locale)
+        alert.informativeText = ClashMacDeleteCopy.message(item, isChain: isChain,
+                                                           suppliesNodes: record?.suppliesNodes == true, locale: locale)
         let delete = alert.addButton(withTitle: ClashCopy.string("Delete", locale: locale))
         delete.hasDestructiveAction = true
         delete.setAccessibilityIdentifier("configuration-center.delete.confirm")
@@ -1486,12 +1724,15 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
+         
+         
         let center = NotificationCenter.default
         configurationLibraryFollowsRuntime = Publishers.MergeMany(
             center.publisher(for: ProfileStore.didChangeNotification).map { _ in () }.eraseToAnyPublisher(),
             center.publisher(for: .clashActiveConfigurationRepublished).map { _ in () }.eraseToAnyPublisher(),
             center.publisher(for: ProviderFirstLoadRetry.didRefreshNotification).map { _ in () }.eraseToAnyPublisher(),
-            profiles.$activeProfileID.dropFirst().removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            profiles.$activeProfileID.dropFirst().removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ProviderRefreshStateWatcher.changes()
         )
         .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
         .sink { [weak model] in Task { @MainActor in model?.reloadCollections() } }
@@ -1506,6 +1747,10 @@ private final class ClashMacSceneModel: ObservableObject {
 
      
     @Published var showsConfigurationWizard = false
+     
+     
+     
+    @Published var configurationCenterWindowSheet: ClashMacCentreWindowSheet?
 
      
      
@@ -1678,6 +1923,16 @@ private final class ClashMacSceneModel: ObservableObject {
     var showsConfigurationWizardBinding: Binding<Bool> {
         Binding(get: { self.showsConfigurationWizard }, set: { self.showsConfigurationWizard = $0 })
     }
+    var configurationCenterWindowSheetBinding: Binding<ClashMacCentreWindowSheet?> {
+        Binding(get: { self.configurationCenterWindowSheet }, set: { self.configurationCenterWindowSheet = $0 })
+    }
+
+     
+     
+    func closeConfigurationImport() {
+        configurationCenterImport = nil
+        if case .importing = configurationCenterWindowSheet { configurationCenterWindowSheet = nil }
+    }
 
      
      
@@ -1724,7 +1979,7 @@ private final class ClashMacSceneModel: ObservableObject {
                 await self.configurationLibrary.reload()
                  
                  
-                self.configurationCenterImport = nil
+                self.closeConfigurationImport()
             },
              
              
@@ -1736,7 +1991,8 @@ private final class ClashMacSceneModel: ObservableObject {
                     let document = try JSONSerialization.data(withJSONObject: ["proxies": nodes])
                     let yaml = try ConfigTransforms.jsonToYAML(String(decoding: document, as: UTF8.self))
                     return try ConfigurationCenterSourceBridge.payload(
-                        label: nodes.count == 1 ? (nodes[0]["name"] as? String ?? "Custom Nodes") : "Custom Nodes",
+                        label: nodes.count == 1 ? (nodes[0]["name"] as? String ?? ConfigurationBuiltins.customNodesName)
+                            : ConfigurationBuiltins.customNodesName,
                         origin: .customNodes, original: Data(yaml.utf8), yaml: yaml
                     )
                 }.value
@@ -1852,6 +2108,15 @@ private final class ClashMacSceneModel: ObservableObject {
             )
             try await self.configurationLibrary.addSource(payload)
         }
+         
+         
+         
+         
+        actions.fetchRules = { url, label in try await profiles.fetchRuleLibrarySource(url: url, label: label) }
+        actions.ruleSetAtLink = { _, failure in
+            (failure as? ConfigurationLinkIsARuleSet).map { (found: $0.found, link: $0.link) }
+        }
+        actions.ruleSetIn = { data in await ConfigurationTowerRuleReader.ruleSet(in: data) }
          
          
          
@@ -2027,7 +2292,11 @@ private final class ClashMacSceneModel: ObservableObject {
         actions.runningCounts = { entries in
             let container = await MainActor.run { profiles.appGroupContainer }
             return await Task.detached {
-                ConfigurationCollectionContentBridge.withRunningCounts(entries, container: container)
+                 
+                 
+                let running = ConfigurationCollectionContentBridge.RunningProviders.load(container: container)
+                let counted = running.map { ConfigurationCollectionContentBridge.withRunningCounts(entries, catalog: $0.catalog) } ?? entries
+                return ConfigurationCollectionContentBridge.withRunningUsage(counted, running: running)
             }.value
         }
         actions.saveSourceSettings = { id, draft, generation in
@@ -2131,7 +2400,7 @@ private final class ClashMacSceneModel: ObservableObject {
             } catch {
                 return ClashMacBatchOutcome(failures: [ClashErrorCopy.message(error, locale: Locale.current)])
             }
-            let run = profiles.updateRuleCollections(entries, locale: Locale.current)
+            let run = profiles.updateRuleCollections(entries, scripts: .silent, locale: Locale.current)
             let runID = profiles.ruleCollectionUpdate?.id
             let result = ClashMacRunResult<ProfilesViewModel.CollectionUpdateRun>()
             let keep = profiles.$ruleCollectionUpdate.sink { if let run = $0, run.id == runID, run.finished { result.value = run } }
@@ -2155,6 +2424,7 @@ private final class ClashMacSceneModel: ObservableObject {
     private func sourcePage(_ source: ConfigurationSourceRecord, list: ClashProfilesListPresentation) -> some View {
         let sourceID = source.id
         let readers = configurationLibrary.configurations(usingSource: sourceID)
+        let locale = locale
         var page = ClashMacSourceContentPage(
             source: source,
             usedBy: list.profiles.filter { readers.contains($0.id.rawValue) },
@@ -2163,7 +2433,7 @@ private final class ClashMacSceneModel: ObservableObject {
             collectionPage: { [weak self] entry in
                 AnyView(
                     ClashMacCollectionPane(
-                        collection: entry.collection, sourceLabel: entry.source.label,
+                        collection: entry.collection, sourceLabel: entry.source.displayLabel(locale: locale),
                         actions: self?.collectionPageActions(entry) ?? .unavailable
                     )
                     .navigationTitle(Text(verbatim: entry.collection.name))
@@ -2254,7 +2524,7 @@ private final class ClashMacSceneModel: ObservableObject {
         guard !issues.isEmpty else { return nil }
         let names = issues.map { issue in
             library.recipes.first { $0.id == issue.itemID }?.label
-                ?? library.sources.first { $0.id == issue.itemID }?.label ?? issue.itemID
+                ?? library.sources.first { $0.id == issue.itemID }.map { $0.displayLabel(locale: locale) } ?? issue.itemID
         }
         return ClashCopy.string("Some references are unavailable. Previous versions were kept:", locale: locale) + " " + names.joined(separator: ", ")
     }
@@ -2326,9 +2596,11 @@ private final class ClashMacSceneModel: ObservableObject {
             }
             let take: ProfilesViewModel.CollectionTake
             switch (libraryFailure, refreshed) {
-            case (nil, .downloaded): take = await profiles.takeUpdatedCollections([entry], step: takeStep)
-            case (nil, .coreOwned): take = await profiles.takeUpdatedCollections([], coreOwned: [entry], step: takeStep)
-            default: take = await profiles.takeUpdatedCollections([], failed: [entry], step: takeStep)
+             
+             
+            case (nil, .downloaded): take = await profiles.takeUpdatedCollections([entry], scripts: .surfaced, step: takeStep)
+            case (nil, .coreOwned): take = await profiles.takeUpdatedCollections([], coreOwned: [entry], scripts: .surfaced, step: takeStep)
+            default: take = await profiles.takeUpdatedCollections([], failed: [entry], scripts: .surfaced, step: takeStep)
             }
             lines = (libraryFailure.map { [ClashErrorCopy.message($0, locale: Locale.current)] } ?? []) + take.failures
             libraryFailed = libraryFailure != nil
@@ -2478,6 +2750,7 @@ private final class ClashMacSceneModel: ObservableObject {
     private func chainSheetActions(existing: ConfigurationSourceRecord?) -> ClashMacChainSheetActions {
         let profiles = self.profiles
         let library = configurationLibrary
+        let locale = preferences.language.locale
         return ClashMacChainSheetActions(
             loadChoices: {
                 guard let store = profiles.configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
@@ -2492,7 +2765,8 @@ private final class ClashMacSceneModel: ObservableObject {
                              
                             if let dialer = node.topLevelValue("dialer-proxy")?.foundationValue as? String,
                                !dialer.isEmpty, dialer != "DIRECT" { continue }
-                            choices.append(.init(hop: .init(source: .init(record), nodeName: name), sourceLabel: record.label))
+                            choices.append(.init(hop: .init(source: .init(record), nodeName: name),
+                                                 sourceLabel: record.displayLabel(locale: locale)))
                         }
                     }
                     return choices
@@ -2600,77 +2874,18 @@ private final class ClashMacSceneModel: ObservableObject {
          
         .onAppear { [weak self] in self?.loadEditorSyntaxOnce() }
         .environment(\.clashMacEditorSyntax, editorSyntax)
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
         .modifier(ClashMacCentrePresentations(model: self, actions: actions))
-        .sheet(item: configurationCenterImportBinding) { [weak self] request in
-            ClashMacSourceImportSheet(
-                purpose: request.purpose,
-                actions: self?.configurationImportActionsValue ?? .unavailable,
-                initialTab: request.tab,
-                accept: { [weak self] payload in
-                    guard let self else { return }
-                     
-                    let existed = self.configurationLibrary.snapshot.sources.contains { $0.id == payload.record.id }
-                    if let target = request.mergeIntoSourceID,
-                       let source = self.configurationLibrary.snapshot.sources.first(where: { $0.id == target }) {
-                         
-                        guard case .array(let nodes) = try OrderedJSON.parse(payload.documentJSON).topLevelValue("proxies"), !nodes.isEmpty else {
-                            throw ConfigurationLibraryError.unreadable
-                        }
-                        var version = ConfigurationSourceVersion(source)
-                        for node in nodes {
-                            let next = try await self.profiles.saveConfigurationCustomNode(version, nodeJSON: node.serialized(), index: nil)
-                            self.configurationLibrary.apply(next)
-                            if let updated = next.sources.first(where: { $0.id == target }) { version = ConfigurationSourceVersion(updated) }
-                        }
-                    } else {
-                        switch request.purpose {
-                        case .rules:
-                             
-                             
-                             
-                            if payload.record.ruleCount > 0 {
-                                try await self.configurationLibrary.addRuleScheme(payload)
-                            } else {
-                                let collections = try ConfigurationCollection.read(
-                                    sourceID: payload.record.id, document: try OrderedJSON.parse(payload.documentJSON), kind: .rules
-                                )
-                                guard !collections.isEmpty else { throw ConfigurationLibraryError.missingRules }
-                                var source = payload
-                                source.record.suppliesNodes = false
-                                source.record.registersSuppliedRules = false
-                                try await self.configurationLibrary.addSource(source)
-                            }
-                        case .nodes:
-                             
-                             
-                            guard payload.record.suppliesNodes, payload.record.nodeCount > 0 || payload.record.providerCount > 0 else {
-                                throw ConfigurationLibraryError.missingNodes
-                            }
-                            var source = payload
-                            source.record.registersSuppliedRules = false
-                            try await self.configurationLibrary.addSource(source)
-                        }
-                    }
-                    self.configurationCenterImport = nil
-                     
-                     
-                    if let target = request.mergeIntoSourceID,
-                       let source = self.configurationLibrary.snapshot.sources.first(where: { $0.id == target }) {
-                        self.feedback.say(ClashMacFeedbackSentences.updated(source.label, id: "import"), operation: "import")
-                    } else if existed {
-                        self.feedback.say(ClashMacFeedbackSentences.updated(payload.record.label, id: "import"), operation: "import")
-                    } else {
-                        self.feedback.say(ClashMacFeedbackSentences.added(payload.record.label, id: "import"), operation: "import")
-                    }
-                },
-                close: { [weak self] in self?.configurationCenterImport = nil }
-            )
-            .clashModalPresentation(.fitted)
-             
-             
-             
-            .environment(\.clashPresentsPanelsAsNativeSheets, true)
-        }
          
          
          
@@ -2750,7 +2965,7 @@ private final class ClashMacSceneModel: ObservableObject {
                                     String(decoding: document, as: UTF8.self)
                                 )
                                 return try ConfigurationCenterSourceBridge.payload(
-                                    label: nodes.first?["name"] as? String ?? "Custom Nodes",
+                                    label: nodes.first?["name"] as? String ?? ConfigurationBuiltins.customNodesName,
                                     origin: .customNodes,
                                     original: Data(yaml.utf8),
                                     yaml: yaml
@@ -2771,23 +2986,96 @@ private final class ClashMacSceneModel: ObservableObject {
             }
             .clashPageSizedSheet()
         }
-        .sheet(isPresented: showsConfigurationWizardBinding) { [weak self] in
-            if let self {
-                ClashMacConfigurationWizardSheet(
-                    model: self.configurationLibrary,
-                    actions: self.configurationWizardActions,
-                    created: { [weak self] name in
-                        self?.feedback.say(ClashMacFeedbackSentences.added(name, id: "configuration.create"),
-                                            operation: "configuration.create")
+    }
+
+     
+     
+     
+     
+     
+    fileprivate func importSheet(_ request: ClashMacImportRequest) -> some View {
+        ClashMacSourceImportSheet(
+            purpose: request.purpose,
+            actions: configurationImportActionsValue,
+            initialTab: request.tab,
+            accept: { [weak self] payload in
+                guard let self else { return }
+                 
+                let existed = self.configurationLibrary.snapshot.sources.contains { $0.id == payload.record.id }
+                if let target = request.mergeIntoSourceID,
+                   let source = self.configurationLibrary.snapshot.sources.first(where: { $0.id == target }) {
+                     
+                    guard case .array(let nodes) = try OrderedJSON.parse(payload.documentJSON).topLevelValue("proxies"), !nodes.isEmpty else {
+                        throw ConfigurationLibraryError.unreadable
                     }
-                )
-                .clashModalPresentation(.fitted)
+                    var version = ConfigurationSourceVersion(source)
+                    for node in nodes {
+                        let next = try await self.profiles.saveConfigurationCustomNode(version, nodeJSON: node.serialized(), index: nil)
+                        self.configurationLibrary.apply(next)
+                        if let updated = next.sources.first(where: { $0.id == target }) { version = ConfigurationSourceVersion(updated) }
+                    }
+                } else {
+                    switch request.purpose {
+                    case .rules:
+                         
+                         
+                         
+                        if payload.record.ruleCount > 0 {
+                            try await self.configurationLibrary.addRuleScheme(payload)
+                        } else {
+                            let collections = try ConfigurationCollection.read(
+                                sourceID: payload.record.id, document: try OrderedJSON.parse(payload.documentJSON), kind: .rules
+                            )
+                            guard !collections.isEmpty else { throw ConfigurationLibraryError.missingRules }
+                            var source = payload
+                            source.record.suppliesNodes = false
+                            source.record.registersSuppliedRules = false
+                            try await self.configurationLibrary.addSource(source)
+                        }
+                    case .nodes:
+                         
+                         
+                        guard payload.record.suppliesNodes, payload.record.nodeCount > 0 || payload.record.providerCount > 0 else {
+                            throw ConfigurationLibraryError.missingNodes
+                        }
+                        var source = payload
+                        source.record.registersSuppliedRules = false
+                        try await self.configurationLibrary.addSource(source)
+                    }
+                }
+                self.closeConfigurationImport()
                  
                  
-                 
-                .environment(\.clashPresentsPanelsAsNativeSheets, true)
+                if let target = request.mergeIntoSourceID,
+                   let source = self.configurationLibrary.snapshot.sources.first(where: { $0.id == target }) {
+                    self.feedback.say(ClashMacFeedbackSentences.updated(source.displayLabel(locale: self.preferences.language.locale),
+                                                                        id: "import"), operation: "import")
+                } else if existed {
+                    self.feedback.say(ClashMacFeedbackSentences.updated(payload.record.displayLabel(locale: self.preferences.language.locale),
+                                                                        id: "import"), operation: "import")
+                } else {
+                    self.feedback.say(ClashMacFeedbackSentences.added(payload.record.displayLabel(locale: self.preferences.language.locale),
+                                                                      id: "import"), operation: "import")
+                }
+            },
+            close: { [weak self] in self?.closeConfigurationImport() }
+        )
+    }
+
+     
+     
+     
+     
+     
+    fileprivate func configurationWizardSheet() -> some View {
+        ClashMacConfigurationWizardSheet(
+            model: configurationLibrary,
+            actions: configurationWizardActions,
+            created: { [weak self] name in
+                self?.feedback.say(ClashMacFeedbackSentences.added(name, id: "configuration.create"),
+                                    operation: "configuration.create")
             }
-        }
+        )
     }
 
      
@@ -2938,6 +3226,8 @@ private final class ClashMacSceneModel: ObservableObject {
                      
                      
                      
+                     
+                     
                     .modifier(ClashMacCentrePresentations(model: self, actions: actions))
                 )
     }
@@ -2958,7 +3248,7 @@ private final class ClashMacSceneModel: ObservableObject {
     fileprivate func ruleEditorSheet(_ selection: ClashMacLibrarySelection) -> some View {
         loadEditorSyntaxOnce()
         return ClashMacRuleEditorSheet(
-            actions: ruleEditorActions(schemeID: selection.id, profileID: selection.profileID),
+            actions: ruleEditorActions(schemeID: selection.id),
             initialPane: selection.pane,
             saved: { [weak self] in Task { await self?.configurationLibrary.reload() } }
         )
@@ -2972,18 +3262,26 @@ private final class ClashMacSceneModel: ObservableObject {
     }
 
      
+     
+     
+     
+     
+     
+     
+     
     func requestNewConfiguration() {
         navigationRequest = .profiles
         configurationCenterSegment = .configurations
-        showsConfigurationWizard = true
+        configurationCenterWindowSheet = .wizard
     }
 
+     
      
      
     func requestAddSource(purpose: ClashMacSourceImportPurpose) {
         navigationRequest = .profiles
         configurationCenterSegment = purpose == .rules ? .rules : .nodes
-        configurationCenterImport = ClashMacImportRequest(purpose: purpose)
+        configurationCenterWindowSheet = .importing(ClashMacImportRequest(purpose: purpose))
     }
 
      
@@ -3040,7 +3338,7 @@ private final class ClashMacSceneModel: ObservableObject {
         switch item {
         case .source(let id):
             itemID = id
-            label = library.snapshot.sources.first { $0.id == id }?.label ?? id
+            label = library.snapshot.sources.first { $0.id == id }.map { $0.displayLabel(locale: preferences.language.locale) } ?? id
             segment = .nodes
             removal = library.deletesUndoably ? await library.deleteSourceRestorably(id) : nil
             if !library.deletesUndoably, await library.deleteSource(id) { return }
@@ -3192,7 +3490,10 @@ private final class ClashMacSceneModel: ObservableObject {
          
         actions.backupPage = { AnyView(BackupRestoreView().navigationTitle(Text(clash: .copy("Backup & Restore")))) }
          
-        actions.modulesPage = { AnyView(ModulePageHost(model: ModulePageModel.shared)) }
+         
+        actions.modulesPage = { [weak self] in
+            AnyView(ModulePageHost(model: ModulePageModel.shared, noticePlaces: self?.modulesNoticePlaces))
+        }
         actions.modulesValue = ModulePageModel.shared.entrySource.entry?.value ?? "Off"
         return actions
     }
@@ -3265,7 +3566,7 @@ private final class ClashMacSceneModel: ObservableObject {
                 let actions = configurationInspectorActions(list, profile: profile, id: id)
                 let outlineScheme = Self.outlineScheme(snapshot, profileID: id.rawValue)
                 let schemeUsage = Self.schemeUsage(snapshot)
-                let schemeChoices = Self.schemeChoices(snapshot, keeping: recipe?.ruleSchemeID)
+                let schemeChoices = Self.schemeChoices(snapshot, for: recipe)
                  
                  
                 let followedLinks = Self.followedLinks(snapshot, schemes: schemeChoices)
@@ -3319,7 +3620,7 @@ private final class ClashMacSceneModel: ObservableObject {
             if let source = snapshot.sources.first(where: { $0.id == sourceID }) {
                 sourcePage(source, list: list)
                     .id(sourceID)
-                    .navigationTitle(Text(verbatim: source.label))
+                    .navigationTitle(Text(clash: ClashConfigurationSourceCopy.name(source)))
                     .clashMacPopsWhenGone(!snapshot.sources.contains { $0.id == sourceID })
             }
         case .scheme(let schemeID):
@@ -3332,7 +3633,7 @@ private final class ClashMacSceneModel: ObservableObject {
         case .collection(let collectionID):
             if let entry = configurationLibrary.collections.first(where: { $0.id == collectionID }) {
                  
-                ClashMacCollectionPane(collection: entry.collection, sourceLabel: entry.source.label, actions: collectionPageActions(entry))
+                ClashMacCollectionPane(collection: entry.collection, sourceLabel: entry.source.displayLabel(locale: locale), actions: collectionPageActions(entry))
                     .navigationTitle(Text(verbatim: entry.collection.name))
                     .clashMacPopsWhenGone(!configurationLibrary.collections.contains { $0.id == collectionID })
             }
@@ -3403,15 +3704,7 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     static func outlineScheme(_ snapshot: ConfigurationLibrarySnapshot, profileID: String) -> ClashMacOutlineScheme? {
-        switch snapshot.schemePageOwnership(profileID: profileID) {
-        case .original:
-            return nil
-        case .own(let schemeID, let label, let configurations):
-            return ClashMacOutlineScheme(id: schemeID, label: label, kind: .own(configurations: configurations))
-        case .shared(let schemeID, let label):
-            return ClashMacOutlineScheme(id: schemeID, label: label,
-                                        kind: ConfigurationBuiltins.isNative(schemeID) ? .builtIn : .shared)
-        }
+        ClashMacOutlineScheme.of(snapshot, profileID: profileID)
     }
 
      
@@ -3523,8 +3816,7 @@ private final class ClashMacSceneModel: ObservableObject {
     }
 
     static func schemeUsage(_ snapshot: ConfigurationLibrarySnapshot) -> [String: Int] {
-        snapshot.recipes.filter { $0.preservesOriginal != true }
-            .reduce(into: [:]) { counts, recipe in counts[recipe.ruleSchemeID, default: 0] += 1 }
+        ClashMacOutlineScheme.usage(snapshot)
     }
 
      
@@ -3667,22 +3959,22 @@ private final class ClashMacSceneModel: ObservableObject {
                 self?.modulesListenerKeys = await profiles.publishedModules()?.listenerKeys ?? KernelLANShareOverride()
                 let catalog = try? await ProfilesViewModel.loadSyntaxCatalog()
                 var scheme: String?
-                var copies: (scheme: String, configuration: String)?
+                var scope: ClashDisplayText?
                 var original = false
                 switch page.form {
                 case .composed(let running, let ownership):
-                    if page.ownLayer == nil {
-                        scheme = running.id
-                        if case .shared(_, let label) = ownership { copies = (label, page.label) }
-                    }
+                    if page.ownLayer == nil { scheme = running.id }
+                    scope = ClashMacSettingsSectionDocument.scope(running: running, ownership: ownership, ownLayer: page.ownLayer != nil)
                 case .original:
                     original = true
+                    scope = ClashMacSettingsSectionDocument.scope(running: nil, ownership: .original, ownLayer: false)
                 }
                 var choices: [String: [String]] = [:]
                 if let modes = catalog?.dnsEnhancedModes { choices["dns.enhanced-mode"] = modes }
                 var document = ClashMacSettingsSectionDocument(
-                    page: page.document, ownLayer: page.ownLayer, scheme: scheme, copies: copies,
+                    page: page.document, ownLayer: page.ownLayer, scheme: scheme, scope: scope,
                     elsewhere: [],
+                     
                      
                      
                      
@@ -3737,6 +4029,52 @@ private final class ClashMacSceneModel: ObservableObject {
                                                 modules: published, held: held, scripted: built, locale: locale)
             }
         }
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        settings.generalOverrides = { [weak self] in
+            guard let self else { return nil }
+            let mode = profiles.outboundModeSetOnHome()
+            let level = profiles.logLevelForcedByLogSettings()
+            guard mode != nil || level != nil else { return nil }
+            return ClashMacGeneralOverrides(
+                outboundMode: mode.map { ClashGeneralOverrideNote.outboundModeSetOnHome(ConfigurationOutboundModeWords.title($0)) },
+                logLevel: level.map(ClashGeneralOverrideNote.logLevelForcedByLogSettings),
+                followConfiguration: mode == nil ? nil : { [weak self] in
+                    guard let self else { return }
+                    do { try profiles.followConfigurationOutboundMode() } catch {
+                        self.feedback.say(ClashFeedbackPresentation.error(
+                            title: .copy("The configuration's own mode did not come back."),
+                            message: ClashErrorCopy.text(error),
+                            accessibilityIdentifier: "feedback.general.follow-configuration.failure"
+                        ), operation: "general.follow-configuration")
+                    }
+                }
+            )
+        }
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        settings.generalOverridesChanged = Publishers.MergeMany(
+            NotificationCenter.default.publisher(for: ProfileStore.didChangeNotification).map { _ in () }.eraseToAnyPublisher(),
+            NotificationCenter.default.publisher(for: GlobalConfig.didChangeNotification).map { _ in () }.eraseToAnyPublisher(),
+            NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).map { _ in () }.eraseToAnyPublisher()
+        )
+        .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
+        .eraseToAnyPublisher()
          
          
         settings.geoValues = { resource in
@@ -3809,19 +4147,61 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     private var activeLANShareSettingsRows: ProxyShareSettingsRows? {
-        ProxyShareSettingsRows(from: self) { [weak self] keys in
+        ProxyShareSettingsRows(from: self) { [weak self] keys, saysScope in
             guard let self else { return AnyView(EmptyView()) }
             return AnyView(ClashMacActiveLANShareRows(profiles: self.profiles) { [weak self] id in
-                self?.lanShareSettingsRows(id: id)(keys) ?? AnyView(EmptyView())
+                self?.lanShareSettingsRows(id: id)(keys, saysScope) ?? AnyView(EmptyView())
             })
         }
     }
 
      
-    private func lanShareSettingsRows(id: ClashClientKit.Profile.ID) -> ([String]) -> AnyView {
-        { [weak self] keys in
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    fileprivate var modulesNoticePlaces: ClashModulesNoticePlaces {
+        ClashModulesNoticePlaces(
+            offers: { [weak self] place in self?.offersModulesNoticePlace(place) ?? false },
+            page: { [weak self] place in
+                 
+                 
+                 
+                 
+                guard let self, self.offersModulesNoticePlace(place) else { return AnyView(ClashOpeningCancelButton()) }
+                switch place {
+                case .snifferSettings(let raw):
+                    guard let id = ClashMacModulesNotice.profileID(raw, in: self.profiles.profiles) else {
+                        return AnyView(ClashOpeningCancelButton())
+                    }
+                    return AnyView(ClashMacModulesNoticePage(section: .sniffer) { [weak self] in
+                        self?.settingsSectionActions(id: id, list: nil)
+                    })
+                }
+            }
+        )
+    }
+
+     
+     
+     
+    private func offersModulesNoticePlace(_ place: ClashModulesSnapshot.NoticePlace) -> Bool {
+        let profiles = self.profiles
+        return ModulePageHost.offers(place, activeProfileID: profiles.activeProfileID,
+                                     exists: { ClashMacModulesNotice.profileID($0, in: profiles.profiles) != nil })
+    }
+
+     
+    private func lanShareSettingsRows(id: ClashClientKit.Profile.ID) -> ([String], Bool) -> AnyView {
+        { [weak self] keys, saysScope in
             guard let self else { return AnyView(EmptyView()) }
-            return AnyView(ClashMacSettingsKeyRows(keys: keys, actions: self.settingsSectionActions(id: id, list: nil)).id(id.rawValue))
+            return AnyView(ClashMacSettingsKeyRows(keys: keys, saysScope: saysScope,
+                                                   actions: self.settingsSectionActions(id: id, list: nil)).id(id.rawValue))
         }
     }
 
@@ -3883,23 +4263,28 @@ private final class ClashMacSceneModel: ObservableObject {
                 }
             }, failure: failed)
         }
-        func saveProfileURL(_ change: @escaping (inout ClashMacSubscriptionSettingsState) -> Void) {
-            guard let appProfile = profiles.profiles.first(where: { $0.id == id.rawValue }) else { return }
-            var state = Self.subscriptionState(appProfile)
-            change(&state)
-            let actions = subscriptionActions(profileID: id)
-            ClashMacDebugLog.note("profile-url \(id.rawValue): save autoUpdate \(state.autoUpdate) interval \(state.updateIntervalHours)")
-            Task { @MainActor in
-                do {
-                    let saved = try await actions.save(state)
+         
+         
+         
+         
+         
+        func saveProfileURL(_ change: @escaping (inout ClashMacSubscriptionSettingsState) -> Void) async throws {
+            do {
+                try await writes.run {
+                    guard let appProfile = profiles.profiles.first(where: { $0.id == id.rawValue }) else { return }
+                    var state = Self.subscriptionState(appProfile)
+                    change(&state)
+                    ClashMacDebugLog.note("profile-url \(id.rawValue): save autoUpdate \(state.autoUpdate) interval \(state.updateIntervalHours)")
+                    let saved = try await self.subscriptionActions(profileID: id).save(state)
                     ClashMacDebugLog.note("profile-url \(id.rawValue): saved autoUpdate \(saved.autoUpdate) interval \(saved.updateIntervalHours)")
-                } catch {
-                    ClashMacDebugLog.note("profile-url \(id.rawValue): save failed \(error.localizedDescription)")
-                     
-                     
-                    self.feedback.say(ClashMacFeedbackSentences.couldNotSave(reason: ClashErrorCopy.message(error, locale: Locale.current), id: "profile-url.save"),
-                                       operation: "profile-url.save")
                 }
+            } catch {
+                ClashMacDebugLog.note("profile-url \(id.rawValue): save failed \(error.localizedDescription)")
+                 
+                 
+                self.feedback.say(ClashMacFeedbackSentences.couldNotSave(reason: ClashErrorCopy.message(error, locale: Locale.current), id: "profile-url.save"),
+                                   operation: "profile-url.save")
+                throw ClashStoredWriteSaidElsewhere()
             }
         }
          
@@ -3991,19 +4376,26 @@ private final class ClashMacSceneModel: ObservableObject {
              
              
              
+             
+             
             setSourceUpdates: { on in
-                writes.enqueue({
-                    try await profiles.setConfigurationSourceUpdates(id.rawValue, enabled: on)
-                    await library.reload()
-                    ClashMacDebugLog.note("edit \(id.rawValue): followsUpdates \(on) written, generation \(library.snapshot.generation)")
-                }, failure: failed)
+                do {
+                    try await writes.run {
+                        try await profiles.setConfigurationSourceUpdates(id.rawValue, enabled: on)
+                        await library.reload()
+                        ClashMacDebugLog.note("edit \(id.rawValue): followsUpdates \(on) written, generation \(library.snapshot.generation)")
+                    }
+                } catch {
+                    failed(error)
+                    throw ClashStoredWriteSaidElsewhere()
+                }
             },
             openRuntimePreview: { [weak self] in
                 self?.openWindowAction?(id: "runtime-preview", value: ClashMacRuntimePreviewRequest(profileID: id.rawValue))
             },
             restoreLastKnownGood: { list.perform(.restoreLastKnownGood(id: id)) },
-            setAutoUpdate: { on in saveProfileURL { $0.autoUpdate = on } },
-            setInterval: { hours in saveProfileURL { $0.updateIntervalHours = hours } },
+            setAutoUpdate: { on in try await saveProfileURL { $0.autoUpdate = on } },
+            setInterval: { hours in Task { @MainActor in try? await saveProfileURL { $0.updateIntervalHours = hours } } },
              
              
              
@@ -4050,6 +4442,14 @@ private final class ClashMacSceneModel: ObservableObject {
             }, failure: failed)
         }
          
+        actions.leaveOriginal = { scheme in
+            writes.enqueue({
+                try await profiles.composingOffTheOriginal(id.rawValue, onto: scheme)
+                await library.reload()
+                ClashMacDebugLog.note("original-use \(id.rawValue): off onto \(scheme), generation \(library.snapshot.generation)")
+            }, failure: failed)
+        }
+         
          
         actions.followLink = { linkID in
             writes.enqueue({
@@ -4062,15 +4462,6 @@ private final class ClashMacSceneModel: ObservableObject {
          
         actions.loadOutline = { customRules in try await profiles.configurationOutline(id.rawValue, customRules: customRules) }
         actions.outlineDestination = { [weak self] section in self?.outlineDestination(section, profileID: id) }
-         
-         
-        actions.editSchemeSource = { [weak self] in
-            guard let self, let recipe = self.configurationLibrary.snapshot.recipes.first(where: { $0.id == id.rawValue }),
-                  recipe.preservesOriginal != true else { return }
-            self.configurationCenterEditingScheme = ClashMacLibrarySelection(
-                id: recipe.ruleSchemeID, pane: .source, profileID: id.rawValue
-            )
-        }
          
          
         if library.snapshot.recipes.contains(where: { $0.id == id.rawValue }) {
@@ -4324,7 +4715,7 @@ private final class ClashMacSceneModel: ObservableObject {
             profiles.updateRestagingIfActive(profileID: id, change)
             return state()
         }
-        return ClashMacCustomRulesActions(
+        var actions = ClashMacCustomRulesActions(
             load: { state() },
             save: { rules in
                 guard Set(rules.map(\.text)).count == rules.count else { throw ClashMacDuplicateCustomRule() }
@@ -4381,6 +4772,20 @@ private final class ClashMacSceneModel: ObservableObject {
                 recordUse: { targetSearch.recordUse($0) }
             )
         )
+         
+         
+         
+         
+         
+         
+         
+         
+        actions.ruleNames = {
+            guard let profile = profiles.profiles.first(where: { $0.id == id }),
+                  let declared = await profiles.publishedRuleSetsAndSubRules(for: profile) else { return nil }
+            return ClashRuleNames(policies: nil, ruleSets: declared.ruleSets, subRules: declared.subRules)
+        }
+        return actions
     }
 
      
@@ -4472,17 +4877,21 @@ private final class ClashMacSceneModel: ObservableObject {
                     draft: draft, label: name, generation: library.snapshot.generation
                 ))
             },
-            download: { input in try await ConfigurationTowerRuleReader.rules(input) }
+            download: { input in try await ConfigurationTowerRuleReader.ruleSet(input) }
         )
          
          
          
+        let locale = preferences.language.locale
         editor.candidates = {
             let store = try store()
             return try await Task.detached {
                  
                  
-                try ConfigurationRuleTargetCandidates.make(groups: [], snapshot: try store.snapshot(), providers: true, payload: store.payload)
+                 
+                let snapshot = try store.snapshot()
+                return try ConfigurationRuleTargetCandidates.make(groups: [], snapshot: snapshot, providers: true,
+                                                                  naming: { $0.displayLabel(locale: locale) }, payload: store.payload)
             }.value
         }
          
@@ -4601,7 +5010,7 @@ private final class ClashMacSceneModel: ObservableObject {
                  
                 let document = try await listed()
                 let added = ConfigurationLibraryPicks.addedNodeIDs(sources, in: document)
-                return sources.map { Self.librarySource($0, addedNodes: added, in: document) }
+                return sources.map { Self.librarySource($0, addedNodes: added, in: document, locale: locale) }
             },
             addFromLibrary: { picked in
                 let ids = Set(picked.map(\.id))
@@ -4722,7 +5131,7 @@ private final class ClashMacSceneModel: ObservableObject {
                  
                 let document = try await listed()
                 let added = ConfigurationLibraryPicks.addedNodeIDs(sources, in: document)
-                return sources.map { Self.librarySource($0, addedNodes: added, in: document) }
+                return sources.map { Self.librarySource($0, addedNodes: added, in: document, locale: locale) }
             },
             addFromLibrary: { picked in
                 guard let source = picks.sources.first(where: { $0.id == picked.id }) else { return nil }
@@ -4758,8 +5167,9 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
      
-    static func schemeChoices(_ snapshot: ConfigurationLibrarySnapshot, keeping current: String?) -> [ConfigurationRuleScheme] {
-        ProfilesViewModel.schemeChoices(snapshot, keeping: current)
+     
+    static func schemeChoices(_ snapshot: ConfigurationLibrarySnapshot, for recipe: ConfigurationRecipe?) -> [ConfigurationRuleScheme] {
+        ProfilesViewModel.schemeChoices(snapshot, for: recipe)
     }
 
      
@@ -4767,7 +5177,7 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     static func librarySource(_ source: ConfigurationLibraryPicks.Source, addedNodes: Set<String> = [],
-                              in document: OrderedJSON? = nil) -> ClashMacLibrarySource {
+                              in document: OrderedJSON? = nil, locale: Locale) -> ClashMacLibrarySource {
         let kind: ClashMacLibrarySource.SetKind?
         switch source.providerKind {
         case .link?: kind = .link
@@ -4776,7 +5186,9 @@ private final class ClashMacSceneModel: ObservableObject {
         }
          
          
-        return ClashMacLibrarySource(id: source.id, label: source.label,
+         
+         
+        return ClashMacLibrarySource(id: source.id, label: source.record.displayLabel(locale: locale),
                                     nodes: source.offered.map {
                                         ClashMacLibraryNode(id: $0.id, name: $0.name, type: source.record.nodeChain == nil ? $0.type : "",
                                                            isAdded: addedNodes.contains($0.id))
@@ -4840,7 +5252,7 @@ private final class ClashMacSceneModel: ObservableObject {
                 return try await load()
             },
             copy: { _, _ in throw ConfigurationLibraryError.unreadable },
-            download: { input in try await ConfigurationTowerRuleReader.rules(input) }
+            download: { input in try await ConfigurationTowerRuleReader.ruleSet(input) }
         )
         editor.rulesHaveSwitches = false
          
@@ -5085,6 +5497,12 @@ private final class ClashMacSceneModel: ObservableObject {
      
     @Published var activityLens: ClashActivityLens = .connections
     @Published private var stagedProxyGroup: String?
+     
+     
+     
+    @Published private var stagedProxyOpening: ProxyBrowsingVisibility.Opening = .browsing
+     
+    private var proxiesPageChoosesInGlobal = false
     @Published private var profileRefreshToken = 0
      
      
@@ -5141,6 +5559,9 @@ private final class ClashMacSceneModel: ObservableObject {
     let command: ClashCommandClient
     let stats: StatsModel
     let nodes: NodesModel
+     
+     
+    private let nodeListRereads = NodeListRereads()
      
      
     var proxiesHasExpandedGroupsNow: Bool { proxiesHasExpandedGroups }
@@ -5234,6 +5655,8 @@ private final class ClashMacSceneModel: ObservableObject {
         self.reviewContainer = reviewContainer
 
 
+
+
          
          
          
@@ -5258,7 +5681,11 @@ private final class ClashMacSceneModel: ObservableObject {
         command = ClashCommandClient()
         stats = StatsModel()
 
-            nodes = NodesModel()
+             
+             
+            nodes = NodesModel(
+                automaticPinsDefaults: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
+            )
 
         networkQuality = NetworkQualityModel()
         stun = STUNTestModel()
@@ -5314,8 +5741,12 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     func focusMainWindow(_ openWindow: OpenWindowAction) {
+        quietLaunch.cancel()
         if raiseExistingMainWindow() { return }
         openWindow(id: "main")
+         
+         
+        noteWindowOpen(from: "main-menu", path: "opener")
     }
 
      
@@ -5344,15 +5775,76 @@ private final class ClashMacSceneModel: ObservableObject {
      
     func openProxiesGroup(_ group: String) {
         stagedProxyGroup = group
+        stagedProxyOpening = .browsing
+        proxiesPageChoosesInGlobal = false
         proxiesChannels.requestOpenGroup(group)
         navigationRequest = .proxies
-        openMainWindow()
+        openMainWindow(from: "menu.group")
     }
 
-    func openMainWindow() {
-        if raiseExistingMainWindow() { return }
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        openWindowAction?(id: "main")
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func endChoosingInGLOBALIfSwitchedAway(to root: ClashRootDestination?) {
+        shownRoot = root
+        guard proxiesPageChoosesInGlobal, ClashMacChooseNodePage.switchedAway(to: root, pending: navigationRequest) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, proxiesPageChoosesInGlobal,
+                  ClashMacChooseNodePage.switchedAway(to: shownRoot, pending: navigationRequest) else { return }
+            proxiesPageChoosesInGlobal = false
+            stagedProxyOpening = .browsing
+            proxiesChannels.requestBrowsing()
+        }
+    }
+    private var shownRoot: ClashRootDestination?
+
+     
+     
+     
+     
+    func openGLOBALToChooseANode() {
+         
+         
+         
+        stagedProxyGroup = GlobalProxySelectionPolicy.groupName
+        stagedProxyOpening = .choosingInGlobal
+        proxiesPageChoosesInGlobal = true
+        proxiesChannels.requestOpenGroup(GlobalProxySelectionPolicy.groupName, opening: .choosingInGlobal)
+        navigationRequest = .proxies
+        openMainWindow(from: "mode.choose-node")
+    }
+
+    func openMainWindow(from entry: String) {
+         
+        quietLaunch.cancel()
+        let raised = raiseExistingMainWindow()
+        if !raised {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            openWindowAction?(id: "main")
+        }
+        noteWindowOpen(from: entry, path: raised ? "raised" : (openWindowAction == nil ? "no-opener" : "opener"))
+    }
+
+     
+     
+     
+     
+     
+     
+    private func noteWindowOpen(from entry: String, path: String) {
+        Self.traceWindow(#"window.open from=\#(entry) path=\#(path) \#(ClashMacWindowFacts.line(mainWindow))"#)
+        guard path != "raised" else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            Self.traceWindow(#"window.open from=\#(entry) after=0.6s \#(ClashMacWindowFacts.line(self.mainWindow))"#)
+        }
     }
 
      
@@ -5361,8 +5853,34 @@ private final class ClashMacSceneModel: ObservableObject {
      
     private weak var mainWindow: NSWindow?
     private var mainWindowClose: AnyCancellable?
+     
+    private var quietLaunch = ClashMacQuietLaunch()
+
+     
+     
+     
+     
+     
+    func comeUpQuietlyAtLogin() {
+        if let window = mainWindow {
+            Self.putAway(window)
+        } else {
+            quietLaunch.arm(at: Date())
+        }
+    }
+
+     
+     
+    private static func putAway(_ window: NSWindow) {
+        window.orderOut(nil)
+        DispatchQueue.main.async { window.close() }
+    }
 
     func mainWindowDidAttach(_ window: NSWindow) {
+        if quietLaunch.putsAway(at: Date()) {
+            Self.putAway(window)
+            return
+        }
         guard window !== mainWindow else { return }
         mainWindow = window
         mainWindowClose = NotificationCenter.default
@@ -5372,13 +5890,12 @@ private final class ClashMacSceneModel: ObservableObject {
                 self?.mainWindowClose = nil
             }
          
-        if !window.isKeyWindow { feedback.pause("window") }
-        mainWindowKey = [
-            NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification, object: window)
-                .sink { [weak self] _ in self?.feedback.resume("window") },
-            NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification, object: window)
-                .sink { [weak self] _ in self?.feedback.pause("window") },
-        ]
+        mainWindowKey = ClashMacMainWindowClock.follow(
+            window,
+            isMain: { [weak self] in $0 === self?.mainWindow },
+            pause: { [weak self] in self?.feedback.pause("window") },
+            resume: { [weak self] in self?.feedback.resume("window") }
+        )
     }
 
     @discardableResult
@@ -5591,6 +6108,11 @@ private final class ClashMacSceneModel: ObservableObject {
          
         ICloudAutoBackup.shared.start()
         refreshSnapshot()
+         
+         
+         
+         
+        ClashMacScriptNotificationPresenter.shared.appIsPrepared()
     }
 
 
@@ -5675,6 +6197,7 @@ private final class ClashMacSceneModel: ObservableObject {
               let mode = AppleClientOutboundMode(rawValue: raw) else { return }
         let refusalBefore = modeRefusalMessage
         await setOutboundMode(mode)
+        globalQuestion = nil
         if modeRefusalMessage != refusalBefore {
             ClashLogStore.shared.append(
                 "widget mode \(raw) not applied  \(modeRefusalMessage)",
@@ -5800,12 +6323,43 @@ private final class ClashMacSceneModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink(receiveCompletion: { [weak self] _ in self?.menuStartFailure = nil }) { [weak self] sentence in
                 guard let self, let sentence else { return }
-                let result = ClashFeedbackPresentation.error(title: .copy("Connection failed"), message: .copy(sentence),
+                 
+                let message = tunnel.text(of: sentence)
+                let result = ClashFeedbackPresentation.error(title: .copy("Connection failed"), message: message,
                                                              accessibilityIdentifier: "feedback.menu.start.failed")
                 ClashMacMenuBarFeedback.fail(result, on: self.mainWindow, locale: self.preferences.language.locale)
             }
     }
     private var menuStartFailure: AnyCancellable?
+
+     
+     
+     
+     
+    private func pickFromMenu(group: String, member: String) {
+        nodes.picks.pick(group, member, repick: .skipped) { [weak self] group, member in
+            await self?.performMenuPick(group: group, member: member)
+        }
+    }
+
+     
+     
+     
+    private func performMenuPick(group: String, member: String) async {
+         
+         
+        let tried = !nodes.isSwitchingProxy && command.isConnected
+        await nodes.select(group: group, name: member)
+        guard tried else { return }
+         
+         
+         
+        guard ClashSystemVPNPolicy.isActive(vpn.status),
+              nodes.groups.first(where: { $0.name == group })?.holdsSelection(member) == false else { return }
+        ClashMacMenuBarFeedback.fail(
+            .error(title: ClashFeedbackCopy.couldNotSwitch(to: member), accessibilityIdentifier: "feedback.menu.select.failed"),
+            on: mainWindow, locale: preferences.language.locale)
+    }
 
     func selectProfile(_ id: ClashClientKit.Profile.ID) async {
         guard let profile = profiles.profiles.first(
@@ -5851,7 +6405,9 @@ private final class ClashMacSceneModel: ObservableObject {
     }
 
      
-    enum ModeChangeOrigin { case window, menu }
+     
+     
+    enum ModeChangeOrigin { case window, menu, unattended }
 
      
      
@@ -5861,8 +6417,32 @@ private final class ClashMacSceneModel: ObservableObject {
     func changeOutboundMode(_ mode: AppleClientOutboundMode, from origin: ModeChangeOrigin) async {
         dismissModeRefusalMessage()
         await setOutboundMode(mode)
-        guard !modeRefusalMessage.isEmpty else { return }
         let locale = preferences.language.locale
+        if let question = globalQuestion, origin != .unattended, !asksAboutGlobal {
+             
+             
+             
+            globalQuestion = nil
+            dismissModeRefusalMessage()
+            asksAboutGlobal = true
+            let answer = await ClashMacGlobalModeQuestion.ask(question.exit, on: mainWindow, locale: locale)
+            asksAboutGlobal = false
+            switch answer {
+            case .chooseNode:
+                openGLOBALToChooseANode()
+                return
+            case .cancel:
+                return
+            case .switchAnyway:
+                 
+                 
+                 
+                guard currentProfile?.id == question.profileID else { return }
+                await setOutboundMode(.global, overNoProxy: true)
+            }
+        }
+        globalQuestion = nil
+        guard !modeRefusalMessage.isEmpty else { return }
         let result = ClashMacFeedbackSentences.modeNotChanged(
             reason: ClashCopy.string(modeRefusalMessage, locale: locale), id: "mode")
         dismissModeRefusalMessage()
@@ -5870,12 +6450,51 @@ private final class ClashMacSceneModel: ObservableObject {
          
         let windowShown = mainWindow?.isVisible == true
         switch origin {
-        case .window where windowShown: feedback.say(result, operation: "mode")
-        case .window, .menu: ClashMacMenuBarFeedback.fail(result, on: mainWindow, locale: locale)
+        case .window where windowShown, .unattended where windowShown: feedback.say(result, operation: "mode")
+        case .window, .menu, .unattended: ClashMacMenuBarFeedback.fail(result, on: mainWindow, locale: locale)
         }
     }
 
-    func setOutboundMode(_ mode: AppleClientOutboundMode) async {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func openGLOBALOnTheLivingProxiesPage() {
+        guard let global = HomeProxiesEntryPolicy.globalToOpen(
+            mode: .global,
+            liveCatalog: command.isConnected && nodes.isRuntimeAvailable,
+            candidates: HomeProxiesEntryPolicy.candidates(
+                nodes.groups, mode: .global, name: \.name, isHidden: \.hidden
+            ),
+            readerFoldedAll: nodes.readerFoldedAllGroups
+        ) else { return }
+        proxiesChannels.requestOpenGroup(global)
+    }
+
+     
+    struct GlobalQuestion: Equatable {
+        let profileID: String
+        let exit: ClashTunnelOutboundMode.GlobalExit
+    }
+    private(set) var globalQuestion: GlobalQuestion?
+    private var asksAboutGlobal = false
+
+     
+     
+    func setOutboundMode(_ mode: AppleClientOutboundMode, overNoProxy: Bool = false) async {
+        globalQuestion = nil
         guard let profile = currentProfile,
               let storedMode = Profile.OutboundMode(
                   rawValue: mode.rawValue
@@ -5923,69 +6542,49 @@ private final class ClashMacSceneModel: ObservableObject {
              
              
              
-            var verdict = GlobalModeConfirmation.verdict(
-                groupCount: nodes.groups.count,
-                selectionConfirmed: await nodes.ensureGlobalProxySelection()
-            )
-            if verdict == .notYetKnown {
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                try? await Task.sleep(nanoseconds: 400_000_000)
-                verdict = GlobalModeConfirmation.verdict(
-                    groupCount: nodes.groups.count,
-                    selectionConfirmed: await nodes.ensureGlobalProxySelection()
-                )
-            }
-            switch verdict {
-            case .confirmed:
-                break
-            case .notYetKnown:
-                 
-                 
-                 
-                 
-                modeRefusalMessage = """
-                    The core has not reported its proxy groups yet, so \
-                    Global mode was not applied. Try again in a moment.
-                    """
-                return
-            case .refused:
-                 
-                 
-                 
-                 
-                modeRefusalMessage =
-                    GlobalProxySelectionPolicy.refusal(groups: nodes.groups)
-                    ?? """
-                        The GLOBAL group resolves to a direct connection, not \
-                        a proxy. Global mode sends every flow through GLOBAL, \
-                        so select a proxy in that group first.
+             
+             
+             
+            if !overNoProxy {
+                var check = await nodes.checkGlobalMode()
+                if check == .notYetKnown {
+                     
+                     
+                     
+                     
+                     
+                     
+                     
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    check = await nodes.checkGlobalMode()
+                }
+                switch GlobalModeConfirmation.switchStep(check: check, groups: nodes.groups) {
+                case .switchNow:
+                    break
+                case .ask(let exit):
+                     
+                     
+                    globalQuestion = GlobalQuestion(profileID: profile.id, exit: exit)
+                    modeRefusalMessage = ClashTunnelOutboundMode.notTurnedOnKey(exit)
+                    return
+                case .refuse(let sentence):
+                    modeRefusalMessage = sentence
+                    return
+                case .notKnown:
+                     
+                    modeRefusalMessage = nodes.groups.isEmpty
+                        ? """
+                        The core has not reported its proxy groups yet, so \
+                        Global mode was not applied. Try again in a moment.
                         """
-                return
+                        : GlobalModeConfirmation.switchNotConfirmed
+                    return
+                }
             }
         }
 
+         
+        var opensGLOBAL = false
         do {
              
              
@@ -6021,6 +6620,8 @@ private final class ClashMacSceneModel: ObservableObject {
                         The profile was saved; the mode applies on the next \
                         connect.
                         """
+                } else if command.isConnected, storedMode == .global {
+                    opensGLOBAL = true
                 }
             }
         } catch {
@@ -6033,6 +6634,12 @@ private final class ClashMacSceneModel: ObservableObject {
             return
         }
         refreshSnapshot()
+         
+         
+         
+        if opensGLOBAL {
+            DispatchQueue.main.async { [weak self] in self?.openGLOBALOnTheLivingProxiesPage() }
+        }
     }
 
      
@@ -6248,7 +6855,7 @@ private final class ClashMacSceneModel: ObservableObject {
                 self.navigationRequest = destination
             }
             if let mode = plan.mode {
-                await self.changeOutboundMode(mode, from: .window)
+                await self.changeOutboundMode(mode, from: .unattended)
             }
             switch plan.command {
             case .start?:
@@ -6312,24 +6919,7 @@ private final class ClashMacSceneModel: ObservableObject {
                          
                          
                         ClashMacCentreAddButton(model: self)
-                        if self.profiles.hasSubscriptionProfile {
-                             
-                             
-                             
-                             
-                            Button {
-                                Task { await self.configurationLibrary.updateEverything() }
-                            } label: {
-                                Label {
-                                    Text(clash: .copy("Update All"))
-                                } icon: {
-                                    Image(systemName: ClashSymbol.arrowTriangle2Circlepath.name)
-                                }
-                            }
-                            .disabled(self.configurationLibrary.isUpdatingAll || self.configurationLibrary.isBusy)
-                            .help(Text(clash: .copy("Update All")))
-                            .accessibilityIdentifier("profile-center.sync-all")
-                        }
+                        ClashMacCentreUpdateAllButton(library: self.configurationLibrary, profiles: self.profiles)
                     }
                 }
             )
@@ -6380,10 +6970,13 @@ private final class ClashMacSceneModel: ObservableObject {
                     stun: stun,
                     proxyShare: proxyShare,
                     destination: destination,
-                    activityLens: Binding(
-                        get: { self.activityLens },
-                        set: { self.activityLens = $0 }
-                    ),
+                     
+                     
+                     
+                    activityLens: ClashMacActivityLensHandoff.binding(activityLens) { [weak self] lens in
+                        guard let self, self.activityLens != lens else { return }
+                        self.activityLens = lens
+                    },
                     usesRegularDetailLayout: true,
                     loadsPersistedLogs:
                         !false
@@ -6558,8 +7151,16 @@ private final class ClashMacSceneModel: ObservableObject {
             delays: nodes.delays,
             testing: nodes.testingNames,
             isConnected: command.isConnected,
-            configuredSelections: menuBarConfiguredSelections
+            configuredSelections: menuBarConfiguredSelections,
+            sort: menuBarSort
         )
+    }
+
+     
+     
+     
+    private var menuBarSort: ClashProxiesDisplayPreferences.Sort {
+        (ClashProxiesDisplayPreferences.uiTestOverride() ?? ClashProxiesDisplayPreferences.load()).sort
     }
 
      
@@ -6615,34 +7216,29 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
-         
-         
-         
-        guard outboundMode == .global,
-              let group = nodes.groups.first(
-                  where: { $0.name == "GLOBAL" }
-              )
-        else { return (nil, nil) }
-        let route =
-            group.resolvedNow.isEmpty ? group.now : group.resolvedNow
-        guard !route.isEmpty else { return (nil, nil) }
-         
-         
-         
-         
-        return (route, nodes.routeDelay(from: group.name))
+        guard outboundMode == .global else { return (nil, nil) }
+        let route = HomeNamedRoute.route(mode: .global, groups: nodes.groups, delays: nodes.delays)
+        return (route.node, route.delay)
     }
 
      
      
      
+    private func finalRuleRoute(mode: Profile.OutboundMode) -> ClashHomeFinalRuleRoute? {
+        guard mode == .rule else { return nil }
+        let route = HomeNamedRoute.route(
+            mode: mode, groups: nodes.groups, delays: nodes.delays,
+            terminals: nodes.resolvedNowByGroup, groupsAreTheCores: nodes.groupsAreTheCores,
+            finalRuleTarget: homeFinalRuleTarget)
+        return route.node.map { ClashHomeFinalRuleRoute(group: route.group, node: $0, delayMilliseconds: route.delay) }
+    }
+
+     
+     
      
     private var homeVPNStatus: String {
-        let status = vpn.status
-        guard vpn.isPreparingStart,
-              !["connected", "connecting", "reasserting", "disconnecting"].contains(status.lowercased())
-        else { return status }
-        return "connecting"
+        ClashHomeConnectionPresenter.homeStatus(status: vpn.status, isPreparingStart: vpn.isPreparingStart,
+                                                systemHasNotAnswered: vpn.startAwaitingSystem)
     }
 
     private var connectionPhase: AppleClientConnectionPhase {
@@ -6671,13 +7267,15 @@ private final class ClashMacSceneModel: ObservableObject {
             coreStartedAtUnixSeconds: {
 
 
-                return command.runtimeDiagnostics?.startTimeUnix ?? 0
+                return HomeConnectionClock.startedAtUnixSeconds(
+                    coreReported: command.runtimeDiagnostics?.startTimeUnix,
+                    connectedSince: vpn.connectedSince)
             }()
         )
     }
 
-    private func refreshSnapshot() {
-        revision &+= 1
+    private func refreshSnapshot(onlyIfChanged: Bool = false) {
+        let revision = self.revision &+ 1
         let profile = currentProfile
         let selected = profile.flatMap { stored in
             try? ClashClientKit.Profile.ID(stored.id)
@@ -6691,7 +7289,7 @@ private final class ClashMacSceneModel: ObservableObject {
         let route = selectedRoute
         let info = AppBuildInfo.current()
 
-        publish(AppleClientSnapshot(
+        let value = AppleClientSnapshot(
             revision: revision,
             selectedProfile: selected,
             connection: AppleClientConnectionSnapshot(
@@ -6729,6 +7327,8 @@ private final class ClashMacSceneModel: ObservableObject {
                             vpnAuthorization: vpn.systemVPNAuthorization,
                             errorIsConfigurationNotFound:
                                 vpn.lastErrorOffersVPNProfileReset,
+                             
+                            errorSubject: vpn.startRefusedByCore?.words,
                             allowsSystemVPNProfileReset:
                                 vpn.systemVPNProfileResetAvailable,
                             isSwitchingProxy:
@@ -6738,7 +7338,13 @@ private final class ClashMacSceneModel: ObservableObject {
                             selectedProxyDelayMilliseconds:
                                 route.delay,
                             runningPreviousRevision: runsPreviousRevision,
-                            runningPreviousProfileName: runningPreviousProfileName
+                            runningPreviousProfileName: runningPreviousProfileName,
+                             
+                             
+                            globalExitWithoutProxy: command.isConnected ? ClashHomeGlobalExit(nodes.globalExit) : nil,
+                             
+                             
+                            finalRuleRoute: finalRuleRoute(mode: mode)
                         )
                     ),
                 favoriteCards: HomeFavoriteCardPreferences().load(),
@@ -6883,7 +7489,13 @@ private final class ClashMacSceneModel: ObservableObject {
                         ? .unavailable(.requiresProfile)
                         : .available,
             ])
-        ))
+        )
+        if onlyIfChanged, let shown = snapshotGate.latest, value.drawsTheSame(as: shown) {
+            ClashPerf.count("scene.snapshot.unchanged")
+            return
+        }
+        self.revision = revision
+        publish(value)
     }
 
      
@@ -7044,7 +7656,12 @@ private final class ClashMacSceneModel: ObservableObject {
              
             break
         case .openProxies:
-            navigationRequest = .proxies
+             
+            if self.command.isConnected, currentOutboundMode == .global, ClashHomeGlobalExit(nodes.globalExit) != nil {
+                openGLOBALToChooseANode()
+            } else {
+                navigationRequest = .proxies
+            }
         case .openRules:
             navigationRequest = .rules
         case .openRuntimeConfiguration:
@@ -7083,6 +7700,12 @@ private final class ClashMacSceneModel: ObservableObject {
         case .refreshLANIP:
             lanAddress = LANAddressInventory.current().first
         case .showConnectionIssue:
+             
+             
+             
+            break
+        case .openOnDemand:
+             
              
              
              
@@ -7135,7 +7758,7 @@ private final class ClashMacSceneModel: ObservableObject {
         proxyShare.bind(command: command)
          
          
-        LocalNetworkPermission.clearPublicationMirror(in: UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+        LocalNetworkPermission.clearPublicationMirror(in: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
          
          
          
@@ -7145,7 +7768,7 @@ private final class ClashMacSceneModel: ObservableObject {
             else { return nil }
             return self.profiles.effectiveYAMLIfReady(for: active)
         }, lanListenerPermitted: {
-            LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+            LocalNetworkPermission.isPermitted(UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
         })
          
          
@@ -7158,7 +7781,8 @@ private final class ClashMacSceneModel: ObservableObject {
     func pooledDetailOverlay(
         for root: ClashRootDestination?
     ) -> AnyView {
-        AnyView(
+        endChoosingInGLOBALIfSwitchedAway(to: root)
+        return AnyView(
             ZStack {
                 ClashMacPooledRootSlot(
                     destination: .proxies,
@@ -7202,6 +7826,14 @@ private final class ClashMacSceneModel: ObservableObject {
                                         },
                                         set: { [weak self] in
                                             self?.stagedProxyGroup = $0
+                                        }
+                                    ),
+                                    stagedOpening: Binding(
+                                        get: { [weak self] in
+                                            self?.stagedProxyOpening ?? .browsing
+                                        },
+                                        set: { [weak self] in
+                                            self?.stagedProxyOpening = $0
                                         }
                                     )
                                 )
@@ -7318,9 +7950,9 @@ private final class ClashMacSceneModel: ObservableObject {
          
         proxiesChannels.contentGeneration &+= 1
         nodes.noteRouteChanged()
-        Task {
-            await nodes.refresh()
-        }
+         
+         
+        nodeListRereads.ask { [nodes] in await nodes.refresh() }
         editorPrewarm.request { [weak self] in
             self?.prewarmEditorPreparations()
         }
@@ -7343,6 +7975,17 @@ private final class ClashMacSceneModel: ObservableObject {
      
     private var homeConfigTally: ProfileConfigTally?
     private var homeRuleTargets: [String] = []
+     
+     
+    private var homeFinalRuleTarget: String?
+     
+     
+     
+     
+     
+     
+    private var homeTallyGeneration: UInt64 = 0
+    private var homeTallyLanded: UInt64 = 0
 
      
      
@@ -7383,6 +8026,9 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     private func recomputeHomeRuleTally(summaryNodes: Int?) {
+         
+        homeTallyGeneration &+= 1
+        let generation = homeTallyGeneration
         let profile = currentProfile
          
         let runningNodes = command.isConnected ? summaryNodes : nil
@@ -7417,11 +8063,12 @@ private final class ClashMacSceneModel: ObservableObject {
                     ModuleRouteHiding.nodeCount(runningNodes, of: publication)
                 }.value
             }
-            self.countHomeRules(projected, libraryNodes: libraryNodes, publication: publication)
+            self.countHomeRules(projected, libraryNodes: libraryNodes, publication: publication, generation: generation)
         }
     }
 
-    private func countHomeRules(_ projected: String?, libraryNodes: Int?, publication: ActiveConfigurationPointer?) {
+    private func countHomeRules(_ projected: String?, libraryNodes: Int?, publication: ActiveConfigurationPointer?,
+                                generation: UInt64) {
         let store = profiles.resourceStoreForHomeTally
          
          
@@ -7437,10 +8084,17 @@ private final class ClashMacSceneModel: ObservableObject {
             let tally = ClashMacHomeTally.make(projected: projected, libraryNodes: libraryNodes, publication: publication)
             let overview = RulesOverviewModel.make(sourceYAML: projected)
             let targets = ClashMacHomeTally.ruleTargets(of: overview)
+            let finalRuleTarget = HomeNamedRoute.finalRuleTarget(of: overview)
             await MainActor.run {
-                guard let self else { return }
+                 
+                 
+                 
+                 
+                guard let self, generation > self.homeTallyLanded else { return }
+                self.homeTallyLanded = generation
                 self.homeConfigTally = tally
                 self.homeRuleTargets = targets
+                self.homeFinalRuleTarget = finalRuleTarget
                 self.notDownloadedProxyProviders = notDownloaded
                 self.refreshSnapshot()
             }
@@ -7455,11 +8109,22 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
+         
+        nodes.objectWillChange.sink { [weak self] _ in
+            self?.sceneRefresh.ask(drawnOnlyThroughSnapshot: true)
+        }
+        .store(in: &cancellables)
+         
+         
+         
+         
+         
+         
+         
         for publisher in [
             startupOutcome.objectWillChange,
             vpn.objectWillChange,
             profiles.objectWillChange,
-            nodes.objectWillChange,
             connections.objectWillChange,
             networkQuality.objectWillChange,
             stun.objectWillChange,
@@ -7480,7 +8145,7 @@ private final class ClashMacSceneModel: ObservableObject {
             profileImports.objectWillChange,
         ] {
             publisher.sink { [weak self] _ in
-                self?.scheduleRefresh()
+                self?.sceneRefresh.ask()
             }
             .store(in: &cancellables)
         }
@@ -7517,6 +8182,20 @@ private final class ClashMacSceneModel: ObservableObject {
             .sink { [weak self] nodes in self?.recomputeHomeRuleTally(summaryNodes: nodes) }
             .store(in: &cancellables)
 
+         
+         
+         
+         
+        command.$runtimeDiagnostics
+            .map(ClashCommandClient.coreSession(of:))
+            .removeDuplicates()
+            .compactMap { $0 }
+            .sink { [weak self] _ in
+                guard let nodes = self?.nodes else { return }
+                Task { await nodes.restoreAutomaticPins() }
+            }
+            .store(in: &cancellables)
+
         for publisher in [
             command.$isConnected.map { _ in () }.eraseToAnyPublisher(),
             command.$mode.map { _ in () }.eraseToAnyPublisher(),
@@ -7532,12 +8211,13 @@ private final class ClashMacSceneModel: ObservableObject {
             command.$memoryActionMessage.map { _ in () }.eraseToAnyPublisher(),
              
              
-            command.$logs.map(\.count).removeDuplicates()
-                .throttle(for: .seconds(1), scheduler: DispatchQueue.main, latest: true)
-                .map { _ in () }.eraseToAnyPublisher(),
+             
+             
+             
+            command.logCountPublisher.map { _ in () }.eraseToAnyPublisher(),
         ] {
             publisher.sink { [weak self] in
-                self?.scheduleRefresh()
+                self?.sceneRefresh.ask()
             }
             .store(in: &cancellables)
         }
@@ -7562,6 +8242,10 @@ private final class ClashMacSceneModel: ObservableObject {
                 guard let self else { return }
                 ClashActivityIOSAdapter.tunnelIsUp = ["connected", "reasserting", "connecting"]
                     .contains(status.lowercased())
+                 
+                 
+                 
+                stats.tunnelStatusChanged(status)
                 command.sync(vpnStatus: status)
                  
                  
@@ -7627,6 +8311,21 @@ private final class ClashMacSceneModel: ObservableObject {
                 guard let self else { return }
                  
                 Task { @MainActor in self.syncConnections(commandConnected: self.command.isConnected) }
+            }
+            .store(in: &cancellables)
+
+         
+         
+         
+         
+         
+        NotificationCenter.default.publisher(for: .clashProviderContentChanged)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let self,
+                      PublishedRuntimeHandover.readsNodesAgain(after: note, isConnected: command.isConnected)
+                else { return }
+                nodeListRereads.ask { [nodes] in await nodes.refresh() }
             }
             .store(in: &cancellables)
 
@@ -8403,24 +9102,14 @@ extension ClashMacSceneModel {
         actions.setOutboundMode = { [weak self] mode in
             Task { await self?.changeOutboundMode(mode, from: .menu) }
         }
+         
+         
         actions.select = { [weak self] group, member in
-            Task { @MainActor in
-                guard let self else { return }
-                 
-                 
-                 
-                let tried = !self.nodes.isSwitchingProxy && self.command.isConnected
-                await self.nodes.select(group: group, name: member)
-                guard tried else { return }
-                 
-                 
-                 
-                guard ClashSystemVPNPolicy.isActive(self.vpn.status),
-                      self.nodes.groups.first(where: { $0.name == group })?.holdsSelection(member) == false else { return }
-                ClashMacMenuBarFeedback.fail(
-                    .error(title: ClashFeedbackCopy.couldNotSwitch(to: member), accessibilityIdentifier: "feedback.menu.select.failed"),
-                    on: self.mainWindow, locale: self.preferences.language.locale)
-            }
+            self?.pickFromMenu(group: group, member: member)
+        }
+        actions.currentMember = { [weak self] name in
+            guard let self, self.command.isConnected else { return nil }
+            return self.nodes.groups.first(where: { $0.name == name })?.now
         }
          
         actions.testGroup = { [weak self] name in
@@ -8440,10 +9129,10 @@ extension ClashMacSceneModel {
         }
          
         actions.openSettings = { [weak self] in
-            self?.openMainWindow()
+            self?.openMainWindow(from: "menu.settings")
             self?.navigationRequest = .more(.root)
         }
-        actions.openApp = { [weak self] in self?.openMainWindow() }
+        actions.openApp = { [weak self] in self?.openMainWindow(from: "menu.open") }
         actions.openGroup = { [weak self] group in self?.openProxiesGroup(group) }
         actions.quitLeavingTunnel = {
             ClashMacQuit.nextTermination = .readerQuitLeavingTunnelRunning
@@ -8711,11 +9400,6 @@ struct ClashMacScriptEditorRequest: Hashable, Codable {
  
  
  
- 
- 
- 
- 
- 
 private struct ClashMacConfigurationPageKey: Equatable {
     let profile: ClashProfileSnapshot
     let sources: [ConfigurationSourceRecord]
@@ -8750,12 +9434,44 @@ private struct ClashMacUpdateFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 private struct ClashMacCentrePresentations: ViewModifier {
     @ObservedObject var model: ClashMacSceneModel
     let actions: ClashMacConfigurationCenterListActions
 
     func body(content: Content) -> some View {
         content
+            .sheet(item: model.configurationCenterImportBinding) { request in
+                model.importSheet(request)
+                    .clashModalPresentation(.fitted)
+                    .environment(\.clashPresentsPanelsAsNativeSheets, true)
+            }
+            .sheet(isPresented: model.showsConfigurationWizardBinding) {
+                model.configurationWizardSheet()
+                    .clashModalPresentation(.fitted)
+                    .environment(\.clashPresentsPanelsAsNativeSheets, true)
+            }
             .sheet(item: model.configurationCenterEditingSchemeBinding) { selection in
                 model.ruleEditorSheet(selection)
                     .clashModalPresentation(.fitted)
@@ -8769,7 +9485,74 @@ private struct ClashMacCentrePresentations: ViewModifier {
     }
 }
 
+ 
+ 
+enum ClashMacCentreWindowSheet: Identifiable {
+    case importing(ClashMacImportRequest)
+    case wizard
+
+    var id: String {
+        switch self {
+        case .importing(let request): "import-" + request.id
+        case .wizard: "wizard"
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+private struct ClashMacCentreWindowSheets: ViewModifier {
+    @ObservedObject var model: ClashMacSceneModel
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(item: model.configurationCenterWindowSheetBinding) { sheet in
+                Group {
+                    switch sheet {
+                    case .importing(let request): model.importSheet(request)
+                    case .wizard: model.configurationWizardSheet()
+                    }
+                }
+                .clashModalPresentation(.fitted)
+                .environment(\.clashPresentsPanelsAsNativeSheets, true)
+            }
+    }
+}
+
 extension ProfilesViewModel {
+     
+     
+     
+     
+     
+     
+    func composingOffTheOriginal(_ id: String, onto scheme: String) async throws {
+        try await setUsesOriginalConfiguration(id, enabled: false)
+        guard let library = configurationLibraryStore else { return }
+        let now = try await Task.detached(priority: .userInitiated) { try library.snapshot() }.value
+        guard now.recipes.first(where: { $0.id == id })?.ruleSchemeID != scheme else { return }
+        try await switchConfigurationScheme(id, to: scheme)
+    }
+
      
      
      
@@ -9083,3 +9866,66 @@ enum ClashMacHomeTally {
     nonisolated(unsafe) private static var counted: (stamp: String, nodes: Int)?
 }
 
+@MainActor
+enum ClashMacWindowFacts {
+     
+     
+    static func line(_ window: NSWindow?, application: NSApplication = .shared) -> String {
+         
+         
+         
+         
+        let shown = application.windows.filter { $0.isVisible && $0.level == .normal && $0.canBecomeKey }.count
+        var facts = #"policy=\#(application.activationPolicy().rawValue) active=\#(application.isActive)"#
+            + #" hidden=\#(application.isHidden) shownWindows=\#(shown)"#
+        guard let window else { return facts + #" main=none"# }
+        let frame = window.frame
+        let screen = window.screen.map { #"\#($0.localizedName) \#(NSStringFromRect($0.frame))"# } ?? #"none"#
+        let onAnyScreen = NSScreen.screens.contains { $0.frame.intersects(frame) }
+        facts += #" main=\#(NSStringFromRect(frame)) visible=\#(window.isVisible) key=\#(window.isKeyWindow)"#
+            + #" mini=\#(window.isMiniaturized) onActiveSpace=\#(window.isOnActiveSpace)"#
+            + #" occluded=\#(!window.occlusionState.contains(.visible)) screen=\#(screen) onAnyScreen=\#(onAnyScreen)"#
+        return facts
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashMacModulesNotice {
+    static func profileID(_ raw: String, in profiles: [Profile]) -> ClashClientKit.Profile.ID? {
+        guard let id = try? ClashClientKit.Profile.ID(raw), profiles.contains(where: { $0.id == id.rawValue }) else { return nil }
+        return id
+    }
+}
+
+ 
+ 
+ 
+ 
+private struct ClashMacModulesNoticePage: View {
+    private final class Made: ObservableObject {
+        let actions: ClashMacSettingsSectionActions?
+        init(_ actions: ClashMacSettingsSectionActions?) { self.actions = actions }
+    }
+
+    let section: ConfigurationOutlineSection
+    @StateObject private var made: Made
+
+    init(section: ConfigurationOutlineSection, make: @escaping @MainActor () -> ClashMacSettingsSectionActions?) {
+        self.section = section
+        _made = StateObject(wrappedValue: Made(make()))
+    }
+
+    var body: some View {
+        if let actions = made.actions {
+            ClashMacSettingsChapterPage(section: section, actions: actions)
+        } else {
+            ClashOpeningCancelButton()
+        }
+    }
+}

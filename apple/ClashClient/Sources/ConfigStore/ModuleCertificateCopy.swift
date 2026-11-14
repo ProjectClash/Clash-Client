@@ -15,8 +15,11 @@ extension ModuleCertificateError {
         switch self {
          
          
+         
+         
+         
         case .invalidHostname(let host):
-            return .app("%@ isn't affected by modules.", arguments: [host])
+            return .app("A certificate can't be made for %@, so modules don't reach it.", arguments: [host])
         case .encryptionFailed, .pkcs12ImportFailed, .noIdentity, .keyRejected, .keychain:
             return .app("The certificate wasn't created; try again.")
         }

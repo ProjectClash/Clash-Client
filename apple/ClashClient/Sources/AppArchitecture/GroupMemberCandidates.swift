@@ -66,7 +66,7 @@ enum GroupMemberCandidates {
             try? ProfileRuntimeConfigBuilder.buildProduction(
                 raw: yaml,
                 profile: asSaved,
-                applyProxyChain: false
+                applyProxyChain: false, scripts: .silent
             )
         }
          

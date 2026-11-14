@@ -1,5 +1,7 @@
 import Foundation
 import ClashClientKit
+import ClashClientUI
+import SwiftUI
 
  
  
@@ -54,7 +56,61 @@ public final class ClashMacSerialWrites {
     }
 
      
+     
+     
+     
+    public func run(_ work: @escaping @MainActor () async throws -> Void) async throws {
+        try await withCheckedThrowingContinuation { (written: CheckedContinuation<Void, Error>) in
+            enqueue({
+                try await work()
+                written.resume()
+            }, failure: { written.resume(throwing: $0) })
+        }
+    }
+
+     
     public func drain() async {
         await last?.value
+    }
+}
+
+ 
+ 
+ 
+ 
+@MainActor
+final class ClashMacPageWrites<Key: Hashable> {
+    let turns = ClashWriteTurns()
+    let switches: ClashStoredSwitch<Key>
+
+    init() {
+        switches = ClashStoredSwitch(turns: turns)
+    }
+}
+
+ 
+ 
+struct ClashMacStoredRefusal: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+ 
+ 
+struct ClashMacStoredWriting<Key: Hashable>: View {
+    private let switches: ClashStoredSwitch<Key>
+    @ObservedObject private var cell: ClashStoredSwitch<Key>.Cell
+    private let key: Key
+
+    init(_ switches: ClashStoredSwitch<Key>, key: Key) {
+        self.switches = switches
+        cell = switches.cell(key)
+        self.key = key
+    }
+
+    var body: some View {
+        if switches.isWriting(key) {
+            ProgressView().controlSize(.small)
+        }
     }
 }

@@ -46,7 +46,7 @@ public final class ClashMacSourceViewerModel: ObservableObject {
 
     public var lineCount: Int { index?.lineCount ?? 0 }
      
-    public var longestLineBytes: Int { index?.longestLineBytes ?? 0 }
+    public var widestLineColumns: Int { index?.widestLineColumns ?? 0 }
     public var sections: [ConfigurationSourceSection] { index?.sections ?? [] }
 
     private let url: URL
@@ -195,16 +195,24 @@ public final class ClashMacSourceViewerModel: ObservableObject {
 
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 struct ClashMacSourceViewerTable: NSViewRepresentable {
     @ObservedObject var model: ClashMacSourceViewerModel
     @Environment(\.locale) private var locale
 
-    static let numberColumn = NSUserInterfaceItemIdentifier("number")
     static let textColumn = NSUserInterfaceItemIdentifier("text")
 
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> ClashMacSourceLinesContainer {
         let table = ClashMacSourceLinesTable()
         table.headerView = nil
         table.style = .plain
@@ -214,9 +222,6 @@ struct ClashMacSourceViewerTable: NSViewRepresentable {
         table.allowsMultipleSelection = true
         table.columnAutoresizingStyle = .noColumnAutoresizing
         table.backgroundColor = .textBackgroundColor
-        let number = NSTableColumn(identifier: Self.numberColumn)
-        number.width = 56
-        table.addTableColumn(number)
         let text = NSTableColumn(identifier: Self.textColumn)
         text.width = 1_200
         table.addTableColumn(text)
@@ -234,15 +239,21 @@ struct ClashMacSourceViewerTable: NSViewRepresentable {
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
+        scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
+        let numbers = ClashMacSourceLineNumbers(table: table, scrollView: scroll)
+        scroll.verticalRulerView = numbers
+        scroll.hasVerticalRuler = true
+        scroll.rulersVisible = true
         context.coordinator.table = table
-        return scroll
+        context.coordinator.numbers = numbers
+        context.coordinator.observeScrolling(of: scroll)
+        return ClashMacSourceLinesContainer(scroll: scroll, table: table)
     }
 
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    func updateNSView(_ container: ClashMacSourceLinesContainer, context: Context) {
         context.coordinator.model = model
         context.coordinator.apply()
     }
@@ -258,6 +269,7 @@ struct ClashMacSourceViewerTable: NSViewRepresentable {
 
         var model: ClashMacSourceViewerModel
         weak var table: NSTableView?
+        weak var numbers: ClashMacSourceLineNumbers?
         private var shownLines = -1
         private var shownMatches = 0
         private var shownCurrent: Int?
@@ -268,23 +280,38 @@ struct ClashMacSourceViewerTable: NSViewRepresentable {
         }
 
          
+        func observeScrolling(of scroll: NSScrollView) {
+            scroll.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(rowsMoved(_:)),
+                                                   name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        }
+
+        @objc private func rowsMoved(_ notification: Notification) {
+            numbers?.needsDisplay = true
+        }
+
+         
+         
+         
+        static func contentWidth(columns: Int) -> CGFloat {
+            CGFloat(columns) * advance + textInset
+        }
+
+         
          
         func apply() {
             guard let table else { return }
             if shownLines != model.lineCount {
                 shownLines = model.lineCount
-                let digits = String(max(model.lineCount, 1)).count
-                table.tableColumns.first?.width = CGFloat(digits) * Self.advance + 20
-                 
-                 
-                 
-                table.tableColumns.last?.width = min(max(CGFloat(model.longestLineBytes) * Self.advance + 24, 600), 40_000)
+                numbers?.lineCount = model.lineCount
+                (table as? ClashMacSourceLinesTable)?.contentWidth = Self.contentWidth(columns: model.widestLineColumns)
+                table.enclosingScrollView?.superview?.needsLayout = true
                 table.reloadData()
             } else if shownMatches != model.matches.count || shownCurrent != model.current {
                 let visible = table.rows(in: table.visibleRect)
                 if visible.length > 0 {
                     table.reloadData(forRowIndexes: IndexSet(integersIn: visible.location..<NSMaxRange(visible)),
-                                     columnIndexes: IndexSet(integer: 1))
+                                     columnIndexes: IndexSet(integer: 0))
                 }
             }
             shownMatches = model.matches.count
@@ -305,29 +332,32 @@ struct ClashMacSourceViewerTable: NSViewRepresentable {
             }
             let rect = table.rect(ofRow: reveal.line)
             let top = max(rect.minY - clip.bounds.height / 3, 0)
-            var x = clip.bounds.minX
-            if let match = reveal.match, let span = span(of: match, in: table) {
-                if span.lowerBound < clip.bounds.minX || span.upperBound > clip.bounds.maxX {
-                     
-                     
-                    x = span.upperBound <= clip.bounds.width ? 0 : span.lowerBound - clip.bounds.width / 3
-                }
-            }
-            clip.scroll(to: NSPoint(x: min(max(x, 0), max(table.bounds.width - clip.bounds.width, 0)),
-                                    y: min(top, max(table.bounds.height - clip.bounds.height, 0))))
+            clip.scroll(to: NSPoint(x: clip.bounds.minX, y: min(top, max(table.bounds.height - clip.bounds.height, 0))))
             table.enclosingScrollView?.reflectScrolledClipView(clip)
+            guard let lines = table as? ClashMacSourceLinesTable, let match = reveal.match, let span = span(of: match, in: table) else { return }
+            if span.lowerBound < lines.across || span.upperBound > lines.across + lines.room {
+                 
+                 
+                lines.setAcross(span.upperBound <= lines.room ? 0 : span.lowerBound - lines.room / 3)
+            }
         }
 
          
-         
-        private func span(of match: ConfigurationSourceMatch, in table: NSTableView) -> ClosedRange<CGFloat>? {
+        private func span(of match: ConfigurationSourceMatch, in table: NSTableView? = nil) -> ClosedRange<CGFloat>? {
             let line = model.line(match.line) as NSString
             let range = match.utf16Range(in: line as String)
             guard range.location != NSNotFound, NSMaxRange(range) <= line.length else { return nil }
-            let attributes: [NSAttributedString.Key: Any] = [.font: Self.font]
-            let start = table.rect(ofColumn: 1).minX + Self.textInset
-                + line.substring(to: range.location).size(withAttributes: attributes).width
-            return start...(start + line.substring(with: range).size(withAttributes: attributes).width)
+             
+             
+            if let table, let cell = table.view(atColumn: 0, row: match.line, makeIfNecessary: false),
+               let row = cell.subviews.first as? ClashMacSourceLineView, row.line.string == line as String {
+                let start = row.x(ofOffset: range.location)
+                return start...max(row.x(ofOffset: NSMaxRange(range)), start)
+            }
+            let drawn = ClashMacSourceLineView.onOneRow(NSAttributedString(string: line as String, attributes: [.font: Self.font]))
+            let runs = ClashMacSourceLineView.runs(of: drawn, advance: Self.advance)
+            let start = ClashMacSourceLineView.x(ofOffset: range.location, in: drawn, runs: runs)
+            return start...max(ClashMacSourceLineView.x(ofOffset: NSMaxRange(range), in: drawn, runs: runs), start)
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int { model.lineCount }
@@ -335,36 +365,25 @@ struct ClashMacSourceViewerTable: NSViewRepresentable {
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard let column = tableColumn?.identifier else { return nil }
             let cell = (tableView.makeView(withIdentifier: column, owner: nil) as? NSTableCellView) ?? Self.cell(column)
-            if column == ClashMacSourceViewerTable.numberColumn {
-                cell.textField?.stringValue = String(row + 1)
-            } else {
-                let line = model.line(row)
-                let drawn = ClashMacSourceLineStyle.attributed(line, matches: model.matches(onLine: row),
-                                                               current: model.currentMatch, font: Self.font)
-                cell.textField?.attributedStringValue = drawn
-            }
+            let line = model.line(row)
+            let view = cell.subviews.first as? ClashMacSourceLineView
+            view?.line = ClashMacSourceLineStyle.attributed(
+                line, matches: model.matches(onLine: row), current: model.currentMatch, font: Self.font)
+            view?.across = (tableView as? ClashMacSourceLinesTable)?.across ?? 0
             return cell
         }
 
         private static func cell(_ column: NSUserInterfaceItemIdentifier) -> NSTableCellView {
             let cell = NSTableCellView()
             cell.identifier = column
-            let field = NSTextField(labelWithString: "")
-            field.font = font
-            field.lineBreakMode = .byClipping
-            field.usesSingleLineMode = true
-            field.isSelectable = false
-            field.translatesAutoresizingMaskIntoConstraints = false
-            if column == ClashMacSourceViewerTable.numberColumn {
-                field.alignment = .right
-                field.textColor = .tertiaryLabelColor
-            }
-            cell.addSubview(field)
-            cell.textField = field
+            let line = ClashMacSourceLineView()
+            line.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(line)
             NSLayoutConstraint.activate([
-                field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: column == ClashMacSourceViewerTable.numberColumn ? 4 : textInset),
-                field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: column == ClashMacSourceViewerTable.numberColumn ? -8 : 0),
-                field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: textInset),
+                line.trailingAnchor.constraint(equalTo: cell.trailingAnchor),
+                line.topAnchor.constraint(equalTo: cell.topAnchor),
+                line.bottomAnchor.constraint(equalTo: cell.bottomAnchor),
             ])
             return cell
         }
@@ -373,8 +392,477 @@ struct ClashMacSourceViewerTable: NSViewRepresentable {
 
  
  
+public final class ClashMacSourceLinesContainer: NSView {
+    let scroll: NSScrollView
+    let table: ClashMacSourceLinesTable
+    let scroller = NSScroller(frame: NSRect(x: 0, y: 0, width: 200, height: 15))
+    private var fade: DispatchWorkItem?
+     
+     
+    let indicator = NSView()
+    private var showsWhenScrolling: Bool { NSScroller.preferredScrollerStyle == .overlay }
+
+    @objc private func scrollerStyleChanged() {
+        needsLayout = true
+    }
+
+    init(scroll: NSScrollView, table: ClashMacSourceLinesTable) {
+        self.scroll = scroll
+        self.table = table
+        super.init(frame: .zero)
+        addSubview(scroll)
+         
+        scroll.clipsToBounds = true
+        clipsToBounds = true
+         
+         
+         
+         
+         
+         
+        scroller.scrollerStyle = .legacy
+        indicator.wantsLayer = true
+        indicator.layer?.cornerRadius = 3
+        indicator.alphaValue = 0
+        addSubview(indicator)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scrollerStyleChanged),
+            name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil
+        )
+         
+         
+         
+        scroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scrollerStyleChanged),
+            name: NSView.frameDidChangeNotification, object: scroll.contentView
+        )
+        scroller.target = self
+        scroller.action = #selector(scrolled(_:))
+        scroller.isEnabled = true
+        scroller.setAccessibilityIdentifier("source-viewer.across")
+        addSubview(scroller)
+        table.acrossChanged = { [weak self] in self?.reflect() }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    public override func layout() {
+        super.layout()
+        let overlaid = showsWhenScrolling
+        let thickness = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+         
+         
+         
+         
+        if scroll.frame.width != bounds.width {
+            scroll.frame = NSRect(x: 0, y: scroll.frame.minY, width: bounds.width, height: scroll.frame.height)
+            scroll.tile()
+        }
+        table.tableColumns.last?.width = max(scroll.contentView.bounds.width - scroll.contentView.contentInsets.left, 0)
+        let shows = table.furthestAcross > 0
+        scroller.isHidden = !shows || overlaid
+        indicator.isHidden = !shows || !overlaid
+        scroller.frame = NSRect(x: 0, y: 0, width: bounds.width, height: thickness)
+        let rows = shows && !overlaid
+            ? NSRect(x: 0, y: thickness, width: bounds.width, height: max(bounds.height - thickness, 0)) : bounds
+        if scroll.frame != rows { scroll.frame = rows }
+        table.setAcross(table.across)
+        reflect()
+    }
+
+    private func reflect() {
+        let furthest = table.furthestAcross
+        if (scroller.isHidden && indicator.isHidden) != (furthest <= 0) { needsLayout = true }
+        guard furthest > 0, table.contentWidth > 0 else { return }
+        scroller.knobProportion = min(table.room / table.contentWidth, 1)
+        scroller.doubleValue = Double(table.across / furthest)
+        guard showsWhenScrolling else { return }
+        let track = max(bounds.width - 4, 0)
+        let knob = min(max(track * table.room / table.contentWidth, 28), track)
+        indicator.frame = NSRect(x: 2 + (track - knob) * table.across / furthest, y: 3, width: knob, height: 6)
+        indicator.layer?.backgroundColor = NSColor.secondaryLabelColor.cgColor
+         
+        guard table.across != shownAcross else { return }
+        shownAcross = table.across
+        indicator.alphaValue = 1
+        fade?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.25
+                self?.indicator.animator().alphaValue = 0
+            }
+        }
+        fade = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    }
+    private var shownAcross: CGFloat = 0
+
+    @objc private func scrolled(_ sender: NSScroller) {
+        switch sender.hitPart {
+        case .decrementPage: table.setAcross(table.across - table.room * 0.9)
+        case .incrementPage: table.setAcross(table.across + table.room * 0.9)
+        default: table.setAcross(CGFloat(sender.doubleValue) * table.furthestAcross)
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+final class ClashMacSourceLineView: NSView {
+    static let runLength = 128
+
+     
+    var line = NSAttributedString() {
+        didSet {
+             
+             
+            let sameCharacters = line.string == oldValue.string
+            guard !sameCharacters || line != oldValue else { return }
+            drawn = Self.onOneRow(line)
+            if !sameCharacters {
+                runs = nil
+                setAccessibilityValue(line.string)
+            }
+            needsDisplay = true
+        }
+    }
+
+     
+    private var drawn = NSAttributedString()
+
+     
+     
+     
+     
+     
+    static func onOneRow(_ text: NSAttributedString) -> NSAttributedString {
+        let string = text.string as NSString
+        var breaks: [Int] = []
+        for index in 0..<string.length {
+            switch string.character(at: index) {
+            case 0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029: breaks.append(index)
+            default: break
+            }
+        }
+        guard !breaks.isEmpty else { return text }
+        let copy = NSMutableAttributedString(attributedString: text)
+        for index in breaks { copy.replaceCharacters(in: NSRange(location: index, length: 1), with: "\u{2424}") }
+        return copy
+    }
+
+     
+    private var runs: [(range: NSRange, x: CGFloat)]?
+
+     
+    var across: CGFloat = 0 {
+        didSet { if across != oldValue { needsDisplay = true } }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+         
+         
+        clipsToBounds = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var isFlipped: Bool { true }
+
+     
+     
+    static func runs(of text: NSAttributedString, advance: CGFloat) -> [(range: NSRange, x: CGFloat)] {
+        let string = text.string as NSString
+        var out: [(NSRange, CGFloat)] = []
+        var location = 0
+        var x: CGFloat = 0
+        while location < string.length {
+            var end = min(location + runLength, string.length)
+            if end < string.length { end = string.rangeOfComposedCharacterSequence(at: end).location }
+            if end <= location { end = NSMaxRange(string.rangeOfComposedCharacterSequence(at: location)) }
+            let range = NSRange(location: location, length: end - location)
+            out.append((range, x))
+            var plain = true
+            for index in location..<end {
+                let unit = string.character(at: index)
+                if unit < 0x20 || unit > 0x7E { plain = false; break }
+            }
+            x += plain ? CGFloat(range.length) * advance : text.attributedSubstring(from: range).size().width
+            location = end
+        }
+        return out
+    }
+
+     
+     
+    static func x(ofOffset offset: Int, in text: NSAttributedString, runs: [(range: NSRange, x: CGFloat)]) -> CGFloat {
+        guard !runs.isEmpty else { return 0 }
+        var low = 0, high = runs.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if runs[middle].range.location <= offset { low = middle } else { high = middle - 1 }
+        }
+        let run = runs[low]
+        let inside = NSRange(location: run.range.location, length: max(min(offset, NSMaxRange(run.range)) - run.range.location, 0))
+        return run.x + (inside.length == 0 ? 0 : text.attributedSubstring(from: inside).size().width)
+    }
+
+     
+    func x(ofOffset offset: Int) -> CGFloat {
+        Self.x(ofOffset: offset, in: drawn, runs: measured())
+    }
+
+    private func measured() -> [(range: NSRange, x: CGFloat)] {
+        if let runs { return runs }
+        let made = Self.runs(of: drawn, advance: ClashMacSourceViewerTable.Coordinator.advance)
+        runs = made
+        return made
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let all = measured()
+        guard !all.isEmpty else { return }
+         
+        let from = across + dirtyRect.minX, to = across + dirtyRect.maxX
+         
+        var low = 0, high = all.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if all[middle].x <= from { low = middle } else { high = middle - 1 }
+        }
+        let height = drawn.attributedSubstring(from: all[low].range).size().height
+        let y = ((bounds.height - height) / 2).rounded()
+        var index = low
+        while index < all.count, all[index].x < to {
+            drawn.attributedSubstring(from: all[index].range).draw(at: NSPoint(x: all[index].x - across, y: y))
+            index += 1
+        }
+    }
+}
+
+ 
+ 
+final class ClashMacSourceLineNumbers: NSRulerView {
+    private weak var table: NSTableView?
+    var lineCount = 0 {
+        didSet {
+            guard lineCount != oldValue else { return }
+            ruleThickness = Self.thickness(lineCount: lineCount)
+            needsDisplay = true
+        }
+    }
+
+     
+    static func thickness(lineCount: Int) -> CGFloat {
+        (CGFloat(String(max(lineCount, 1)).count) * ClashMacSourceViewerTable.Coordinator.advance + 20).rounded(.up)
+    }
+
+    init(table: NSTableView, scrollView: NSScrollView) {
+        self.table = table
+        super.init(scrollView: scrollView, orientation: .verticalRuler)
+        clientView = table
+        ruleThickness = Self.thickness(lineCount: 0)
+        setAccessibilityElement(false)
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var isFlipped: Bool { true }
+
+     
+     
+    func numbers(in rect: NSRect) -> [(line: Int, rect: NSRect)] {
+        guard let table, table.numberOfRows > 0 else { return [] }
+        let inTable = convert(rect, to: table)
+        let rows = table.rows(in: NSRect(x: table.bounds.minX, y: inTable.minY, width: 1, height: inTable.height))
+        guard rows.length > 0 else { return [] }
+        return (rows.location..<NSMaxRange(rows)).map { row in
+            let rowRect = convert(table.rect(ofRow: row), from: table)
+            return (row + 1, NSRect(x: 0, y: rowRect.minY, width: ruleThickness, height: rowRect.height))
+        }
+    }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+         
+         
+        let font = ClashMacSourceViewerTable.Coordinator.font
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]
+        for number in numbers(in: rect) {
+            let text = String(number.line) as NSString
+            let size = text.size(withAttributes: attributes)
+            text.draw(at: NSPoint(x: ruleThickness - 8 - size.width, y: number.rect.midY - size.height / 2),
+                      withAttributes: attributes)
+        }
+    }
+}
+
+ 
+ 
 final class ClashMacSourceLinesTable: NSTableView {
     var lines: (([Int]) -> [String])?
+
+     
+     
+     
+     
+    func restBesideTheNumbers() {
+        guard let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        let home = -clip.contentInsets.left
+        guard clip.bounds.minX <= 0, clip.bounds.minX > home else { return }
+        clip.scroll(to: NSPoint(x: home, y: clip.bounds.minY))
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    override func layout() {
+        super.layout()
+        restBesideTheNumbers()
+        placeLines()
+    }
+
+     
+    var contentWidth: CGFloat = 0 {
+        didSet {
+            guard contentWidth != oldValue else { return }
+            setAcross(across)
+            acrossChanged?()
+        }
+    }
+
+     
+    private(set) var across: CGFloat = 0
+
+     
+    var room: CGFloat { max((tableColumns.last?.width ?? 0) - ClashMacSourceViewerTable.Coordinator.textInset, 0) }
+    var furthestAcross: CGFloat { max(contentWidth - room, 0) }
+
+     
+    var acrossChanged: (() -> Void)?
+
+    func setAcross(_ wanted: CGFloat) {
+        let next = min(max(wanted, 0), furthestAcross)
+        guard next != across else { return }
+        across = next
+        placeLines()
+        acrossChanged?()
+    }
+
+     
+     
+     
+     
+    func placeLines() {
+        enumerateAvailableRowViews { rowView, _ in
+            guard let cell = rowView.view(atColumn: 0) as? NSView else { return }
+            (cell.subviews.first as? ClashMacSourceLineView)?.across = across
+        }
+    }
+
+     
+     
+    override class var isCompatibleWithResponsiveScrolling: Bool { true }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private enum Swipe { case none, undecided, across, acrossCoasting }
+    private var swipe = Swipe.none
+    private var moved = NSSize.zero
+     
+     
+     
+    private var heldOpening: NSEvent?
+    static let swipeDecidedAfter: CGFloat = 3
+
+     
+    override func scrollWheel(with event: NSEvent) {
+        guard furthestAcross > 0 else {
+            swipe = .none
+            heldOpening = nil
+            return super.scrollWheel(with: event)
+        }
+        let coasting = event.phase == [] && event.momentumPhase != []
+         
+        if event.phase == [] && event.momentumPhase == [] {
+            swipe = .none
+            heldOpening = nil
+            return abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) ? move(by: event) : super.scrollWheel(with: event)
+        }
+         
+        if swipe == .acrossCoasting {
+            if coasting {
+                move(by: event)
+                if event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled) { swipe = .none }
+                return
+            }
+            swipe = .none
+        }
+        if swipe == .across {
+            if event.phase.contains(.began) || event.phase.contains(.mayBegin) {
+                swipe = .none
+            } else {
+                move(by: event)
+                if event.phase.contains(.ended) || event.phase.contains(.cancelled) { swipe = .acrossCoasting }
+                return
+            }
+        }
+        if swipe == .none {
+             
+            if event.phase.contains(.mayBegin) { return }
+             
+            if coasting { return super.scrollWheel(with: event) }
+            swipe = .undecided
+            moved = .zero
+            heldOpening = event.phase.contains(.began) ? event : nil
+        }
+        moved.width += event.scrollingDeltaX
+        moved.height += event.scrollingDeltaY
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+             
+            swipe = .none
+            heldOpening = nil
+            return
+        }
+        guard max(abs(moved.width), abs(moved.height)) >= Self.swipeDecidedAfter else { return }
+        if abs(moved.width) > abs(moved.height) {
+            swipe = .across
+            heldOpening = nil
+            setAcross(across - moved.width)
+        } else {
+             
+             
+             
+            swipe = .none
+            let opening = heldOpening
+            heldOpening = nil
+            super.scrollWheel(with: opening ?? event)
+        }
+    }
+
+    private func move(by event: NSEvent) {
+        setAcross(across - event.scrollingDeltaX * (event.hasPreciseScrollingDeltas ? 1 : 10))
+    }
 
     @objc func copy(_ sender: Any?) {
         put(Array(selectedRowIndexes))

@@ -22,6 +22,13 @@ struct ProxiesRuntimeFacts {
      
      
      
+     
+     
+     
+    var groupsAreTheCores = false
+     
+     
+     
     var catalog: [ProxyGroup] = []
      
     var runtimeNodes: [ProxiesOverviewModel.Proxy] = []
@@ -117,6 +124,9 @@ struct ProxiesOverviewAdapter: View {
      
      
     private let outboundMode: ProxyBrowsingVisibility.Mode
+     
+     
+    private let opening: ProxyBrowsingVisibility.Opening
     private let isConnected: Bool
     private let testingNames: Set<String>
     private let isTestingLatency: Bool
@@ -255,6 +265,8 @@ struct ProxiesOverviewAdapter: View {
         private let subject: CurrentValueSubject<ClashLatencyPulse, Never>
         private var accumulatedResults: [String: ClashProxyLatencyState] = [:]
         private var accumulatedGroupTerminals: [String: String] = [:]
+         
+        private var runLanded: Set<String> = []
         private var wasTesting = false
          
          
@@ -282,11 +294,34 @@ struct ProxiesOverviewAdapter: View {
             publisher = subject.eraseToAnyPublisher()
         }
 
-        func send(_ pulse: ClashLatencyPulse) {
+         
+         
+        var isRunning: Bool { wasTesting }
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        func send(_ pulse: ClashLatencyPulse, landed: Set<String> = []) {
             if pulse.isTesting, !wasTesting {
-                accumulatedResults = pulse.results
+                accumulatedResults.merge(pulse.results) { _, fresh in fresh }
                 accumulatedGroupTerminals = pulse.groupTerminals
+                runLanded = landed
             } else {
+                 
+                 
+                 
+                if pulse.isTesting, pulse.completed == 0 { runLanded = [] }
+                runLanded.formUnion(landed)
                 accumulatedResults.merge(pulse.results) { _, fresh in fresh }
                 accumulatedGroupTerminals.merge(pulse.groupTerminals) {
                     _, fresh in fresh
@@ -303,8 +338,12 @@ struct ProxiesOverviewAdapter: View {
                 groupTerminalKeys: pulse.groupTerminalKeys,
                 completed: pulse.completed,
                 total: pulse.total,
-                isTesting: pulse.isTesting
+                isTesting: pulse.isTesting,
+                 
+                 
+                landed: runLanded
             )
+            if !pulse.isTesting { runLanded = [] }
             subject.send(replay)
         }
 
@@ -317,6 +356,7 @@ struct ProxiesOverviewAdapter: View {
         func replaceIdle(_ pulse: ClashLatencyPulse) {
             precondition(!pulse.isTesting)
             wasTesting = false
+            runLanded = []
             accumulatedResults = pulse.results
             accumulatedGroupTerminals = pulse.groupTerminals
             subject.send(pulse)
@@ -337,6 +377,7 @@ struct ProxiesOverviewAdapter: View {
     init(
         sourceModel: ProxiesOverviewModel,
         outboundMode: ProxyBrowsingVisibility.Mode,
+        opening: ProxyBrowsingVisibility.Opening = .browsing,
         runtime: ProxiesRuntimeFacts = .none,
         isConnected: Bool = false,
         testingNames: Set<String> = [],
@@ -374,6 +415,7 @@ struct ProxiesOverviewAdapter: View {
         self.sourceModel = sourceModel
         self.runtime = runtime
         self.outboundMode = outboundMode
+        self.opening = opening
         self.isConnected = isConnected
         self.testingNames = testingNames
         self.isTestingLatency = isTestingLatency
@@ -491,7 +533,13 @@ struct ProxiesOverviewAdapter: View {
                         completed: latencyCompletedCount,
                         total: latencyTotalCount
                     )
-                    pulseHub.send(currentPulse(isTesting: true))
+                     
+                     
+                     
+                     
+                    if !pulseHub.isRunning {
+                        pulseHub.send(currentPulse(isTesting: true))
+                    }
                 } else {
                     frozenSweep = nil
                      
@@ -573,7 +621,7 @@ struct ProxiesOverviewAdapter: View {
                     completed: batch.completed,
                     total: batch.total,
                     isTesting: !batch.finished
-                ))
+                ), landed: Set(batch.results.keys))
             }
         if ownsNavigationContainer {
             live.clashSheetPresentation()
@@ -739,12 +787,58 @@ struct ProxiesOverviewAdapter: View {
      
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     static func pinnedSelection(
         projected: String?,
         kernelFixed: String?,
-        isConnected: Bool
+        isConnected: Bool,
+        groupsAreTheCores: Bool
     ) -> String? {
-        projected ?? (isConnected ? kernelFixed : nil)
+        guard isConnected else { return projected }
+        if groupsAreTheCores { return kernelFixed }
+        return projected ?? kernelFixed
+    }
+
+     
+     
+     
+    static func groupSnapshot(
+        _ group: ProxiesOverviewModel.Group,
+        members: [ClashProxyMemberSnapshot],
+        runtime: ProxiesRuntimeFacts,
+        isConnected: Bool
+    ) -> ClashProxyGroupSnapshot {
+        var snapshot = ClashProxyGroupSnapshot(
+            name: group.name,
+            type: group.type,
+            members: members,
+            configuredSelection: pinnedSelection(
+                projected: group.configuredSelection,
+                kernelFixed: runtime.fixedByGroup[group.name],
+                isConnected: isConnected,
+                 
+                 
+                 
+                groupsAreTheCores: runtime.groupsAreTheCores
+                    && ProxyGroupControlKind(rawType: group.type).canBeUnpinned
+            ),
+            runtimeSelection: isConnected ? runtime.nowByGroup[group.name] : nil,
+            resolvedRuntimeRoute: isConnected ? runtime.resolvedNowByGroup[group.name] : nil,
+            icon: group.icon,
+            emptyFallback: group.emptyFallback,
+            memberTotal: group.memberTotal
+        )
+        snapshot.carriedSelection = group.carriedSelection
+        return snapshot
     }
 
      
@@ -762,7 +856,7 @@ struct ProxiesOverviewAdapter: View {
     private var sweepHoldKey: ProxiesSweepSnapshotHold.Key {
         ProxiesSweepSnapshotHold.Key(
             preferences: preferences,
-            outboundModeToken: String(describing: outboundMode),
+            outboundModeToken: "\(outboundMode) \(opening)",
             isConnected: isConnected,
             nowByGroup: effectiveRuntime.nowByGroup,
             resolvedNowByGroup: effectiveRuntime.resolvedNowByGroup,
@@ -790,7 +884,11 @@ struct ProxiesOverviewAdapter: View {
             runtimeCatalog: effectiveRuntime.catalog,
             nowByGroup: effectiveRuntime.nowByGroup,
             resolvedNowByGroup: effectiveRuntime.resolvedNowByGroup,
-            isConnected: isConnected
+             
+             
+            groupsAreTheCores: effectiveRuntime.groupsAreTheCores,
+            isConnected: isConnected,
+            opening: opening
         )
          
          
@@ -799,7 +897,8 @@ struct ProxiesOverviewAdapter: View {
          
          
          
-        let pins = effectiveRuntime.fixedByGroup
+         
+        let facts = effectiveRuntime
         let projection = ClashPerf.measure("proxies.snapshot.groups") {
             projections.groups(groupsKey) {
                 let all = ClashPerf.measure("proxies.compose.groups") {
@@ -812,27 +911,28 @@ struct ProxiesOverviewAdapter: View {
                 let urlByGroup = Self.memberLatencyEndpoints(effectiveRuntime.catalog)
                 let defaultURL = effectiveRuntime.defaultDelayTestURL
                 func snapshot(_ group: ProxiesOverviewModel.Group) -> ClashProxyGroupSnapshot {
-                    ClashProxyGroupSnapshot(
-                        name: group.name,
-                        type: group.type,
+                    Self.groupSnapshot(
+                        group,
                         members: ProxyBrowsingVisibility.members(
                             projections.members(of: group, latencyEndpoint: urlByGroup[group.name] ?? nil,
                                                 defaultURL: defaultURL),
                             of: group.name,
                             mode: outboundMode,
+                            opening: opening,
                             name: \.name
                         ),
-                        configuredSelection: Self.pinnedSelection(projected: group.configuredSelection, kernelFixed: pins[group.name], isConnected: isConnected),
-                        runtimeSelection: isConnected ? effectiveRuntime.nowByGroup[group.name] : nil,
-                        resolvedRuntimeRoute: isConnected ? effectiveRuntime.resolvedNowByGroup[group.name] : nil,
-                        icon: group.icon,
-                        emptyFallback: group.emptyFallback,
-                        memberTotal: group.memberTotal
+                        runtime: facts,
+                        isConnected: isConnected
                     )
                 }
+                let listed = ProxyBrowsingVisibility.groups(all, mode: outboundMode, opening: opening,
+                                                            name: \.name, isHidden: \.hidden)
+                 
+                 
+                let shown = Set(listed.map(\.name))
                 return ProxiesProjectionMemo.GroupProjection(
-                    listed: ProxyBrowsingVisibility.groups(all, mode: outboundMode, name: \.name, isHidden: \.hidden).map(snapshot),
-                    hidden: all.filter(\.hidden).map(snapshot)
+                    listed: listed.map(snapshot),
+                    hidden: all.filter { $0.hidden && !shown.contains($0.name) }.map(snapshot)
                 )
             }
         }
@@ -916,7 +1016,8 @@ struct ProxiesOverviewAdapter: View {
             runtimeNodes: effectiveRuntime.runtimeNodes,
             runtimeGroups: effectiveRuntime.catalog,
             isConnected: isConnected,
-            runtimeIsAuthoritative: effectiveRuntime.isAuthoritative
+            runtimeIsAuthoritative: effectiveRuntime.isAuthoritative,
+            opening: opening
         )
         let ungrouped = ClashPerf.measure("proxies.snapshot.ungrouped") {
             projections.ungrouped(ungroupedKey) {
@@ -933,7 +1034,8 @@ struct ProxiesOverviewAdapter: View {
                             type: $0.type
                         )
                     },
-                    mode: outboundMode
+                    mode: outboundMode,
+                    opening: opening
                 )
             }
         }
@@ -952,7 +1054,9 @@ struct ProxiesOverviewAdapter: View {
                 ungrouped: ungrouped,
                  
                  
-                browsingSuppressedByDirectMode: outboundMode == .direct,
+                 
+                browsingSuppressedByDirectMode:
+                    ProxyBrowsingVisibility.browsingMode(outboundMode, opening: opening) == .direct,
                 latencyByName: frozenSweep?.latency ?? latencyStates,
                  
                  
@@ -993,6 +1097,8 @@ struct ProxiesOverviewAdapter: View {
                 editableMembers: editableMembers,
                 rememberedOpenGroup: rememberedOpenGroup,
                 readerFoldedAll: readerFoldedAll,
+                 
+                liveCatalog: isConnected && effectiveRuntime.isAuthoritative,
                  
                 nodeScripts: runNodeScript == nil ? [] : nodeScripts
             ),

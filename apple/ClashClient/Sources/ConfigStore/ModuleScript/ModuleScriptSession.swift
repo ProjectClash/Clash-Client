@@ -114,6 +114,11 @@ struct ModuleScriptConfigAccess {
      
      
     var groupTypes: () -> [String: String] = { [:] }
+     
+     
+     
+     
+    var globalRefusal: () -> String? = { nil }
 
     static let unavailable = ModuleScriptConfigAccess(
         isAvailable: { false }, mode: { nil }, setMode: { _ in false }, groups: { [] }, members: { _, _ in nil },
@@ -688,10 +693,18 @@ struct ModuleScriptDoneReader {
                 body: body(value.objectForKeyedSubscript("body"), allowed: session.declaration.requiresBody))
             return edit.isEmpty ? .passThrough : .modifyRequest(edit)
         case .response:
+             
+             
+             
+             
+             
+             
+            var given: JSValue = value
+            if let answer = value.objectForKeyedSubscript("response"), answer.isObject { given = answer }
             let edit = ModuleScriptEdit(
-                status: ModuleScriptValues.integer(value.objectForKeyedSubscript("status")),
-                headers: headers(value.objectForKeyedSubscript("headers"), original: session.response?.headers ?? []),
-                body: body(value.objectForKeyedSubscript("body"), allowed: session.declaration.requiresBody))
+                status: ModuleScriptValues.integer(given.objectForKeyedSubscript("status")),
+                headers: headers(given.objectForKeyedSubscript("headers"), original: session.response?.headers ?? []),
+                body: body(given.objectForKeyedSubscript("body"), allowed: session.declaration.requiresBody))
             return edit.isEmpty ? .passThrough : .modifyResponse(edit)
         }
     }

@@ -239,6 +239,17 @@ enum ConfigurationTextEditing {
     }
 
      
+     
+     
+     
+     
+    static func checkGroupPattern(key: String, pattern: String) throws -> String? {
+        let item: [String: Any] = ["name": "G", "type": "select", "proxies": ["DIRECT"], key: pattern]
+        let itemJSON = String(decoding: try JSONSerialization.data(withJSONObject: item, options: [.sortedKeys]), as: UTF8.self)
+        return try check(kind: "proxyGroup", itemJSON: itemJSON, contextJSON: "{}")
+    }
+
+     
     static func match(_ query: ConfigurationRuleQuery, in document: String, resourceMapJSON: String) throws -> ConfigurationRuleMatch {
         var error: NSError?
         let queryJSON = String(decoding: try JSONEncoder().encode(query), as: UTF8.self)

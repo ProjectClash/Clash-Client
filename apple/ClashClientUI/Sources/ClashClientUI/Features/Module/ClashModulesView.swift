@@ -3,6 +3,21 @@ import SwiftUI
 
  
  
+ 
+ 
+public struct ClashModulesNoticePlaces {
+    public var offers: (ClashModulesSnapshot.NoticePlace) -> Bool
+    public var page: (ClashModulesSnapshot.NoticePlace) -> AnyView
+
+    public init(offers: @escaping (ClashModulesSnapshot.NoticePlace) -> Bool,
+                page: @escaping (ClashModulesSnapshot.NoticePlace) -> AnyView) {
+        self.offers = offers
+        self.page = page
+    }
+}
+
+ 
+ 
 public enum ClashModulesAddMode: String, Equatable, Identifiable, Sendable {
     case link, manual
     public var id: String { rawValue }
@@ -22,6 +37,9 @@ public enum ClashModulesAddMode: String, Equatable, Identifiable, Sendable {
  
 public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
     private let snapshot: ClashModulesSnapshot
+     
+     
+    private let writes: ClashModulesWrites
     private let perform: (ClashModulesAction) -> Void
     private let detail: (String) -> ClashModuleDetailSnapshot?
     private let addModule: (_ mode: ClashModulesAddMode, _ dismiss: @escaping () -> Void) -> AddModule
@@ -34,6 +52,16 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
      
      
     private let opensAddModule: Bool
+     
+     
+     
+     
+    private let noticePlaces: ClashModulesNoticePlaces?
+     
+     
+     
+     
+    private let detailResultPlace: ((String) -> AnyView)?
 
     @State private var addMode: ClashModulesAddMode?
     @State private var showsReorder = false
@@ -44,6 +72,8 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
      
     @State private var pendingDeletion: ClashModulesSnapshot.ModuleRow?
      
+    @State private var openedPlace: ClashModulesSnapshot.NoticePlace?
+     
      
     @StateObject private var certificateFeed: ClashModulesCertificateFeed
     @Environment(\.locale) private var locale
@@ -51,18 +81,24 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
 
     public init(
         snapshot: ClashModulesSnapshot,
+        writes: ClashModulesWrites,
         perform: @escaping (ClashModulesAction) -> Void,
         detail: @escaping (String) -> ClashModuleDetailSnapshot?,
         opensAddModule: Bool = false,
         pullToUpdate: (() async -> Void)? = nil,
+        noticePlaces: ClashModulesNoticePlaces? = nil,
+        detailResultPlace: ((String) -> AnyView)? = nil,
         @ViewBuilder quickAdd: @escaping (_ open: @escaping (ClashModulesAddMode) -> Void) -> QuickAdd,
         @ViewBuilder addModule: @escaping (_ mode: ClashModulesAddMode, _ dismiss: @escaping () -> Void) -> AddModule
     ) {
         self.snapshot = snapshot
+        self.writes = writes
         self.perform = perform
         self.detail = detail
         self.opensAddModule = opensAddModule
         self.pullToUpdate = pullToUpdate
+        self.noticePlaces = noticePlaces
+        self.detailResultPlace = detailResultPlace
         self.quickAdd = quickAdd
         self.addModule = addModule
         _certificateFeed = StateObject(wrappedValue: ClashModulesCertificateFeed(snapshot))
@@ -100,30 +136,40 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
 #endif
         }
         .onChange(of: snapshot) { certificateFeed.take($0) }
-        .clashDeleteConfirmation(pendingDeletion?.name ?? "", isPresented: Binding(
-            get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
-            actionTitle: .copy("Delete Module"), identifier: "modules.module.delete.confirm") {
-            if let doomed = pendingDeletion { perform(.removeModule(id: doomed.id)) }
+        .clashDeleteConfirmation(presenting: $pendingDeletion, name: \.name,
+            actionTitle: .copy("Delete Module"), identifier: "modules.module.delete.confirm") { doomed in
+            perform(.removeModule(id: doomed.id))
         }
         .onAppear { if opensAddModule { addMode = .link } }
         .onChange(of: opensAddModule) { opens in
             if opens { addMode = .link }
         }
-        .sheet(item: $openedModule) { opened in
+        .clashSheet(item: $openedModule) { opened in
              
              
-            ClashModuleDetailView(snapshot: detail(opened.id), editor: snapshot.editor, perform: perform) {
+            ClashModuleDetailView(snapshot: detail(opened.id), editor: snapshot.editor, writes: writes, perform: perform) {
                 openedModule = nil
             }
+            .modifier(ClashModuleDetailResultInset(place: detailResultPlace?(opened.id)))
             .clashModalPresentation(Self.detailPresentation)
         }
-        .sheet(item: $addMode) { mode in
+        .clashSheet(item: $addMode) { mode in
             addModule(mode) { addMode = nil }
                 .clashModalPresentation(.form)
         }
-        .sheet(isPresented: $showsReorder) {
+        .clashSheet(isPresented: $showsReorder) {
             ClashModulesReorderView(modules: snapshot.modules, perform: perform) { showsReorder = false }
                 .clashModalPresentation(.form)
+        }
+         
+         
+         
+         
+         
+         
+         
+        .clashProductModal(item: $openedPlace, role: .page) { place in
+            if let noticePlaces { noticePlaces.page(place) } else { ClashOpeningCancelButton() }
         }
         .modifier(ClashModulesEditorPresentation(editor: newModuleEditor, perform: perform))
         .accessibilityIdentifier("modules.page")
@@ -157,12 +203,13 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
         Section {
              
              
-            Toggle(isOn: Binding(get: { snapshot.decryptionSwitching ?? snapshot.isOn }, set: { perform(.setEnabled($0)) })) {
+             
+             
+            ClashStoredToggle(writes.switches, key: ClashModulesWrites.decryption, stored: snapshot.isOn,
+                              identifier: "modules.switch", set: { perform(.setEnabled($0)) }) {
                 Text("HTTPS Decryption")
             }
             .modifier(ClashModulesSwitchStyle())
-            .disabled(snapshot.isBusy)
-            .accessibilityIdentifier("modules.switch")
             if let certificate = snapshot.certificate {
                 ClashRoutedViewLink {
                     ClashModulesCertificateView(feed: certificateFeed, perform: perform)
@@ -199,21 +246,31 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
     private var noticesSection: some View {
         Section {
             ForEach(snapshot.notices) { notice in
-                Label {
-                    Text(clash: notice.text)
-                        .foregroundStyle(notice.tone == .onHold ? .secondary : .primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                } icon: {
+                if let place = notice.place, let places = noticePlaces, places.offers(place) {
                      
-                    if notice.tone == .onHold {
-                        Image(systemName: ClashSymbol.pauseCircleFill.rawValue)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Image(systemName: ClashSymbol.exclamationmarkTriangleFill.rawValue)
-                            .foregroundStyle(Color.orange)
+                     
+                     
+                     
+                     
+                     
+                     
+                     
+                    Button {
+                        openedPlace = place
+                    } label: {
+                        noticeLabel(notice, isButton: true)
                     }
+#if os(macOS)
+                     
+                     
+                     
+                    .buttonStyle(.plain)
+#endif
+                    .accessibilityIdentifier("modules.notice.\(notice.id)")
+                } else {
+                    noticeLabel(notice)
+                        .accessibilityIdentifier("modules.notice.\(notice.id)")
                 }
-                .accessibilityIdentifier("modules.notice.\(notice.id)")
                 if let action = notice.action {
                     Button {
                         perform(.notice(action))
@@ -222,6 +279,25 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
                     }
                     .accessibilityIdentifier("modules.notice.action.\(notice.id)")
                 }
+            }
+        }
+    }
+
+     
+     
+    private func noticeLabel(_ notice: ClashModulesSnapshot.Notice, isButton: Bool = false) -> some View {
+        Label {
+            Text(clash: notice.text)
+                .foregroundStyle(isButton ? AnyShapeStyle(.tint) : AnyShapeStyle(notice.tone == .onHold ? Color.secondary : Color.primary))
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+             
+            if notice.tone == .onHold {
+                Image(systemName: ClashSymbol.pauseCircleFill.rawValue)
+                    .foregroundStyle(.secondary)
+            } else {
+                Image(systemName: ClashSymbol.exclamationmarkTriangleFill.rawValue)
+                    .foregroundStyle(Color.orange)
             }
         }
     }
@@ -480,14 +556,14 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
     private func moduleSwitch(_ row: ClashModulesSnapshot.ModuleRow) -> some View {
          
          
-        let flipped = snapshot.switching[row.id]
-        return Toggle(isOn: Binding(get: { flipped ?? row.enabled }, set: { perform(.setModule(id: row.id, enabled: $0)) })) {
+         
+         
+        ClashStoredToggle(writes.switches, key: ClashModulesWrites.module(row.id), stored: row.enabled,
+                          identifier: "modules.module.toggle.\(row.id)", set: { perform(.setModule(id: row.id, enabled: $0)) }) {
             Text(verbatim: row.name)
         }
         .modifier(ClashModulesSwitchStyle())
         .labelsHidden()
-        .disabled(snapshot.isBusy || flipped != nil)
-        .accessibilityIdentifier("modules.module.toggle.\(row.id)")
     }
 
      
@@ -545,7 +621,7 @@ struct ClashModulesEditorPresentation: ViewModifier {
 #if os(tvOS)
         content
 #else
-        content.sheet(item: Binding(get: { editor }, set: { if $0 == nil { perform(.closeEditor) } })) { opened in
+        content.clashSheet(item: Binding(get: { editor }, set: { if $0 == nil { perform(.closeEditor) } })) { opened in
             ClashModuleEditorView(editor: editor ?? opened, perform: perform)
                 .clashModalPresentation(.page)
         }
@@ -659,5 +735,20 @@ struct ClashModulesReorderView: View {
         guard modules.indices.contains(index), modules.indices.contains(destination) else { return }
         modules.swapAt(index, destination)
         perform(.moveModules(modules.map(\.id)))
+    }
+}
+
+ 
+ 
+ 
+private struct ClashModuleDetailResultInset: ViewModifier {
+    let place: AnyView?
+
+    func body(content: Content) -> some View {
+        if let place {
+            content.safeAreaInset(edge: .top, spacing: 0) { place }
+        } else {
+            content
+        }
     }
 }

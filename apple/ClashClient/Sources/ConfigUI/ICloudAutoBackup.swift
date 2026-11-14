@@ -199,6 +199,27 @@ final class ICloudAutoBackup: ObservableObject {
      
      
     func disable() async {
+        switchOff()
+        await removeOwnRecord()
+    }
+
+     
+     
+    func pressOff() {
+        switchOff()
+        let previous = removing
+        removing = Task { [weak self] in
+            await previous?.value
+            await self?.removeOwnRecord()
+        }
+    }
+
+     
+    private var removing: Task<Void, Never>?
+     
+    private var awaitingRemoval = false
+
+    private func switchOff() {
         isEnabled = false
         defaults.set(false, forKey: Self.keepUpToDateKey)
         debounceTask?.cancel()
@@ -208,6 +229,9 @@ final class ICloudAutoBackup: ObservableObject {
         defaults.removeObject(forKey: Self.lastExportedAtKey)
         lastExportedAt = nil
         outcome = nil
+    }
+
+    private func removeOwnRecord() async {
         let sink = deps.sink
         let installID = deps.installID()
         do {
@@ -215,7 +239,8 @@ final class ICloudAutoBackup: ObservableObject {
             deps.log("icloud auto backup: record removed (\(installID))")
         } catch {
             deps.log("icloud auto backup: record not removed: \(error)")
-            outcome = .failed(Self.sentence(for: error))
+             
+            if !isEnabled { outcome = .failed(Self.sentence(for: error)) }
         }
     }
 
@@ -264,6 +289,21 @@ final class ICloudAutoBackup: ObservableObject {
      
      
     func exportNow() async {
+        guard isEnabled, !isExporting, !awaitingRemoval else { return }
+         
+         
+         
+         
+         
+         
+        if removing != nil {
+            awaitingRemoval = true
+            while let pending = removing {
+                await pending.value
+                if removing == pending { removing = nil }
+            }
+            awaitingRemoval = false
+        }
         guard isEnabled, !isExporting else { return }
         isExporting = true
         defer { isExporting = false }

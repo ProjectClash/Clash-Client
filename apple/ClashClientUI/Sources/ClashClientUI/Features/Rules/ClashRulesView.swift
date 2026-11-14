@@ -35,12 +35,13 @@ enum ClashRuleRowLayout {
 
 private struct ClashRuleBucketRowChrome: ViewModifier {
     let bucket: ClashRuleBucketSnapshot
+    @Environment(\.locale) private var locale
 
     func body(content: Content) -> some View {
         content
             .buttonStyle(.plain)
             .accessibilityLabel(
-                "\(bucket.ruleCount) rules to \(bucket.target)"
+                ClashRulesCountCopy.rulesTo(bucket.ruleCount, target: bucket.target, locale: locale)
             )
             .accessibilityIdentifier("rules.bucket.\(bucket.target)")
     }
@@ -173,6 +174,8 @@ public struct ClashRulesOverviewView<
                         }
                         .clashPushedDetailPage()
                         .modifier(ClashSetterRoutedBack())
+                         
+                        .clashDeparturePage()
                          
                          
                         .environment(\.clashPushRoute, pushRoute)
@@ -393,14 +396,22 @@ public struct ClashRulesOverviewView<
 
     @ViewBuilder
     private var overviewSections: some View {
-        if !overview.buckets.isEmpty {
+         
+         
+         
+         
+         
+         
+        if overview.hasRulesGroup {
+            let groupedByDestination: ClashDisplayText? = overview.buckets.isEmpty
+                ? nil
+                : "Grouped by destination. What the tunnel runs: the profile's rules with your custom rules and the override script applied."
             ClashProductGroup(
                 .format(
                     "Rules (%@)",
                     [ClashCopy.count(overview.inlineCount, locale: locale)]
                 ),
-                footer:
-                    "Grouped by destination. What the tunnel runs: the profile's rules with your custom rules and the override script applied.",
+                footer: groupedByDestination,
                 palette: palette
             ) {
                  
@@ -421,11 +432,13 @@ public struct ClashRulesOverviewView<
                      
                      
                      
-                    LazyVStack(spacing: 0) {
-                        ForEach(overview.buckets) { bucket in
-                            bucketLink(bucket)
-                            if bucket.id != overview.buckets.last?.id {
-                                Divider()
+                    if !overview.buckets.isEmpty {
+                        LazyVStack(spacing: 0) {
+                            ForEach(overview.buckets) { bucket in
+                                bucketLink(bucket)
+                                if bucket.id != overview.buckets.last?.id {
+                                    Divider()
+                                }
                             }
                         }
                     }
@@ -472,7 +485,9 @@ public struct ClashRulesOverviewView<
             }
         }
 
-        if overview.buckets.isEmpty
+         
+         
+        if !overview.hasRulesGroup
             && overview.ruleSets.isEmpty
             && overview.fallback.isEmpty
         {
@@ -525,7 +540,7 @@ public struct ClashRulesOverviewView<
                                 }
                             }
                             if hitCount > rows.count {
-                                Text("\(hitCount - rows.count) more matches…")
+                                Text(clash: .verbatim(ClashRulesCountCopy.moreMatches(hitCount - rows.count, locale: locale)))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .padding(
@@ -766,15 +781,10 @@ public struct ClashRulesOverviewView<
              
              
              
-            Text(
-                ClashCopy.format(
-                    "%1$@ rules will not take effect on %2$@",
-                    locale: locale,
-                    ClashCopy.count(overview.inapplicableCount, locale: locale),
-                    overview.platformTitle
-                )
-            )
-            .font(.footnote)
+             
+             
+            Text(overview.inapplicableLine(locale: locale))
+                .font(.footnote)
         }
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
@@ -790,6 +800,13 @@ public struct ClashRulesOverviewView<
             Text(clash: .verbatim(ruleSet.subtitle(locale: locale)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let note = ruleSet.localFileNote(locale: locale) {
+                Text(clash: .verbatim(note))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("rules.rule-set.local-file.\(ruleSet.name)")
+            }
             if let reason = ruleSet.blockedReason {
                  
                  
@@ -939,7 +956,7 @@ struct ClashRuleBucketLazyPage: View {
                      
                      
                      
-                    .format("%@ rules", [ClashCopy.count(bucket.ruleCount, locale: locale)])
+                    .verbatim(ClashRulesCountCopy.rules(bucket.ruleCount, locale: locale))
                 )
                  
                  
@@ -975,7 +992,7 @@ struct ClashRuleBucketLazyPage: View {
                         }
                 }
                 if bucket.ruleCount > rows.count {
-                    Text(clash: .format("%@ more rules", [ClashCopy.count(bucket.ruleCount - rows.count, locale: locale)]))
+                    Text(clash: .verbatim(ClashRulesCountCopy.moreRules(bucket.ruleCount - rows.count, locale: locale)))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .padding(.top, ClashTheme.Spacing.row)
@@ -1131,6 +1148,11 @@ public struct ClashProfileRulesView<Icon: View, Trailing: View>: View {
      
     private let draftStore: (any ClashUnsavedDraftStore)?
     private let draftKey: String?
+     
+     
+     
+    private let loadRuleSets: PolicyOptionsLoader?
+    @State private var arrivalRuleSets: ClashRulePolicyOptions?
 
     public init(
         snapshot: AppleClientSnapshot,
@@ -1140,6 +1162,7 @@ public struct ClashProfileRulesView<Icon: View, Trailing: View>: View {
         palette: ClashProductPalette,
         showsDismissControl: Bool = true,
         loadPolicyOptions: PolicyOptionsLoader? = nil,
+        loadRuleSets: PolicyOptionsLoader? = nil,
         draftStore: (any ClashUnsavedDraftStore)? = nil,
         draftKey: String? = nil,
         loadGeoValues: @escaping GeoValueLoader,
@@ -1153,6 +1176,7 @@ public struct ClashProfileRulesView<Icon: View, Trailing: View>: View {
         self.palette = palette
         self.showsDismissControl = showsDismissControl
         self.loadPolicyOptions = loadPolicyOptions
+        self.loadRuleSets = loadRuleSets
         self.loadGeoValues = loadGeoValues
         self.icon = icon
         self.trailing = trailing()
@@ -1278,6 +1302,14 @@ extension ClashProfileRulesView {
             discard: { draft = openedWith; draftSlot.clear() }
         )
         .onChange(of: draft) { draftSlot.record($0) }
+         
+         
+         
+        .task {
+            guard let loadRuleSets, draft.rules.contains(where: { !ClashStructuredRule.ruleSetNames(in: $0.raw).isEmpty })
+            else { return }
+            arrivalRuleSets = await loadRuleSets()
+        }
         .clashProductModalRoot(title: "Routing Rules")
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if insideProductModal {
@@ -1691,9 +1723,12 @@ extension ClashProfileRulesView {
     }
 
     private var priorityFootnote: ClashDisplayText {
-        draft.prependRules
-            ? "Personal rules are checked first for deliberate exceptions."
-            : "Personal rules are checked after the rules supplied by this profile."
+        .formatCopy("%@\n%@", [
+            draft.prependRules
+                ? "Personal rules are checked first for deliberate exceptions."
+                : "Personal rules are checked after the rules supplied by this profile.",
+            ClashProfileRulesCopy.everyProfileHint,
+        ])
     }
 
     private var saveBehavior: some View {
@@ -1720,6 +1755,11 @@ extension ClashProfileRulesView {
         let invalidTarget = parsed.map {
             policyOptionsForValidation?.flagsUnknownTarget(of: $0) ?? false
         } ?? false
+         
+         
+         
+        let ruleSetNotInEffect = rule.isEnabled
+            ? (policyOptionsForValidation ?? arrivalRuleSets)?.ruleSetNotInEffect(rule.raw) : nil
 
         return HStack(
             alignment: .center,
@@ -1754,6 +1794,14 @@ extension ClashProfileRulesView {
                         .foregroundStyle(.red)
                         .accessibilityIdentifier(
                             "profile-rules.rule.\(index).invalid-target"
+                        )
+                }
+                if let ruleSetNotInEffect {
+                    Text(clash: ruleSetNotInEffect)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier(
+                            "profile-rules.rule.\(index).missing-rule-set"
                         )
                 }
             }
@@ -1893,27 +1941,35 @@ extension ClashProfileRulesView {
      
      
     private func openRuleEditor(_ target: ClashRuleEditTarget) {
-        pendingRule = target
         if loadedPolicyOptions != nil {
             pendingRule = nil
             editingRule = target
             return
         }
-        guard let loadPolicyOptions else {
+        guard loadPolicyOptions != nil else {
             loadedPolicyOptions = editor.policyOptions
             pendingRule = nil
             editingRule = target
             return
         }
-        guard !isLoadingPolicyOptions else { return }
+        pendingRule = target
+        readDeferredPolicyOptions()
+    }
+
+     
+     
+    private func readDeferredPolicyOptions() {
+        guard loadedPolicyOptions == nil, !isLoadingPolicyOptions, let loadPolicyOptions else { return }
         isLoadingPolicyOptions = true
         Task { @MainActor in
             let options = await loadPolicyOptions()
-            loadedPolicyOptions = options
-            let requested = pendingRule
-            pendingRule = nil
+            if loadedPolicyOptions == nil { loadedPolicyOptions = options }
             isLoadingPolicyOptions = false
-            editingRule = requested
+             
+            if let requested = pendingRule {
+                pendingRule = nil
+                editingRule = requested
+            }
         }
     }
 
@@ -2210,6 +2266,9 @@ private struct ClashRuleBuilderView<Icon: View>: View {
     @Environment(\.locale) private var locale
 
     @State private var action: ClashStructuredRule.Action
+     
+     
+    private let openedAction: ClashStructuredRule.Action?
     @State private var content: String
     @State private var target: String
     @State private var noResolve: Bool
@@ -2315,6 +2374,7 @@ private struct ClashRuleBuilderView<Icon: View>: View {
         _enabled = State(initialValue: draft.enabled)
         _comment = State(initialValue: draft.comment)
         _action = State(initialValue: draft.action)
+        openedAction = rule.raw.isEmpty ? nil : parsed?.action
         _content = State(initialValue: draft.content)
         _target = State(initialValue: draft.target)
         _noResolve = State(initialValue: draft.noResolve)
@@ -2522,11 +2582,19 @@ private struct ClashRuleBuilderView<Icon: View>: View {
                      
                      
                      
-                    excludedActions: showsTarget ? [] : ClashStructuredRule.refusedInARuleSet,
+                     
+                     
+                     
+                     
+                    excludedActions: showsTarget
+                        ? options.unofferedKinds.subtracting([action] + (openedAction.map { [$0] } ?? []))
+                        : ClashStructuredRule.refusedInARuleSet,
                     icon: icon
                         )
                         .clashPushedDetailPage()
                         .modifier(ClashSetterRoutedBack())
+                         
+                        .clashDeparturePage()
             } label: {
                 HStack {
                     Text("Type")
@@ -3438,7 +3506,7 @@ private struct ClashRuleTypeSelectionView<Icon: View>: View {
         }
         .clashPageTitle(.copy(title))
         .accessibilityIdentifier("profile-rule.type.screen")
-        .clashProductModalChild(title: title)
+        .clashProductModalChild(title: .copy(title))
         .clashCapturesDismiss(dismiss)
     }
 
@@ -3536,6 +3604,7 @@ private struct ClashRuleConditionEditorView<Icon: View>: View {
                         ),
                         runtimeProfile: runtimeProfile,
                         excludesLogic: true,
+                        excludedActions: options.unofferedKinds.subtracting([condition.action]),
                         title: "Condition Type",
                         icon: icon
                     )
@@ -3880,7 +3949,7 @@ public struct ClashRulePolicyPickerView<Icon: View>: View {
             }
             .clashPageTitle(.copy(title))
             .clashProductModalChild(
-                title: title,
+                title: .copy(title),
                 searchText: $query
             )
             .clashCapturesDismiss(dismiss)
@@ -4266,7 +4335,7 @@ private struct ClashRuleGeoValuePickerView<Icon: View>: View {
             await prepareMatches()
         }
         .clashProductModalChild(
-            title: title,
+            title: .copy(title),
             searchText: $query
         )
         .clashCapturesDismiss(dismiss)
@@ -4514,7 +4583,62 @@ extension ClashRuleLineSnapshot {
     }
 }
 
+extension ClashRulesOverviewSnapshot {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func inapplicableLine(locale: Locale) -> String {
+        let format = inapplicableCount == 1
+            ? "%1$@ rule will not take effect on %2$@"
+            : "%1$@ rules will not take effect on %2$@"
+        return ClashCopy.format(format, locale: locale, ClashCopy.count(inapplicableCount, locale: locale), platformTitle)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashRulesCountCopy {
+     
+     
+    static func rules(_ count: Int, locale: Locale) -> String {
+        ClashCopy.format(count == 1 ? "%@ rule" : "%@ rules", locale: locale, ClashCopy.count(count, locale: locale))
+    }
+
+     
+    static func moreRules(_ count: Int, locale: Locale) -> String {
+        ClashCopy.format(count == 1 ? "%@ more rule" : "%@ more rules", locale: locale, ClashCopy.count(count, locale: locale))
+    }
+
+     
+    static func moreMatches(_ count: Int, locale: Locale) -> String {
+        ClashCopy.format(count == 1 ? "%@ more match…" : "%@ more matches…", locale: locale, ClashCopy.count(count, locale: locale))
+    }
+
+     
+     
+     
+     
+    static func rulesTo(_ count: Int, target: String, locale: Locale) -> String {
+        ClashCopy.format(count == 1 ? "%1$@ rule to %2$@" : "%1$@ rules to %2$@", locale: locale,
+                         ClashCopy.count(count, locale: locale), target)
+    }
+}
+
 extension ClashRuleSetSnapshot {
+     
      
      
      
@@ -4523,7 +4647,43 @@ extension ClashRuleSetSnapshot {
      
     func subtitle(locale: Locale) -> String {
         guard let entryCount else { return detail }
-        let counted = ClashCopy.format("%@ rules", locale: locale, ClashCopy.count(entryCount, locale: locale))
+        let counted = ClashRulesCountCopy.rules(entryCount, locale: locale)
         return detail.isEmpty ? counted : detail + " · " + counted
     }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func localFileNote(locale: Locale) -> String? {
+        let kind = detail.split(separator: "·").first?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+         
+         
+         
+         
+         
+         
+        guard kind == "file", entryCount == 0 else { return nil }
+        return ClashCopy.string(
+            "This set is read from a file on the device that wrote the configuration, which is not carried with it. Give it a link instead, or paste its rules into the configuration.",
+            locale: locale
+        )
+    }
+}
+
+public enum ClashProfileRulesCopy {
+     
+     
+     
+     
+     
+    public static let everyProfileHint = "To apply rules to every profile, create a module in Profiles › Modules."
 }

@@ -39,7 +39,12 @@ public struct ClashMacRuleEditorActions {
      
     public var copy: @MainActor (ConfigurationRuleDraft, String) async throws -> Void
      
-    public var download: @MainActor (String) async throws -> [String]
+     
+     
+     
+     
+     
+    public var download: @MainActor (String) async throws -> ConfigurationRuleSetContent
      
      
      
@@ -76,7 +81,7 @@ public struct ClashMacRuleEditorActions {
         saveLocal: @escaping @MainActor (ConfigurationLocalRuleSet) async throws -> ClashMacRuleEditorState,
         deleteLocal: @escaping @MainActor (String) async throws -> ClashMacRuleEditorState,
         copy: @escaping @MainActor (ConfigurationRuleDraft, String) async throws -> Void,
-        download: @escaping @MainActor (String) async throws -> [String]
+        download: @escaping @MainActor (String) async throws -> ConfigurationRuleSetContent
     ) {
         self.load = load
         self.save = save
@@ -184,6 +189,14 @@ public struct ClashMacRuleEditorSheet: View {
      
      
     @State private var installedRuleSets: Set<String> = []
+     
+     
+     
+     
+     
+     
+     
+    @State private var catalogSwitches = ClashStoredSwitch<String>()
     @State private var loadError: String?
     @State private var error: String?
     @State private var busy = false
@@ -248,6 +261,7 @@ public struct ClashMacRuleEditorSheet: View {
                 case .rule(let id):
                     ClashMacRuleRowEditor(
                         draft: state.draft, rowID: id, hasSwitches: actions.rulesHaveSwitches,
+                        judgesRuleSets: actions.rulesHaveSwitches,
                         nodeCandidates: nodeCandidates,
                         createGroup: { document in try mutateThrowing { draft in try draft.setGroup(document, groupID: nil) } },
                         geoValues: actions.geoValues,
@@ -267,6 +281,7 @@ public struct ClashMacRuleEditorSheet: View {
                      
                     ClashMacRuleRowEditor(
                         draft: state.draft, rowID: id, subRuleID: subRuleID,
+                        judgesRuleSets: actions.rulesHaveSwitches,
                         nodeCandidates: nodeCandidates,
                         createGroup: { document in try mutateThrowing { draft in try draft.setGroup(document, groupID: nil) } },
                         geoValues: actions.geoValues,
@@ -316,7 +331,8 @@ public struct ClashMacRuleEditorSheet: View {
                                 adopt(next, keepDraft: true)
                                 try mutateThrowing { draft in
                                     try draft.attachRuleSet(
-                                        key: ClashMacRuleSetKey.local(set), name: set.name, rules: set.rules, policy: policy
+                                        key: ClashMacRuleSetKey.local(set), name: set.name, rules: set.rules, policy: policy,
+                                        link: set.link, behavior: set.behavior
                                     )
                                 }
                             }
@@ -803,8 +819,7 @@ public struct ClashMacRuleEditorSheet: View {
     }
 
     private func ruleSetsSection(_ state: ClashMacRuleEditorState) -> some View {
-        let draft = state.draft
-        return Group {
+        Group {
             Section {
                 if presentation == .sheet {
                     Button { sheet = .ruleSet(nil) } label: { Text(clash: .copy("Add Rule Set")) }
@@ -824,20 +839,20 @@ public struct ClashMacRuleEditorSheet: View {
                         set: { _ in
                             try? mutateThrowing { value in
                                 if value.containsRuleSet(key) { value.removeRuleSet(key) }
-                                else { try value.addRuleSet(key: key, name: set.name, rules: set.rules, defaultRoute: "proxy") }
+                                else { try value.addRuleSet(key: key, name: set.name, rules: set.rules, defaultRoute: "proxy",
+                                                            link: set.link, behavior: set.behavior) }
                             }
                         }
                     )) {
                         VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
                             Text(verbatim: set.name)
-                            Text(clash: .count(set.rules.count, one: "%@ rule", other: "%@ rules"))
+                            Text(clash: .count(set.ruleCount, one: "%@ rule", other: "%@ rules"))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
                     }
                     .toggleStyle(.checkbox)
                     .accessibilityIdentifier("configuration-center.rule-editor.local.\(set.id)")
-                    .disabled(busy)
                     .contextMenu {
                          
                         Button { sheet = .ruleSet(set.id) } label: { Text(clash: .copy("Edit")) }
@@ -854,20 +869,26 @@ public struct ClashMacRuleEditorSheet: View {
             Section {
                 ForEach(ConfigurationRuleCatalog.builtIn.entries) { entry in
                     let key = ClashMacRuleSetKey.catalog(entry)
-                    Toggle(isOn: Binding(
-                        get: { installedRuleSets.contains(key) },
-                        set: { _ in toggleCatalog(entry, key: key, draft: draft) }
-                    )) {
-                        VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
-                            Text(verbatim: entry.displayName)
-                            Text(verbatim: Self.routeName(entry.defaultRoute, locale: locale, copy: copy))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
+                        ClashStoredToggle(catalogSwitches, key: key, stored: installedRuleSets.contains(key),
+                                          identifier: "configuration-center.rule-editor.catalog.\(entry.id)",
+                                          set: { pressCatalog(entry, key: key, $0) }) {
+                            HStack(spacing: ClashTheme.Spacing.compact) {
+                                VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
+                                    Text(verbatim: entry.displayName)
+                                    Text(verbatim: Self.routeName(entry.defaultRoute, locale: locale, copy: copy))
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                                ClashMacStoredWriting(catalogSwitches, key: key)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        ClashStoredFailure(catalogSwitches, key: key) { failure in
+                            Text(verbatim: failure).font(.subheadline).foregroundStyle(.red)
+                                .accessibilityIdentifier("configuration-center.rule-editor.catalog.error")
                         }
                     }
-                    .toggleStyle(.checkbox)
-                    .accessibilityIdentifier("configuration-center.rule-editor.catalog.\(entry.id)")
-                    .disabled(busy)
                 }
             } header: {
                 Text(clash: .copy("Rule Sets"))
@@ -1132,17 +1153,29 @@ public struct ClashMacRuleEditorSheet: View {
         mutate { $0.moveGroups([id], before: target) }
     }
 
-    private func toggleCatalog(_ entry: ConfigurationRuleCatalogEntry, key: String, draft: ConfigurationRuleDraft) {
-        if draft.containsRuleSet(key) {
-            mutate { $0.removeRuleSet(key) }
-            return
-        }
-        Task {
-            await run {
-                let rules = try await actions.download(entry.sourceURLString)
+     
+     
+    private func pressCatalog(_ entry: ConfigurationRuleCatalogEntry, key: String, _ on: Bool) {
+        catalogSwitches.press(key, on) { on in
+            guard on != (state?.draft.containsRuleSet(key) ?? false) else { return }
+            guard on else { return mutate { $0.removeRuleSet(key) } }
+            let read: ConfigurationRuleSetContent
+            do {
+                read = try await actions.download(entry.sourceURLString)
+            } catch {
+                throw ClashMacStoredRefusal(message: ClashErrorCopy.message(error, locale: locale))
+            }
+            do {
+                 
+                 
                 try mutateThrowing { value in
-                    try value.addRuleSet(key: key, name: entry.displayName, rules: rules, defaultRoute: entry.defaultRoute.rawValue)
+                    try value.addRuleSet(key: key, name: entry.displayName, rules: read.rules,
+                                         defaultRoute: entry.defaultRoute.rawValue, link: read.link, behavior: read.behavior)
                 }
+            } catch let refusal as ClashMacEditRefusal {
+                 
+                error = nil
+                throw ClashMacStoredRefusal(message: refusal.message)
             }
         }
     }
@@ -1210,9 +1243,15 @@ public struct ClashMacRuleEditorSheet: View {
     }
 
     private func save() {
-        guard let state, dirty, !busy else { return }
+        guard state != nil, dirty, !busy else { return }
         Task {
             await run {
+                 
+                 
+                 
+                 
+                await catalogSwitches.waitForWrites()
+                guard let state else { return }
                 let reloaded = try await actions.save(state.draft)
                 var current = state
                 current.draft = reloaded
@@ -1278,6 +1317,11 @@ struct ClashMacRuleRowEditor: View {
      
      
      
+    var judgesRuleSets = true
+     
+     
+     
+     
      
     let createGroup: ((OrderedJSON) throws -> Void)?
      
@@ -1309,8 +1353,22 @@ struct ClashMacRuleRowEditor: View {
     @State private var addingGroup = false
     @State private var pickingGeo = false
     @State private var pickedFrom: ClashMacGeoResource?
+     
+    @State private var pickingRuleSet = false
+     
+     
+    @State private var lastAction: ClashStructuredRule.Action
+     
+     
+    private let openedAction: ClashStructuredRule.Action?
+     
+     
+     
+     
+    private let ruleSets: [String]
 
     init(draft: ConfigurationRuleDraft, rowID: UUID?, subRuleID: UUID? = nil, hasSwitches: Bool = true,
+         judgesRuleSets: Bool = true,
          nodeCandidates: ConfigurationRuleTargetCandidates = .init(sections: []),
          createGroup: ((OrderedJSON) throws -> Void)? = nil,
          geoValues: ClashMacGeoValueLoader? = nil,
@@ -1320,6 +1378,7 @@ struct ClashMacRuleRowEditor: View {
         self.rowID = rowID
         self.subRuleID = subRuleID
         self.hasSwitches = hasSwitches
+        self.judgesRuleSets = judgesRuleSets
         self.createGroup = createGroup
         self.geoValues = geoValues
         self.commit = commit
@@ -1331,6 +1390,9 @@ struct ClashMacRuleRowEditor: View {
         _note = State(initialValue: row.map { draft.note(for: $0.raw) } ?? "")
         let parsed = row.flatMap { ClashStructuredRule.parse($0.raw) }
         _action = State(initialValue: parsed?.action ?? .domainSuffix)
+        _lastAction = State(initialValue: parsed?.action ?? .domainSuffix)
+        openedAction = parsed?.action
+        ruleSets = draft.ruleSetNames
         _content = State(initialValue: parsed?.content ?? "")
         _target = State(initialValue: parsed?.target ?? "DIRECT")
         _src = State(initialValue: parsed?.src ?? false)
@@ -1352,8 +1414,12 @@ struct ClashMacRuleRowEditor: View {
      
      
      
+     
+     
+     
     static func offeredActions(_ syntax: ClashMacEditorSyntax?, keeping: ClashStructuredRule.Action? = nil,
-                               lines: Bool = false) -> [ClashStructuredRule.Action] {
+                               lines: Bool = false, ruleSets: [String]? = nil,
+                               alsoKeeping: ClashStructuredRule.Action? = nil) -> [ClashStructuredRule.Action] {
          
          
         let available = ClashStructuredRule.availableActions(for: .macosPacketTunnel)
@@ -1365,7 +1431,11 @@ struct ClashMacRuleRowEditor: View {
             offered = available
         }
         if lines { offered = offered.filter { !ClashStructuredRule.refusedInARuleSet.contains($0) } }
-        if let keeping, !offered.contains(keeping) { offered.append(keeping) }
+        if let ruleSets {
+            let unoffered = ClashRulePolicyOptions(ruleSets: ruleSets, ruleSetsAreKnown: true).unofferedKinds
+            offered = offered.filter { !unoffered.contains($0) }
+        }
+        for kept in [keeping, alsoKeeping].compactMap({ $0 }) where !offered.contains(kept) { offered.append(kept) }
         return offered
     }
 
@@ -1413,6 +1483,11 @@ struct ClashMacRuleRowEditor: View {
         return ClashMacRuleEditorSheet.policyCandidates(groups: draft.groups, nodes: nodeCandidates)
     }
 
+
+     
+     
+    private var knownRuleSets: [String]? { judgesRuleSets ? ruleSets : nil }
+
     private var assembled: String {
         ClashStructuredRule(
             action: action,
@@ -1424,7 +1499,13 @@ struct ClashMacRuleRowEditor: View {
         ).rawValue
     }
 
-    private var canSave: Bool { !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+     
+     
+     
+    private var canSave: Bool {
+        !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!structured || !action.needsContent || !content.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
 
     var body: some View {
         ClashMacSheetFrame(
@@ -1440,6 +1521,17 @@ struct ClashMacRuleRowEditor: View {
                     content = picked
                     pickedFrom = resource
                     pickingGeo = false
+                }
+            } else if pickingRuleSet {
+                ClashMacTargetPickerPage(
+                    candidates: ConfigurationRuleTargetCandidates(sections: [
+                        .init(id: "rule-sets", kind: .source, sourceLabel: ClashCopy.string("Rule Sets", locale: locale), names: ruleSets)
+                    ]),
+                    current: content,
+                    identifier: "configuration-center.rule-editor.rule.rule-set"
+                ) { picked in
+                    content = picked
+                    pickingRuleSet = false
                 }
             } else if pickingTarget {
                 ClashMacTargetPickerPage(
@@ -1458,14 +1550,20 @@ struct ClashMacRuleRowEditor: View {
                 if structured {
                     Section {
                         Picker(selection: $action) {
-                            ForEach(Self.offeredActions(syntax, keeping: action), id: \.self) { item in
+                            ForEach(Self.offeredActions(syntax, keeping: action, ruleSets: knownRuleSets, alsoKeeping: openedAction), id: \.self) { item in
                                 Text(verbatim: ConfigurationRuleWords.kindName(item.rawValue, locale: locale, copy: copy)).tag(item)
                             }
                         } label: {
                             Text(clash: .copy("Rule Type"))
                         }
                         .accessibilityIdentifier("configuration-center.rule-editor.rule.action")
-                        if let resource = action.clashMacGeoResource, geoValues != nil {
+                        if action == .ruleSet, let knownRuleSets, !knownRuleSets.isEmpty {
+                             
+                            ClashMacTargetRow(title: .copy("Rule Set"), value: content,
+                                              identifier: "configuration-center.rule-editor.rule.rule-set") {
+                                pickingRuleSet = true
+                            }
+                        } else if let resource = action.clashMacGeoResource, geoValues != nil {
                             ClashMacGeoValueRow(
                                 resource: resource, value: content,
                                 identifier: "configuration-center.rule-editor.rule.geo"
@@ -1507,6 +1605,10 @@ struct ClashMacRuleRowEditor: View {
                          
                          
                         if pickedFrom != nil, changed.clashMacGeoResource != pickedFrom { content = ""; pickedFrom = nil }
+                         
+                         
+                        content = ClashRulePolicyOptions.value(content, from: lastAction, to: changed, ruleSets: knownRuleSets)
+                        lastAction = changed
                     }
                 }
                 Section {
@@ -1541,6 +1643,9 @@ struct ClashMacRuleRowEditor: View {
             } else if pickingTarget {
                 Button { pickingTarget = false } label: { Text(clash: .copy("Back")) }
                     .accessibilityIdentifier("configuration-center.rule-editor.rule.target.back")
+            } else if pickingRuleSet {
+                Button { pickingRuleSet = false } label: { Text(clash: .copy("Back")) }
+                    .accessibilityIdentifier("configuration-center.rule-editor.rule.rule-set.back")
             }
         } trailing: {
             if !pickingGeo {
@@ -1844,7 +1949,7 @@ struct ClashMacRuleGroupEditor: View {
             )) { Text(verbatim: copy.title(for: field, key: key, locale: locale)) }
             .toggleStyle(.switch)
             .accessibilityIdentifier("configuration-center.rule-editor.group.field.toggle")
-        case .number(_, _, let unit?)? where ClashMacTimeMenuRow<EmptyView>.unit(of: control, field: field) != nil:
+        case .number(_, _, let unit?, _)? where ClashMacTimeMenuRow<EmptyView>.unit(of: control, field: field) != nil:
              
              
             ClashMacTimeMenuRow(field: field, unit: unit, value: value, offersDefault: true, defaultLine: defaultLine(field),
@@ -2194,7 +2299,7 @@ struct ClashMacLocalRuleSetEditor: View {
     let value: ConfigurationLocalRuleSet?
     let candidates: ConfigurationRuleTargetCandidates
     let geoValues: ClashMacGeoValueLoader?
-    let download: @MainActor (String) async throws -> [String]
+    let download: @MainActor (String) async throws -> ConfigurationRuleSetContent
      
     let save: (ConfigurationLocalRuleSet, String) async throws -> Void
     let close: () -> Void
@@ -2229,7 +2334,7 @@ struct ClashMacLocalRuleSetEditor: View {
     init(
         value: ConfigurationLocalRuleSet?, policy: String, candidates: ConfigurationRuleTargetCandidates,
         geoValues: ClashMacGeoValueLoader? = nil,
-        download: @escaping @MainActor (String) async throws -> [String],
+        download: @escaping @MainActor (String) async throws -> ConfigurationRuleSetContent,
         save: @escaping (ConfigurationLocalRuleSet, String) async throws -> Void,
         close: @escaping () -> Void
     ) {
@@ -2246,6 +2351,16 @@ struct ClashMacLocalRuleSetEditor: View {
         _lines = State(initialValue: isLink ? [] : Self.lines(from: input))
         _kind = State(initialValue: isLink ? .link : .manual)
         _policy = State(initialValue: policy)
+    }
+
+     
+     
+     
+     
+     
+    static func set(id: String, name: String, input: String, read: ConfigurationRuleSetContent) -> ConfigurationLocalRuleSet {
+        ConfigurationLocalRuleSet(id: id, name: name.trimmingCharacters(in: .whitespacesAndNewlines), input: input,
+                                  rules: read.rules, link: read.link, behavior: read.behavior)
     }
 
      
@@ -2482,11 +2597,8 @@ struct ClashMacLocalRuleSetEditor: View {
             defer { busy = false }
             do {
                 let trimmed = input
-                let rules = try await download(trimmed)
-                let set = ConfigurationLocalRuleSet(
-                    id: value?.id ?? UUID().uuidString.lowercased(),
-                    name: name.trimmingCharacters(in: .whitespacesAndNewlines), input: trimmed, rules: rules
-                )
+                let set = Self.set(id: value?.id ?? UUID().uuidString.lowercased(), name: name,
+                                   input: trimmed, read: try await download(trimmed))
                 try await save(set, policy)
                 close()
             } catch {

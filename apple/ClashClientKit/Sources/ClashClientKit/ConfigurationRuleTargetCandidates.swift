@@ -15,6 +15,7 @@ public struct ConfigurationRuleTargetCandidates: Equatable, Sendable {
         public let id: String
         public let kind: Kind
          
+         
         public let sourceLabel: String?
          
         public let names: [String]
@@ -68,11 +69,19 @@ public struct ConfigurationRuleTargetCandidates: Equatable, Sendable {
      
      
      
+     
+     
+     
+     
+     
+     
+     
     public static func make(
         groups: [String],
         snapshot: ConfigurationLibrarySnapshot,
         sourceIDs: [String]? = nil,
         providers: Bool = false,
+        naming: (ConfigurationSourceRecord) -> String,
         payload: (ConfigurationSourceVersion) throws -> ConfigurationSourcePayload
     ) throws -> ConfigurationRuleTargetCandidates {
         var sources: [NodeSource] = []
@@ -82,7 +91,7 @@ public struct ConfigurationRuleTargetCandidates: Equatable, Sendable {
             if let sourceIDs, !sourceIDs.contains(record.id) { continue }
             if sourceIDs == nil, record.privateToConfigurationID != nil { continue }
             let document = try payload(ConfigurationSourceVersion(record)).documentJSON
-            sources.append(NodeSource(id: record.id, label: record.label, documentJSON: document))
+            sources.append(NodeSource(id: record.id, label: naming(record), documentJSON: document))
         }
         return make(groups: groups, sources: sources, providers: providers)
     }

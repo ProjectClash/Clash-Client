@@ -37,7 +37,7 @@ struct ClashVPNControl: ControlWidget {
             }
         }
         .displayName("Clash VPN")
-        .description("Start or stop the installed Clash by Clash VPN profile.")
+        .description("Start or stop the installed Clash VPN profile.")
     }
 
     struct Provider: ControlValueProvider {

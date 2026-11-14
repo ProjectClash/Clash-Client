@@ -19,6 +19,7 @@ import UIKit
  
  
  
+ 
 struct ConfigurationSourceViewerPage: View {
     let url: URL
     let title: String
@@ -116,7 +117,7 @@ final class ConfigurationSourceViewerModel: ObservableObject {
     @Published var finding = false
     weak var controller: ConfigurationSourceViewerController?
 
-    func go(toLine line: Int) { controller?.show(line: line, column: nil) }
+    func go(toLine line: Int) { controller?.show(line: line, match: nil) }
     func askForLine() { controller?.askForLine() }
     func openFind() { controller?.openFind() }
 }
@@ -147,8 +148,20 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
     private var indexTask: Task<Void, Never>?
 
     private let table = ConfigurationSourceTable(frame: .zero, style: .plain)
+     
+     
     private let across = UIScrollView()
     private var widths: [NSLayoutConstraint] = []
+     
+     
+    private var contentWidth: NSLayoutConstraint?
+     
+     
+    private var metrics: Metrics?
+     
+     
+    private var measuredRuns: [Int: ConfigurationSourceLineRuns] = [:]
+    private static let runsKept = 4096
     private let failure = UILabel()
     private let findBar = ConfigurationSourceFindBar()
 
@@ -179,19 +192,35 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
 
     private var wraps: Bool { traitCollection.horizontalSizeClass != .regular }
 
-    private var textFont: UIFont {
-        UIFontMetrics(forTextStyle: .body).scaledFont(
+    private struct Metrics {
+        let textFont: UIFont
+        let gutterFont: UIFont
+        let gutterWidth: CGFloat
+    }
+
+    private var measures: Metrics {
+        if let metrics { return metrics }
+        let textFont = UIFontMetrics(forTextStyle: .body).scaledFont(
             for: .monospacedSystemFont(ofSize: wraps ? 12.5 : 13.5, weight: .regular), compatibleWith: traitCollection)
-    }
-
-    private var gutterFont: UIFont {
-        UIFontMetrics(forTextStyle: .footnote).scaledFont(
+        let gutterFont = UIFontMetrics(forTextStyle: .footnote).scaledFont(
             for: .monospacedDigitSystemFont(ofSize: wraps ? 11 : 12, weight: .regular), compatibleWith: traitCollection)
+        let digits = String(repeating: "0", count: max(String(index?.lineCount ?? 1).count, 3))
+        let made = Metrics(
+            textFont: textFont, gutterFont: gutterFont,
+            gutterWidth: ceil((digits as NSString).size(withAttributes: [.font: gutterFont]).width) + 14)
+        metrics = made
+        return made
     }
 
-    private var gutterWidth: CGFloat {
-        let digits = String(repeating: "0", count: max(String(index?.lineCount ?? 1).count, 3))
-        return ceil((digits as NSString).size(withAttributes: [.font: gutterFont]).width) + 14
+    private var textFont: UIFont { measures.textFont }
+    private var gutterFont: UIFont { measures.gutterFont }
+    private var gutterWidth: CGFloat { measures.gutterWidth }
+     
+    private var textStart: CGFloat { gutterWidth + 10 }
+
+     
+    private var acrossOffset: CGFloat {
+        wraps ? 0 : max(0, across.contentOffset.x + across.adjustedContentInset.left)
     }
 
     override func viewDidLoad() {
@@ -202,6 +231,7 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
         across.translatesAutoresizingMaskIntoConstraints = false
         across.alwaysBounceHorizontal = false
         across.showsVerticalScrollIndicator = false
+        across.delegate = self
         view.addSubview(across)
         table.translatesAutoresizingMaskIntoConstraints = false
         table.dataSource = self
@@ -221,10 +251,15 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
             across.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             across.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             across.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+             
+             
+             
+             
+             
             table.topAnchor.constraint(equalTo: across.frameLayoutGuide.topAnchor),
             table.bottomAnchor.constraint(equalTo: across.frameLayoutGuide.bottomAnchor),
-            table.leadingAnchor.constraint(equalTo: across.contentLayoutGuide.leadingAnchor),
-            table.trailingAnchor.constraint(equalTo: across.contentLayoutGuide.trailingAnchor),
+            table.leadingAnchor.constraint(equalTo: across.frameLayoutGuide.leadingAnchor),
+            table.trailingAnchor.constraint(equalTo: across.frameLayoutGuide.trailingAnchor),
             across.contentLayoutGuide.heightAnchor.constraint(equalTo: across.frameLayoutGuide.heightAnchor),
         ])
 
@@ -283,6 +318,9 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
 
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
+         
+         
+        guard isViewLoaded else { return }
         guard previous?.horizontalSizeClass != traitCollection.horizontalSizeClass
             || previous?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
         applyWidth()
@@ -303,23 +341,56 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
 
      
      
+     
+     
     private func applyWidth() {
         NSLayoutConstraint.deactivate(widths)
+        metrics = nil
+        measuredRuns = [:]
         let font = textFont
         let lineHeight = ceil(font.lineHeight + 2)
         table.estimatedRowHeight = lineHeight
         table.rowHeight = wraps ? UITableView.automaticDimension : lineHeight
         if wraps {
-            widths = [table.widthAnchor.constraint(equalTo: across.frameLayoutGuide.widthAnchor)]
+            contentWidth = nil
+            widths = [across.contentLayoutGuide.widthAnchor.constraint(equalTo: across.frameLayoutGuide.widthAnchor)]
+            across.contentOffset.x = -across.adjustedContentInset.left
         } else {
+             
+             
+             
+             
             let column = ("0" as NSString).size(withAttributes: [.font: font]).width
-            let columns = CGFloat(min(index?.longestLineBytes ?? 0, 2000))
-            let wide = table.widthAnchor.constraint(equalToConstant: gutterWidth + 10 + columns * column + 24)
+            let wide = across.contentLayoutGuide.widthAnchor.constraint(
+                equalToConstant: textStart + CGFloat(index?.widestLineColumns ?? 0) * column + 24)
             wide.priority = .defaultHigh
-            widths = [wide, table.widthAnchor.constraint(greaterThanOrEqualTo: across.frameLayoutGuide.widthAnchor)]
+            contentWidth = wide
+            widths = [wide, across.contentLayoutGuide.widthAnchor.constraint(greaterThanOrEqualTo: across.frameLayoutGuide.widthAnchor)]
         }
         NSLayoutConstraint.activate(widths)
         across.isScrollEnabled = !wraps
+    }
+
+     
+     
+    private func runs(ofLine line: Int, _ text: NSString) -> ConfigurationSourceLineRuns {
+        if let known = measuredRuns[line] { return known }
+        let runs = ConfigurationSourceLineRuns.measure(text, font: textFont)
+        if measuredRuns.count >= Self.runsKept { measuredRuns.removeAll(keepingCapacity: true) }
+        measuredRuns[line] = runs
+        if let contentWidth, textStart + runs.width + 24 > contentWidth.constant {
+            contentWidth.constant = ceil(textStart + runs.width + 24)
+        }
+        return runs
+    }
+
+     
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === across else { return }
+        let offset = acrossOffset
+        for case let cell as ConfigurationSourceLineCell in table.visibleCells {
+            cell.scrollAcross(to: offset)
+        }
     }
 
      
@@ -364,8 +435,10 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
         let cell = tableView.dequeueReusableCell(withIdentifier: ConfigurationSourceLineCell.identifier, for: indexPath)
         guard let cell = cell as? ConfigurationSourceLineCell, let source, let index else { return cell }
         let line = source.line(indexPath.row, in: index)
-        cell.show(number: String(indexPath.row + 1), text: attributed(line, row: indexPath.row),
-                  textFont: textFont, gutterFont: gutterFont, gutterWidth: gutterWidth, wraps: wraps)
+        let drawn = attributed(line, row: indexPath.row)
+        cell.show(number: String(indexPath.row + 1), text: drawn,
+                  textFont: textFont, gutterFont: gutterFont, gutterWidth: gutterWidth, wraps: wraps,
+                  runs: wraps ? nil : runs(ofLine: indexPath.row, drawn.string as NSString), offset: acrossOffset)
         return cell
     }
 
@@ -385,7 +458,9 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
 
      
     private func attributed(_ line: String, row: Int) -> NSAttributedString {
-        let text = NSMutableAttributedString(string: line, attributes: [.foregroundColor: UIColor.label])
+         
+         
+        let text = NSMutableAttributedString(string: line, attributes: [.foregroundColor: UIColor.label, .font: textFont])
         for token in ConfigurationSourceHighlight.tokens(in: line) {
             text.addAttribute(.foregroundColor, value: ConfigurationSourcePalette.color(token.kind), range: token.range)
         }
@@ -446,38 +521,52 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
         alert.addAction(UIAlertAction(title: copy("Cancel"), style: .cancel))
         let go = UIAlertAction(title: copy("Go"), style: .default) { [weak self, weak alert] _ in
             guard let typed = alert?.textFields?.first?.text, let line = Int(typed.filter(\.isNumber)) else { return }
-            self?.show(line: min(max(line, 1), index.lineCount) - 1, column: nil)
+            self?.show(line: min(max(line, 1), index.lineCount) - 1, match: nil)
         }
         alert.addAction(go)
         alert.preferredAction = go
         present(alert, animated: true)
     }
 
-    func show(line: Int, column: Int?) {
+    func show(line: Int, match: ConfigurationSourceMatch?) {
         guard let index, line >= 0, line < index.lineCount else { return }
-        table.scrollToRow(at: IndexPath(row: line, section: 0), at: column == nil ? .top : .middle, animated: false)
+        table.scrollToRow(at: IndexPath(row: line, section: 0), at: match == nil ? .top : .middle, animated: false)
         guard !wraps else { return }
-        if let column {
+        var offset: CGFloat = 0
+        if let match, let source {
              
              
              
-            let width = ("0" as NSString).size(withAttributes: [.font: textFont]).width
-            let x = gutterWidth + 10 + CGFloat(column) * width
-            let end = x + CGFloat(max(findBar.field.text?.count ?? 1, 1)) * width
-            let visible = across.bounds.width
-            let offset: CGFloat
-            if end <= visible - 24 {
-                offset = 0
-            } else if x < across.contentOffset.x || end > across.contentOffset.x + visible - 24 {
-                offset = max(0, min(x - visible / 3, across.contentSize.width - visible))
-            } else {
-                offset = across.contentOffset.x
+             
+             
+            let text = source.line(line, in: index) as NSString
+            let range = match.utf16Range(in: text as String)
+            if range.location != NSNotFound, NSMaxRange(range) <= text.length {
+                let span = runs(ofLine: line, text).span(of: range, in: text)
+                 
+                 
+                 
+                let insets = across.adjustedContentInset
+                let visible = across.bounds.width - insets.left - insets.right - textStart
+                let now = acrossOffset
+                if span.upperBound <= visible - 24 {
+                    offset = 0
+                } else if span.lowerBound < now || span.upperBound > now + visible - 24 {
+                    offset = span.lowerBound - visible / 3
+                } else {
+                    offset = now
+                }
             }
-            if offset != across.contentOffset.x {
-                across.setContentOffset(CGPoint(x: offset, y: 0), animated: false)
-            }
-        } else {
-            across.setContentOffset(.zero, animated: false)
+        }
+         
+         
+         
+        across.layoutIfNeeded()
+        let insets = across.adjustedContentInset
+        offset = min(max(0, offset), max(0, across.contentSize.width + insets.left + insets.right - across.bounds.width))
+        if offset != acrossOffset {
+            across.setContentOffset(
+                CGPoint(x: offset - across.adjustedContentInset.left, y: across.contentOffset.y), animated: false)
         }
     }
 
@@ -560,7 +649,7 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
 
 
             current = 0
-            show(line: first.line, column: first.column)
+            show(line: first.line, match: first)
             touched.insert(first.line)
         }
         reload(lines: touched)
@@ -581,7 +670,7 @@ final class ConfigurationSourceViewerController: UIViewController, UITableViewDa
         let next = ((current ?? -1) + direction + matches.count) % matches.count
         current = next
         let match = matches[next]
-        show(line: match.line, column: match.column)
+        show(line: match.line, match: match)
         reload(lines: Set([previous, match.line].compactMap { $0 }))
         updateCounter()
     }
@@ -770,7 +859,11 @@ final class ConfigurationSourceTable: UITableView {
 final class ConfigurationSourceLineCell: UITableViewCell {
     static let identifier = "configuration.source-viewer.line"
     private let number = UILabel()
+     
+     
     private let text = UILabel()
+     
+    private let unwrapped = ConfigurationSourceLineWindow()
     private var gutter: NSLayoutConstraint?
      
      
@@ -785,8 +878,11 @@ final class ConfigurationSourceLineCell: UITableViewCell {
         number.translatesAutoresizingMaskIntoConstraints = false
         number.isAccessibilityElement = false
         text.translatesAutoresizingMaskIntoConstraints = false
+        unwrapped.translatesAutoresizingMaskIntoConstraints = false
+        unwrapped.isHidden = true
         contentView.addSubview(number)
         contentView.addSubview(text)
+        contentView.addSubview(unwrapped)
         let gutter = number.widthAnchor.constraint(equalToConstant: 40)
         self.gutter = gutter
         let lineHeight = text.heightAnchor.constraint(greaterThanOrEqualToConstant: 17)
@@ -800,14 +896,22 @@ final class ConfigurationSourceLineCell: UITableViewCell {
             text.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -12),
             text.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 1),
             text.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -1),
+             
+             
+            unwrapped.leadingAnchor.constraint(equalTo: text.leadingAnchor),
+            unwrapped.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            unwrapped.topAnchor.constraint(equalTo: text.topAnchor),
+            unwrapped.bottomAnchor.constraint(equalTo: text.bottomAnchor),
         ])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+     
+     
     func show(number line: String, text attributed: NSAttributedString, textFont: UIFont, gutterFont: UIFont,
-              gutterWidth: CGFloat, wraps: Bool) {
+              gutterWidth: CGFloat, wraps: Bool, runs: ConfigurationSourceLineRuns? = nil, offset: CGFloat = 0) {
         number.text = line
         number.font = gutterFont
         gutter?.constant = gutterWidth
@@ -815,9 +919,217 @@ final class ConfigurationSourceLineCell: UITableViewCell {
         lineHeight?.constant = ceil(textFont.lineHeight)
         text.numberOfLines = wraps ? 0 : 1
         text.lineBreakMode = wraps ? .byCharWrapping : .byClipping
-        text.attributedText = attributed
+        if let runs, !wraps {
+            text.attributedText = NSAttributedString(string: " ", attributes: [.font: textFont])
+            text.isHidden = true
+            unwrapped.isHidden = false
+            unwrapped.show(attributed, runs: runs, offset: offset)
+        } else {
+            text.attributedText = attributed
+            text.isHidden = false
+            unwrapped.isHidden = true
+            unwrapped.show(NSAttributedString(), runs: .none, offset: 0)
+        }
         accessibilityLabel = attributed.string
         accessibilityValue = line
+    }
+
+     
+    func scrollAcross(to offset: CGFloat) {
+        guard !unwrapped.isHidden else { return }
+        unwrapped.scroll(to: offset)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+struct ConfigurationSourceLineRuns: Equatable {
+    struct Run: Equatable {
+         
+        let range: NSRange
+        let x: CGFloat
+        let width: CGFloat
+         
+        let plain: Bool
+    }
+
+    static let none = ConfigurationSourceLineRuns(runs: [], advance: 0, font: nil)
+     
+     
+     
+    static let longestRun = 128
+
+    let runs: [Run]
+     
+    let advance: CGFloat
+    let font: UIFont?
+
+    var width: CGFloat { runs.last.map { $0.x + $0.width } ?? 0 }
+
+     
+     
+     
+     
+    static func measure(_ line: NSString, font: UIFont) -> ConfigurationSourceLineRuns {
+        let advance = ("0" as NSString).size(withAttributes: [.font: font]).width
+        let length = line.length
+        var runs: [Run] = []
+        runs.reserveCapacity(length / longestRun + 1)
+        var units = [unichar](repeating: 0, count: longestRun + 8)
+        var start = 0
+        var x: CGFloat = 0
+        while start < length {
+            var end = min(start + longestRun, length)
+            if end < length {
+                let whole = line.rangeOfComposedCharacterSequence(at: end)
+                end = whole.location > start ? whole.location : NSMaxRange(whole)
+            }
+            let range = NSRange(location: start, length: end - start)
+            if units.count < range.length { units = [unichar](repeating: 0, count: range.length) }
+            line.getCharacters(&units, range: range)
+            var plain = true
+            for offset in 0..<range.length where units[offset] < 0x20 || units[offset] > 0x7E {
+                plain = false
+                break
+            }
+            let width = plain
+                ? CGFloat(range.length) * advance
+                : line.substring(with: range).size(withAttributes: [.font: font]).width
+            runs.append(Run(range: range, x: x, width: width, plain: plain))
+            x += width
+            start = end
+        }
+        return ConfigurationSourceLineRuns(runs: runs, advance: advance, font: font)
+    }
+
+     
+    func indices(from lower: CGFloat, to upper: CGFloat) -> Range<Int> {
+        var low = 0
+        var high = runs.count
+        while low < high {
+            let middle = (low + high) / 2
+            if runs[middle].x + runs[middle].width <= lower { low = middle + 1 } else { high = middle }
+        }
+        var end = low
+        high = runs.count
+        while end < high {
+            let middle = (end + high) / 2
+            if runs[middle].x < upper { end = middle + 1 } else { high = middle }
+        }
+        return low..<end
+    }
+
+     
+    func span(of range: NSRange, in line: NSString) -> ClosedRange<CGFloat> {
+        let start = x(at: range.location, in: line)
+        return start...max(start, x(at: NSMaxRange(range), in: line))
+    }
+
+    private func x(at location: Int, in line: NSString) -> CGFloat {
+        guard let font, !runs.isEmpty else { return 0 }
+         
+        var low = 0
+        var high = runs.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if runs[middle].range.location <= location { low = middle } else { high = middle - 1 }
+        }
+        let run = runs[low]
+        let into = min(max(0, location - run.range.location), run.range.length)
+        if into == run.range.length { return run.x + run.width }
+        if run.plain { return run.x + CGFloat(into) * advance }
+        let before = NSRange(location: run.range.location, length: into)
+        return run.x + line.substring(with: before).size(withAttributes: [.font: font]).width
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+final class ConfigurationSourceLineWindow: UIView {
+    private var line = NSAttributedString()
+    private var runs = ConfigurationSourceLineRuns.none
+    private var shown: [Int: UILabel] = [:]
+    private var spare: [UILabel] = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func show(_ line: NSAttributedString, runs: ConfigurationSourceLineRuns, offset: CGFloat) {
+        self.line = line
+        self.runs = runs
+        for index in Array(shown.keys) { letGo(index) }
+        bounds.origin.x = offset
+        fill()
+    }
+
+    func scroll(to offset: CGFloat) {
+        guard bounds.origin.x != offset else { return }
+        bounds.origin.x = offset
+        fill()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        fill()
+    }
+
+    private func letGo(_ index: Int) {
+        guard let label = shown.removeValue(forKey: index) else { return }
+         
+        label.attributedText = nil
+        if spare.count < 4 {
+            label.isHidden = true
+            spare.append(label)
+        } else {
+            label.removeFromSuperview()
+        }
+    }
+
+    private func fill() {
+        guard !runs.runs.isEmpty, bounds.width > 0 else { return }
+        let margin = max(bounds.width / 4, 120)
+        let wanted = runs.indices(from: bounds.minX - margin, to: bounds.maxX + margin)
+        for index in Array(shown.keys) where !wanted.contains(index) { letGo(index) }
+        let scale = max(traitCollection.displayScale, 1)
+        for index in wanted where shown[index] == nil {
+            let run = runs.runs[index]
+            let label: UILabel
+            if let reused = spare.popLast() {
+                label = reused
+                label.isHidden = false
+            } else {
+                label = UILabel()
+                label.numberOfLines = 1
+                label.lineBreakMode = .byClipping
+                label.isAccessibilityElement = false
+                addSubview(label)
+            }
+            label.attributedText = line.attributedSubstring(from: run.range)
+             
+             
+            label.frame = CGRect(x: (run.x * scale).rounded() / scale, y: 0,
+                                 width: ceil(run.width) + 1, height: bounds.height)
+            shown[index] = label
+        }
+        for label in shown.values where label.frame.height != bounds.height {
+            label.frame.size.height = bounds.height
+        }
     }
 }
 

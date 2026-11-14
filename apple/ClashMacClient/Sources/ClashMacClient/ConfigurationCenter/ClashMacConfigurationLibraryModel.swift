@@ -551,8 +551,6 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
 
      
      
-     
-     
     public var hasLinkedNodes: Bool {
         snapshot.availableSources.contains { if case .subscription = $0.origin { return $0.isRetainedSnapshot != true && $0.suppliesNodes }; return false }
             || collections.contains { $0.collection.id.kind == .nodes && $0.collection.type == "http" && $0.source.isRetainedSnapshot != true }
@@ -590,10 +588,15 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
         return entries.filter { $0.id.kind != .rules || !$0.source.suppliesNodes || read.contains($0.source.id) }
     }
 
+     
+     
+     
+     
+     
+     
+     
     public func hasLinkedContent(legacyProfiles: Bool) -> Bool {
-        legacyProfiles
-            || snapshot.availableSources.contains { if case .subscription = $0.origin { return $0.isRetainedSnapshot != true }; return false }
-            || collections.contains { $0.collection.type == "http" && $0.source.isRetainedSnapshot != true }
+        legacyProfiles || hasLinkedNodes || hasLinkedRuleSets
     }
 
     private func runBatch(
@@ -813,10 +816,14 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
      
      
      
+     
+     
+     
+     
     nonisolated public static func ruleShelves(
         _ snapshot: ConfigurationLibrarySnapshot, keeping selectedID: String? = nil
     ) -> [ClashMacRuleLibraryShelf] {
-        var schemes = snapshot.visibleRuleSchemes
+        var schemes = snapshot.placingOwnViews(in: snapshot.visibleRuleSchemes, for: nil, running: selectedID)
         if let selectedID, !schemes.contains(where: { $0.id == selectedID }),
            let selected = snapshot.rules.first(where: { $0.id == selectedID }) {
             let family = selected.baseSchemeID ?? selected.id
@@ -882,10 +889,13 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
     }
 
      
+     
+     
+     
     public func configurations(usingSource id: String) -> [String] {
         snapshot.recipes
             .filter { recipe in recipe.dependencies.contains { $0.id == id } }
-            .map(\.label)
+            .map(\.id)
     }
 
      
@@ -895,7 +905,7 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
      
     public func configurations(usingScheme id: String) -> [String] {
         let family = Self.family(of: id, in: snapshot)
-        return snapshot.recipes.filter { family.contains($0.ruleSchemeID) }.map(\.label)
+        return snapshot.recipes.filter { family.contains($0.ruleSchemeID) }.map(\.id)
     }
 
      

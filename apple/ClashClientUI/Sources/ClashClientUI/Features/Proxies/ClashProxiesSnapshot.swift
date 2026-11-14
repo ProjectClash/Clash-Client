@@ -109,7 +109,13 @@ public enum ClashLatencyKey {
 
      
     public static func isTesting(_ key: String, in testing: Set<String>) -> Bool {
-        testing.contains(key) || nodeName(ofRecordKey: key).map(testing.contains) == true
+        isNamed(key, in: testing)
+    }
+
+     
+     
+    public static func isNamed(_ key: String, in names: Set<String>) -> Bool {
+        names.contains(key) || nodeName(ofRecordKey: key).map(names.contains) == true
     }
 
     private static func tag(_ text: String) -> String {
@@ -310,6 +316,13 @@ public struct ClashProxyGroupSnapshot:
      
      
     public let memberTotal: Int?
+     
+     
+     
+    public var carriedSelection: String? = nil
+     
+     
+    public var carriesSelection: Bool { carriedSelection != nil && !hasEveryMember }
 
     public init(
         name: String,
@@ -382,6 +395,18 @@ public struct ClashProxyGroupSnapshot:
 
      
     public var hasEveryMember: Bool { memberTotal == nil }
+
+     
+     
+     
+    public func membership(of name: String) -> GroupMembership {
+        GroupMembership.judged(
+            held: members.contains { $0.name == name },
+            holdsEveryMember: hasEveryMember,
+            listsEveryGroup: false,
+            isOtherGroup: false
+        )
+    }
 
     private var normalizedType: String {
         type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -635,6 +660,13 @@ public struct ClashProxiesSnapshot: Codable, Equatable, Sendable {
      
      
     public var readerFoldedAll: Bool? = nil
+     
+     
+     
+     
+     
+     
+    public var liveCatalog: Bool? = nil
     public let displayPreferences: ClashProxiesDisplayPreferences
      
      
@@ -720,8 +752,10 @@ public struct ClashProxiesSnapshot: Codable, Equatable, Sendable {
         editableMembers: Set<String> = [],
         rememberedOpenGroup: String? = nil,
         readerFoldedAll: Bool? = nil,
+        liveCatalog: Bool? = nil,
         nodeScripts: [ClashProxyNodeScript] = []
     ) {
+        self.liveCatalog = liveCatalog
         self.nodeScripts = nodeScripts.isEmpty ? nil : nodeScripts
         self.groups = groups
         self.hiddenGroups = hiddenGroups
@@ -793,31 +827,7 @@ public struct ClashProxiesSnapshot: Codable, Equatable, Sendable {
         in group: ClashProxyGroupSnapshot,
         sortedBy sort: ClashProxiesDisplayPreferences.Sort
     ) -> [ClashProxyMemberSnapshot] {
-        switch sort {
-        case .standard:
-            return group.members
-        case .name:
-            return group.members.enumerated().sorted {
-                let comparison = $0.element.name.localizedStandardCompare(
-                    $1.element.name
-                )
-                return comparison == .orderedSame
-                    ? $0.offset < $1.offset
-                    : comparison == .orderedAscending
-            }.map(\.element)
-        case .delay:
-            return group.members.enumerated().sorted {
-                let lhs = delaySortKey(
-                    displayedLatency(for: $0.element),
-                    offset: $0.offset
-                )
-                let rhs = delaySortKey(
-                    displayedLatency(for: $1.element),
-                    offset: $1.offset
-                )
-                return lhs < rhs
-            }.map(\.element)
-        }
+        sort.ordered(group.members, name: \.name, latency: displayedLatency(for:))
     }
 
      
@@ -999,8 +1009,42 @@ public struct ClashProxiesSnapshot: Codable, Equatable, Sendable {
         }
         return current
     }
+}
 
-    private func delaySortKey(
+extension ClashProxiesDisplayPreferences.Sort {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public func ordered<Member>(
+        _ members: [Member],
+        name: (Member) -> String,
+        latency: (Member) -> ClashProxyLatencyState
+    ) -> [Member] {
+        switch self {
+        case .standard:
+            return members
+        case .name:
+            return members.enumerated().sorted {
+                let comparison = name($0.element).localizedStandardCompare(name($1.element))
+                return comparison == .orderedSame
+                    ? $0.offset < $1.offset
+                    : comparison == .orderedAscending
+            }.map(\.element)
+        case .delay:
+            return members.enumerated()
+                .map { (key: Self.delayKey(latency($0.element), offset: $0.offset), member: $0.element) }
+                .sorted { $0.key < $1.key }
+                .map(\.member)
+        }
+    }
+
+    private static func delayKey(
         _ latency: ClashProxyLatencyState,
         offset: Int
     ) -> (Int, Int, Int) {
@@ -1022,6 +1066,27 @@ public struct ClashProxiesSnapshot: Codable, Equatable, Sendable {
  
  
 public enum ClashProxyBrowsing {
+     
+     
+     
+    public static let kernelGlobalGroupName = "GLOBAL"
+
+     
+     
+     
+     
+     
+     
+    public static func notOpenedUnasked(_ groups: [ClashProxyGroupSnapshot], liveCatalog: Bool) -> Set<String> {
+        guard !liveCatalog, groups.contains(where: { $0.name == kernelGlobalGroupName }) else { return [] }
+        return [kernelGlobalGroupName]
+    }
+
+     
+     
+    public static func defaultTab(_ tabs: [String], skipping: Set<String>) -> String? {
+        tabs.first { !skipping.contains($0) } ?? tabs.first
+    }
      
      
      
@@ -1098,7 +1163,8 @@ public enum ClashProxyBrowsing {
         expanded: Set<String>,
         lastOpened: String?,
         isSearching: Bool,
-        readerFoldedAll: Bool = false
+        readerFoldedAll: Bool = false,
+        notAsFallback: Set<String> = []
     ) -> String? {
         guard !isSearching, !visible.isEmpty else { return nil }
         guard !visible.contains(where: expanded.contains) else { return nil }
@@ -1107,7 +1173,8 @@ public enum ClashProxyBrowsing {
          
         guard !readerFoldedAll else { return nil }
         if let lastOpened, visible.contains(lastOpened) { return lastOpened }
-        return visible.first
+         
+        return visible.first { !notAsFallback.contains($0) }
     }
 
     public static func columnCount(

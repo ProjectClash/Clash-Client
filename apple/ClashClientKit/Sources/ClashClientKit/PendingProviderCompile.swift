@@ -58,6 +58,20 @@ public struct PendingProviderCompile: Decodable, Equatable, Sendable {
      
      
      
+     
+     
+     
+     
+    public static func compileTakes(in state: ProviderRefreshState?, excluding: Set<String> = []) -> [Held] {
+        held(in: state).filter { compilesInFront(kind: $0.kind, variant: $0.variant) }
+            .map { Held(kind: $0.kind, name: $0.name, requestKey: $0.key, pendingSHA256: $0.pendingSHA256) }
+            .filter { !excluding.contains($0.key) }
+            .sorted { ($0.kind, $0.name) < ($1.kind, $1.name) }
+    }
+
+     
+     
+     
     public static func compilesInFront(kind: String, variant: ProviderRefreshState.Variant?) -> Bool {
         switch (kind, variant) {
         case ("rule", .mapped?), ("rule", .indexed?), ("proxy", .library?): return true

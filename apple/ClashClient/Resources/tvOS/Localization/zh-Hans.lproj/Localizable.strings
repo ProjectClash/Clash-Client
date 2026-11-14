@@ -38,7 +38,6 @@
 "Apple TV cannot send files, so the log is read here." = "Apple TV 无法发送文件，日志只能在这里看。";
 "Apple TV didn't respond in time — try again" = "Apple TV 没有及时响应，请再试一次";
 "Applies after you reconnect" = "重新连接后生效";
-"Applies when you open Clash" = "打开 Clash 后生效";
 "Applying IP Stack settings…" = "正在应用 IP Stack 设置…";
 "Applying a change. Try again in a moment." = "正在应用更改，请稍后再试。";
 "Asked when the first answer can't be trusted." = "第一组回答不可信时改问这些。";
@@ -58,6 +57,7 @@
 "Check that the profile URL is still reachable, then update it once from its own screen." = "先确认配置链接仍可访问，然后在它自己的页面里更新一次。";
 "Checking…" = "正在检查…";
 "Choice confirmed %@" = "选择确认于 %@";
+"Choose Node" = "选择节点";
 "Choose different entry and exit nodes." = "前置节点和出口节点要不同。";
 "Choose how Clash looks up IPs and whether it uses IPv6. Changing it reconnects Clash." = "选择 Clash 查询 IP 的方式，以及是否使用 IPv6。更改后 Clash 会重新连接。";
 "Choose individual nodes, not another proxy chain." = "请选单个节点，不能选另一个链式代理。";
@@ -69,6 +69,7 @@
 "Clash connects by itself whenever the Apple TV is on and online — no need to open it first. STOP doesn't turn this off; it only disconnects until you press START again." = "Apple TV 开机联网后 Clash 会自动连接，不用先打开。按「停止」不会关掉这项，只会断开到你再按「启动」为止。";
 "Clash could not open the encrypted content." = "Clash 打不开这份加密内容。";
 "Clash could not read this content." = "Clash 读不了这份内容。";
+"Clash couldn't confirm what GLOBAL is set to, so Global mode wasn't turned on. Try again in a moment." = "这次没能确认 GLOBAL 选的是什么，没有切换到全局模式。请稍后再试。";
 "Clash couldn't connect. Try again." = "Clash 没能连上，请再试一次。";
 "Clash couldn't do that" = "Clash 没能完成这个操作";
 "Clash couldn't read its saved data" = "Clash 读不到它保存的数据";
@@ -150,6 +151,9 @@
 "From configuration" = "来自配置文件";
 "From configuration · Update unsuccessful" = "来自配置文件 · 更新未成功";
 "From iCloud · %@ · %@" = "来自 iCloud · %@ · %@";
+"GLOBAL has no proxy chosen. In Global mode traffic doesn't go through a proxy." = "GLOBAL 现在没有选中代理，切到全局后流量不会走代理。";
+"GLOBAL is set to DIRECT. In Global mode no traffic goes through a proxy, and your device's real network address is used." = "GLOBAL 现在选的是直连（DIRECT），切到全局后所有流量都不走代理，会用本机真实的网络出口。";
+"GLOBAL is set to REJECT. In Global mode all traffic is rejected, and the network stops working." = "GLOBAL 现在选的是拒绝（REJECT），切到全局后所有流量都会被拒绝，网络会断。";
 "Geo data" = "Geo 数据";
 "Global" = "全局";
 "HTTP and SOCKS5 · username and password required" = "HTTP 与 SOCKS5 · 需要用户名和密码";
@@ -186,6 +190,7 @@
 "Lets clash-cli on a Mac control Clash on this Apple TV over the local network." = "让 Mac 上的 clash-cli 通过局域网控制这台 Apple TV 上的 Clash。";
 "Listening." = "正在监听。";
 "Live" = "实时";
+"Loading GLOBAL" = "正在读取 GLOBAL";
 "Loading Rules" = "正在读取规则";
 "Local Network" = "局域网";
 "Logic" = "逻辑";
@@ -356,6 +361,8 @@
 "Stop sharing" = "停止共享";
 "Stopped" = "已停";
 "Stopping…" = "正在停止…";
+"Switch Anyway" = "仍然切换";
+"Switch to Global Mode?" = "切换到全局模式？";
 "Switching Route" = "正在切换线路";
 "System" = "系统";
 "TUN IPv6: Automatic" = "TUN IPv6：自动";
@@ -369,6 +376,8 @@
 "The DNS servers Clash uses, from the profile. They can't be changed on Apple TV." = "Clash 使用的 DNS 服务器，来自配置，在 Apple TV 上不能修改。";
 "The DNS servers Clash uses." = "Clash 使用的 DNS 服务器。";
 "The DNS servers asked first, in this order." = "最先询问的 DNS 服务器，按此顺序。";
+"The GLOBAL group hasn't loaded yet. Reconnect, then try again." = "GLOBAL 组还没加载出来，请重新连接后再试。";
+"The GLOBAL group in this profile has no node or policy group to choose, so Global mode can't be used. Switch to a profile that has nodes first." = "当前配置的 GLOBAL 组里没有可选的节点或策略组，全局模式用不了。先切换到有节点的配置。";
 "The URL is what gets remembered. The configuration behind it is downloaded again whenever this Apple TV needs it." = "记住的是 URL。它背后的配置会在这台 Apple TV 需要时重新下载。";
 "The active configuration changed while a replacement was being prepared" = "正在准备新配置时，当前配置被改动了";
 "The app version and build, for a support report." = "App 版本与构建号，供反馈问题时使用。";
@@ -381,6 +390,7 @@
 "The current runtime mode has not been confirmed." = "当前运行模式尚未确认。";
 "The last change hasn't finished — try again in a moment" = "上一个操作还没完成，请稍后再试";
 "The last thing that went wrong since you opened Clash." = "打开 Clash 以来最近一次出的问题。";
+"The mode wasn't switched, so the one before is still in use." = "没有切换成功，仍使用原来的模式";
 "The name Clash gives when it downloads profiles. Some profile URLs send back a different format depending on it — keep Clash unless yours works better with another." = "Clash 下载配置时报出的名字。有些配置链接会据此返回不同格式；除非你的配置链接换个名字更好用，否则保持 Clash。";
 "The name is only what this Apple TV calls the address. The address itself, and what is downloaded from it, do not change." = "名称只是这台 Apple TV 对这个地址的称呼。地址本身以及从它下载的内容都不会改变。";
 "The new address replaces the old one. What was downloaded from the old address is no longer used, and the new address is downloaded as soon as you save." = "新地址会取代旧的。旧地址下载的内容不再使用，保存后会立刻下载新地址。";

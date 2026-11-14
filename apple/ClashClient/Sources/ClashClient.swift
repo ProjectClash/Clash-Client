@@ -256,24 +256,6 @@ struct ClashRuntimeDiagnostics: Decodable, Equatable {
     let packetFlowConfiguredMaxDrainBatch: Int
     let packetFlowCoreToSystemFlushNanoseconds: UInt64
      
-     
-     
-     
-     
-    let corePacketIngressReadCalls: UInt64?
-    let corePacketIngressReadWouldBlock: UInt64?
-    let corePacketIngressReadPackets: UInt64?
-    let corePacketIngressReadBytes: UInt64?
-    let corePacketIngressReadErrors: UInt64?
-    let corePacketIngressDispatchPackets: UInt64?
-    let corePacketIngressDispatchBytes: UInt64?
-    let corePacketProcessorQueueDepth: UInt64?
-    let corePacketProcessorQueuePeak: UInt64?
-    let corePacketEgressWriteCalls: UInt64?
-    let corePacketEgressWritePackets: UInt64?
-    let corePacketEgressWriteBytes: UInt64?
-    let corePacketEgressWriteErrors: UInt64?
-     
     let extensionLogBatchesDropped: UInt64
 
     private enum CodingKeys: String, CodingKey {
@@ -308,12 +290,6 @@ struct ClashRuntimeDiagnostics: Decodable, Equatable {
         case packetFlowQueueLatencySamples, packetFlowAverageQueueLatencyNanoseconds, packetFlowMaxQueueLatencyNanoseconds
         case packetFlowSystemWriteCalls, packetFlowMaxSystemWriteBatch
         case packetFlowConfiguredMaxDrainBatch, packetFlowCoreToSystemFlushNanoseconds
-        case corePacketIngressReadCalls, corePacketIngressReadWouldBlock
-        case corePacketIngressReadPackets, corePacketIngressReadBytes, corePacketIngressReadErrors
-        case corePacketIngressDispatchPackets, corePacketIngressDispatchBytes
-        case corePacketProcessorQueueDepth, corePacketProcessorQueuePeak
-        case corePacketEgressWriteCalls, corePacketEgressWritePackets
-        case corePacketEgressWriteBytes, corePacketEgressWriteErrors
         case extensionLogBatchesDropped
     }
 
@@ -401,19 +377,6 @@ struct ClashRuntimeDiagnostics: Decodable, Equatable {
         packetFlowMaxSystemWriteBatch: Int = 0,
         packetFlowConfiguredMaxDrainBatch: Int = 0,
         packetFlowCoreToSystemFlushNanoseconds: UInt64 = 0,
-        corePacketIngressReadCalls: UInt64? = nil,
-        corePacketIngressReadWouldBlock: UInt64? = nil,
-        corePacketIngressReadPackets: UInt64? = nil,
-        corePacketIngressReadBytes: UInt64? = nil,
-        corePacketIngressReadErrors: UInt64? = nil,
-        corePacketIngressDispatchPackets: UInt64? = nil,
-        corePacketIngressDispatchBytes: UInt64? = nil,
-        corePacketProcessorQueueDepth: UInt64? = nil,
-        corePacketProcessorQueuePeak: UInt64? = nil,
-        corePacketEgressWriteCalls: UInt64? = nil,
-        corePacketEgressWritePackets: UInt64? = nil,
-        corePacketEgressWriteBytes: UInt64? = nil,
-        corePacketEgressWriteErrors: UInt64? = nil,
         extensionLogBatchesDropped: UInt64 = 0
     ) {
         self.processIdentifier = processIdentifier
@@ -499,19 +462,6 @@ struct ClashRuntimeDiagnostics: Decodable, Equatable {
         self.packetFlowMaxSystemWriteBatch = packetFlowMaxSystemWriteBatch
         self.packetFlowConfiguredMaxDrainBatch = packetFlowConfiguredMaxDrainBatch
         self.packetFlowCoreToSystemFlushNanoseconds = packetFlowCoreToSystemFlushNanoseconds
-        self.corePacketIngressReadCalls = corePacketIngressReadCalls
-        self.corePacketIngressReadWouldBlock = corePacketIngressReadWouldBlock
-        self.corePacketIngressReadPackets = corePacketIngressReadPackets
-        self.corePacketIngressReadBytes = corePacketIngressReadBytes
-        self.corePacketIngressReadErrors = corePacketIngressReadErrors
-        self.corePacketIngressDispatchPackets = corePacketIngressDispatchPackets
-        self.corePacketIngressDispatchBytes = corePacketIngressDispatchBytes
-        self.corePacketProcessorQueueDepth = corePacketProcessorQueueDepth
-        self.corePacketProcessorQueuePeak = corePacketProcessorQueuePeak
-        self.corePacketEgressWriteCalls = corePacketEgressWriteCalls
-        self.corePacketEgressWritePackets = corePacketEgressWritePackets
-        self.corePacketEgressWriteBytes = corePacketEgressWriteBytes
-        self.corePacketEgressWriteErrors = corePacketEgressWriteErrors
         self.extensionLogBatchesDropped = extensionLogBatchesDropped
     }
 
@@ -615,21 +565,6 @@ struct ClashRuntimeDiagnostics: Decodable, Equatable {
         packetFlowMaxSystemWriteBatch = try values.decodeIfPresent(Int.self, forKey: .packetFlowMaxSystemWriteBatch) ?? 0
         packetFlowConfiguredMaxDrainBatch = try values.decodeIfPresent(Int.self, forKey: .packetFlowConfiguredMaxDrainBatch) ?? 0
         packetFlowCoreToSystemFlushNanoseconds = try values.decodeIfPresent(UInt64.self, forKey: .packetFlowCoreToSystemFlushNanoseconds) ?? 0
-         
-         
-        corePacketIngressReadCalls = try values.decodeIfPresent(UInt64.self, forKey: .corePacketIngressReadCalls)
-        corePacketIngressReadWouldBlock = try values.decodeIfPresent(UInt64.self, forKey: .corePacketIngressReadWouldBlock)
-        corePacketIngressReadPackets = try values.decodeIfPresent(UInt64.self, forKey: .corePacketIngressReadPackets)
-        corePacketIngressReadBytes = try values.decodeIfPresent(UInt64.self, forKey: .corePacketIngressReadBytes)
-        corePacketIngressReadErrors = try values.decodeIfPresent(UInt64.self, forKey: .corePacketIngressReadErrors)
-        corePacketIngressDispatchPackets = try values.decodeIfPresent(UInt64.self, forKey: .corePacketIngressDispatchPackets)
-        corePacketIngressDispatchBytes = try values.decodeIfPresent(UInt64.self, forKey: .corePacketIngressDispatchBytes)
-        corePacketProcessorQueueDepth = try values.decodeIfPresent(UInt64.self, forKey: .corePacketProcessorQueueDepth)
-        corePacketProcessorQueuePeak = try values.decodeIfPresent(UInt64.self, forKey: .corePacketProcessorQueuePeak)
-        corePacketEgressWriteCalls = try values.decodeIfPresent(UInt64.self, forKey: .corePacketEgressWriteCalls)
-        corePacketEgressWritePackets = try values.decodeIfPresent(UInt64.self, forKey: .corePacketEgressWritePackets)
-        corePacketEgressWriteBytes = try values.decodeIfPresent(UInt64.self, forKey: .corePacketEgressWriteBytes)
-        corePacketEgressWriteErrors = try values.decodeIfPresent(UInt64.self, forKey: .corePacketEgressWriteErrors)
         extensionLogBatchesDropped = try values.decodeIfPresent(UInt64.self, forKey: .extensionLogBatchesDropped) ?? 0
     }
 }

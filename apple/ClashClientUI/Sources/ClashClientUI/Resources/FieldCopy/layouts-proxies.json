@@ -2263,9 +2263,9 @@
           "zh-Hant": "傳輸"
         },
         "footer": {
-          "en": "How data travels over the network; it must match the server.",
-          "zh-Hans": "数据怎么在网络上传，要和服务器一致。",
-          "zh-Hant": "資料怎麼在網路上傳，要和伺服器一致。"
+          "en": "How data travels over the network; it must match the server. On iPhone and iPad, the system may cut the connection under heavy traffic when the UDP transport is used; use TCP if the server offers it.",
+          "zh-Hans": "数据怎么在网络上传，要和服务器一致。在 iPhone 和 iPad 上，UDP 传输在流量很大时可能被系统断开；服务器也提供 TCP 时建议用 TCP。",
+          "zh-Hant": "資料怎麼在網路上傳，要和伺服器一致。在 iPhone 和 iPad 上，UDP 傳輸在流量很大時可能被系統中斷；伺服器也提供 TCP 時建議用 TCP。"
         },
         "keys": [
           "transport",

@@ -374,6 +374,10 @@ private struct ClashModernSingleColumnNavigationHost<Content: View>: View {
             .environment(\.clashNavigationDepth, path.count)
              
              
+             
+            .clashDeparturePage()
+             
+             
             .environment(\.clashProductChromeApplied, false)
              
              

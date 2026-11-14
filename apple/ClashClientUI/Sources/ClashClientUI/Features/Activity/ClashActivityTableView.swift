@@ -171,6 +171,9 @@ struct ClashActivityTable: NSViewRepresentable {
             return formatter
         }()
         private var styledLocale: Locale?
+         
+         
+        private var reportedSelectionCount: Int?
 
         init(kind: ClashActivityTableKind) {
             self.kind = kind
@@ -248,7 +251,26 @@ struct ClashActivityTable: NSViewRepresentable {
                 clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
                 scroll.reflectScrolledClipView(clip)
             }
-            parent?.onSelectionCount(table.selectedRowIndexes.count)
+            reportSelectionCount()
+        }
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        private func reportSelectionCount() {
+            let count = table?.selectedRowIndexes.count ?? 0
+            guard count != reportedSelectionCount else { return }
+            reportedSelectionCount = count
+            DispatchQueue.main.async { [weak self] in
+                self?.parent?.onSelectionCount(count)
+            }
         }
 
          
@@ -330,7 +352,7 @@ struct ClashActivityTable: NSViewRepresentable {
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
-            parent?.onSelectionCount(table?.selectedRowIndexes.count ?? 0)
+            reportSelectionCount()
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row index: Int) -> NSView? {

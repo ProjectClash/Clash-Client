@@ -73,8 +73,98 @@ struct ClashTVShell: View {
         case script(ClashTVSubscription.ID)
     }
     @State private var homePath: [HomeDoor] = []
+     
+     
+    @State private var globalQuestion: ClashTunnelOutboundMode.GlobalExit?
+     
+     
+    @State private var nodesOpening: String?
+     
+    @State private var opensNodesAfterQuestion = false
+     
+     
+    @State private var nodesOpeningState = ClashTVNodesScreen.OpeningGroup.listed
+     
+     
+    @State private var nodesOpeningRead: UInt64 = 0
+     
+    @State private var nodesOpeningTask: Task<Void, Never>?
+     
+     
+    @State private var globalTicket: ClashTVTunnelController.GlobalQuestionTicket?
 
     private func homeDoorOpen(_ door: HomeDoor) -> Bool { homePath.contains(door) }
+
+     
+     
+     
+    private func dropTicketAfterTheButtons() {
+        DispatchQueue.main.async { if globalQuestion == nil { globalTicket = nil } }
+    }
+
+     
+    private var globalQuestionWatch: some View {
+        Color.clear
+             
+             
+             
+            .onChange(of: homePath) { _, path in
+                if !path.contains(.nodes) {
+                    nodesOpening = nil
+                    nodesOpeningState = .listed
+                    nodesOpeningRead &+= 1
+                    nodesOpeningTask?.cancel()
+                    nodesOpeningTask = nil
+                }
+                if !path.contains(.outboundMode) {
+                    globalQuestion = nil
+                    globalTicket = nil
+                    opensNodesAfterQuestion = false
+                    tunnel.dropGlobalQuestion()
+                }
+            }
+             
+             
+            .onChange(of: globalQuestion) { _, question in
+                if question == nil, opensNodesAfterQuestion { openNodesForGlobal() }
+            }
+             
+             
+             
+            .onChange(of: tunnel.state.isConnected) { _, _ in globalQuestion = nil; globalTicket = nil; tunnel.dropGlobalQuestion() }
+            .onChange(of: store.current?.id) { _, _ in globalQuestion = nil; globalTicket = nil; tunnel.dropGlobalQuestion() }
+            .accessibilityHidden(true)
+    }
+
+     
+     
+     
+    private func openNodesForGlobal() {
+        guard opensNodesAfterQuestion else { return }
+        opensNodesAfterQuestion = false
+        let group = ClashTVGlobalModeQuestion.groupName
+        nodesOpening = group
+        setHomeDoor(.nodes, open: true)
+         
+         
+         
+        nodesOpeningState = .listed
+        nodesOpeningRead &+= 1
+        nodesOpeningTask?.cancel()
+        nodesOpeningTask = nil
+        let listed = tunnel.state.proxyGroups.contains { $0.name == group }
+            || tunnel.state.hiddenProxyGroups.contains { $0.name == group }
+        if live, !listed {
+            let read = nodesOpeningRead
+            nodesOpeningState = .reading
+            nodesOpeningTask = Task {
+                let found = await tunnel.readGroupsUntilListed(group)
+                 
+                guard !Task.isCancelled, read == nodesOpeningRead, nodesOpening == group else { return }
+                nodesOpeningState = found ? .listed : .missing
+            }
+        }
+    }
 
      
      
@@ -154,7 +244,7 @@ struct ClashTVShell: View {
      
      
      
-    @State private var throughputUnit = ClashThroughputUnit.stored(in: UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+    @State private var throughputUnit = ClashThroughputUnit.stored(in: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
      
      
     @State private var iCloudRestoreFromList = false
@@ -249,8 +339,41 @@ struct ClashTVShell: View {
         case .outboundMode:
             ClashTVOutboundModeScreen(
                 state: state,
-                onSelect: live ? { mode in Task { await tunnel.setMode(mode) } } : nil
+                 
+                 
+                onSelect: live ? { mode in Task {
+                     
+                    if case .ask(let exit) = await tunnel.requestMode(mode), homePath.last == .outboundMode {
+                        globalTicket = tunnel.globalQuestionTicket()
+                        globalQuestion = exit
+                    }
+                } } : nil
             )
+            .alert(ClashTVGlobalModeQuestion.title.localizedForTelevision,
+                    
+                    
+                   isPresented: Binding(get: { globalQuestion != nil },
+                                        set: { if !$0 { globalQuestion = nil; tunnel.dropGlobalQuestion(); dropTicketAfterTheButtons() } }),
+                   presenting: globalQuestion) { _ in
+                Button("Choose Node") {
+                    tunnel.dropGlobalQuestion()
+                    opensNodesAfterQuestion = true
+                     
+                    if globalQuestion == nil { openNodesForGlobal() }
+                }
+                 
+                 
+                 
+                 
+                Button("Switch Anyway") {
+                    let ticket = globalTicket
+                    globalTicket = nil
+                    Task { await tunnel.switchGlobalAnyway(ticket) }
+                }
+                Button("Cancel", role: .cancel) { tunnel.dropGlobalQuestion() }
+            } message: { exit in
+                Text(ClashTVGlobalModeQuestion.message(exit).localizedForTelevision)
+            }
         case .nodes:
             ClashTVNodesScreen(
                 state: state,
@@ -258,7 +381,9 @@ struct ClashTVShell: View {
                 onUnpin: live ? { group in Task { await tunnel.unpin(group: group.name) } } : nil,
                 onTestAll: live ? { group in Task { await tunnel.testAll(group: group) } } : nil,
                 onTest: live ? { member, group in Task { await tunnel.testOne(member: member, in: group) } } : nil,
-                onNeedMoreMembers: live ? { group in Task { await tunnel.loadMoreMembers(of: group) } } : nil
+                onNeedMoreMembers: live ? { group in Task { await tunnel.loadMoreMembers(of: group) } } : nil,
+                opening: nodesOpening,
+                openingState: nodesOpeningState
             )
         case .subscriptions:
             ClashTVSubscriptionsScreen(
@@ -426,7 +551,8 @@ struct ClashTVShell: View {
              
             NavigationStack(path: $homePath) {
                 Group {
-                    if hasConfiguration || stage == .home || stage == .connected || stage == .outboundMode {
+                    if hasConfiguration || stage == .home || stage == .connected || stage == .outboundMode
+                        || stage == .globalQuestion || stage == .chooseNodeGlobal {
                         ClashTVHomeView(
                             state: state,
                             showsOutboundMode: homeDoorBinding(.outboundMode),
@@ -507,6 +633,9 @@ struct ClashTVShell: View {
         }
          
          
+        .background(globalQuestionWatch)
+         
+         
          
          
          
@@ -523,6 +652,8 @@ struct ClashTVShell: View {
             case .background:
                 wasInBackground = true
                 state.wrappedValue.feedback.pause(now: Date())
+                 
+                if live { Task { await tunnel.endSweep() } }
             default:
                 state.wrappedValue.feedback.pause(now: Date())
             }
@@ -594,7 +725,7 @@ struct ClashTVShell: View {
         .environment(\.clashTVPollingPresentation, pollingPresentation)
         .environment(\.clashThroughputUnit, throughputUnit)
         .onReceive(NotificationCenter.default.publisher(for: ClashThroughputUnit.didChangeNotification)) { _ in
-            throughputUnit = ClashThroughputUnit.stored(in: UserDefaults(suiteName: ClashAppIdentifiers.appGroup))
+            throughputUnit = ClashThroughputUnit.stored(in: UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite))
         }
         .onChange(of: pollingPresentation, initial: true) { _, value in
             if live { tunnel.updatePresentation(value) }
@@ -653,6 +784,16 @@ struct ClashTVShell: View {
              
             if stage == .connected { fixture.stage = .connected }
             if stage == .outboundMode { showsOutboundMode = true }
+            if stage == .globalQuestion {
+                showsOutboundMode = true
+                 
+                try? await Task.sleep(for: .milliseconds(800))
+                globalQuestion = .direct
+            }
+            if stage == .chooseNodeGlobal {
+                nodesOpening = ClashTVGlobalModeQuestion.groupName
+                homePath = [.outboundMode, .nodes]
+            }
             if let mode = stage?.outboundModeOverride { fixture.outboundMode = mode }
             if stage?.opensNodes == true {
                 tab = .utilities

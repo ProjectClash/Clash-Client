@@ -1,3 +1,4 @@
+import ClashClientUI
 import Foundation
 import Network
 import NetworkExtension
@@ -37,7 +38,9 @@ enum OnDemandInterface: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .any: return "Any"
+         
+         
+        case .any: return "Any network"
         case .wifi: return "Wi-Fi"
         case .cellular: return "Cellular"
         }
@@ -156,17 +159,6 @@ struct OnDemandRuleSpec: Codable, Equatable, Identifiable {
         copy.probeURL = probeURL.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.connectionRules = connectionRules.map { $0.normalized() }
         return copy
-    }
-
-    var conditionSummary: String {
-        var parts: [String] = []
-        if interface != .any { parts.append(interface.title) }
-        if !ssids.isEmpty { parts.append("\(ssids.count) SSID\(ssids.count == 1 ? "" : "s")") }
-        if !dnsSearchDomains.isEmpty { parts.append("\(dnsSearchDomains.count) DNS domain\(dnsSearchDomains.count == 1 ? "" : "s")") }
-        if !dnsServerAddresses.isEmpty { parts.append("\(dnsServerAddresses.count) DNS server\(dnsServerAddresses.count == 1 ? "" : "s")") }
-        if !probeURL.isEmpty { parts.append("probe") }
-        if action == .evaluate { parts.append("\(connectionRules.count) connection rule\(connectionRules.count == 1 ? "" : "s")") }
-        return parts.isEmpty ? "Any network" : parts.joined(separator: " · ")
     }
 
     private static func cleaned(_ values: [String]) -> [String] {
@@ -342,7 +334,7 @@ enum OnDemandSettings {
     static let ssidsKey = "onDemand.ssids"
 
     static var appGroupDefaults: UserDefaults {
-        UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard
+        UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard
     }
 
     static func configuration(
@@ -528,6 +520,314 @@ enum OnDemandSettings {
     }
 }
 
+
+ 
+
+extension OnDemandRuleSpec {
+     
+     
+     
+     
+     
+    func title(locale: Locale) -> String {
+        [action.title, interface.title]
+            .map { ClashCopy.string($0, locale: locale) }
+            .joined(separator: " · ")
+    }
+
+     
+     
+     
+     
+     
+    func conditions(locale: Locale) -> String? {
+        func words(_ items: [String]) -> String { ConfigurationValueWords.listJoined(items, locale: locale) }
+        var parts: [ClashDisplayText] = []
+        if !ssids.isEmpty {
+            parts.append(.format("SSID %@", [words(ssids)]))
+        }
+        if !dnsSearchDomains.isEmpty {
+            parts.append(.format("DNS search domain %@", [words(dnsSearchDomains)]))
+        }
+        if !dnsServerAddresses.isEmpty {
+            parts.append(.format("DNS server %@", [words(dnsServerAddresses)]))
+        }
+        if !probeURL.isEmpty {
+            parts.append(.format("Probe URL %@", [probeURL]))
+        }
+        var line = parts.map { ClashCopy.string(for: $0, locale: locale) }
+        if action == .evaluate {
+            line.append(connectionRules.count == 1
+                ? ClashCopy.string("1 connection rule", locale: locale)
+                : ClashCopy.format("%d connection rules", locale: locale, connectionRules.count))
+        }
+        return line.isEmpty ? nil : line.joined(separator: " · ")
+    }
+
+     
+     
+     
+    var hasConditions: Bool {
+        !ssids.isEmpty || !dnsSearchDomains.isEmpty || !dnsServerAddresses.isEmpty || !probeURL.isEmpty
+    }
+
+     
+     
+     
+     
+     
+     
+    init(native rule: NEOnDemandRule, position: Int) {
+        let action: OnDemandRuleAction
+        var connectionRules: [OnDemandEvaluateRuleSpec] = []
+        switch rule {
+        case is NEOnDemandRuleConnect:
+            action = .connect
+        case is NEOnDemandRuleDisconnect:
+            action = .disconnect
+        case let evaluate as NEOnDemandRuleEvaluateConnection:
+            action = .evaluate
+            connectionRules = (evaluate.connectionRules ?? []).enumerated().map { index, native in
+                OnDemandEvaluateRuleSpec(
+                    id: OnDemandRuleSpec.positionalID(position, index + 1),
+                    action: native.action == .neverConnect ? .neverConnect : .connectIfNeeded,
+                    matchDomains: native.matchDomains,
+                    dnsServers: native.useDNSServers ?? [],
+                    probeURL: native.probeURL?.absoluteString ?? ""
+                )
+            }
+        default:
+             
+             
+            action = .ignore
+        }
+        self.init(
+            id: OnDemandRuleSpec.positionalID(position, 0),
+            action: action,
+             
+             
+             
+            interface: OnDemandRuleSpec.interface(of: rule.interfaceTypeMatch) ?? .any,
+            ssids: rule.ssidMatch ?? [],
+            dnsSearchDomains: rule.dnsSearchDomainMatch ?? [],
+            dnsServerAddresses: rule.dnsServerAddressMatch ?? [],
+            probeURL: rule.probeURL?.absoluteString ?? "",
+            connectionRules: connectionRules
+        )
+    }
+
+     
+     
+    static func interface(of type: NEOnDemandRuleInterfaceType) -> OnDemandInterface? {
+        if type == OnDemandInterface.any.nativeValue { return .any }
+        if type == OnDemandInterface.wifi.nativeValue { return .wifi }
+        if type == OnDemandInterface.cellular.nativeValue { return .cellular }
+        return nil
+    }
+
+     
+     
+    private static func positionalID(_ position: Int, _ inner: Int) -> UUID {
+        let place = UInt32(clamping: max(0, position))
+        let within = UInt32(clamping: max(0, inner))
+        return UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0,
+                           UInt8(within >> 24 & 0xFF), UInt8(within >> 16 & 0xFF),
+                           UInt8(within >> 8 & 0xFF), UInt8(within & 0xFF),
+                           UInt8(place >> 24 & 0xFF), UInt8(place >> 16 & 0xFF),
+                           UInt8(place >> 8 & 0xFF), UInt8(place & 0xFF)))
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct OnDemandStartRefusal: Equatable {
+     
+     
+    let rules: [OnDemandRuleSpec]
+     
+     
+    let isCertain: Bool
+     
+     
+    let interface: NetworkPathInterfaceKind
+
+     
+     
+    static let certainMessage =
+        "On Demand rule %@ stopped the connection on this network. Tap to change."
+     
+     
+     
+     
+    static let certainStatement =
+        "On Demand rule %@ stopped the connection on this network."
+     
+    static let possibleMessage =
+        "On Demand rule %@ may have stopped the connection on this network."
+
+     
+     
+     
+    func ruleNames(locale: Locale) -> String {
+        var seen = Set<String>()
+        let quoted = rules
+            .map { $0.title(locale: locale) }
+            .filter { seen.insert($0).inserted }
+            .map { ClashCopy.string(for: .format("“%@”", [$0]), locale: locale) }
+        return ConfigurationValueWords.listJoined(quoted, locale: locale)
+    }
+
+     
+    enum StartNetwork: Equatable {
+        case wifi
+        case cellular
+         
+        case neither
+         
+         
+        case unknown
+
+        init(_ interface: NetworkPathInterfaceKind) {
+            switch interface {
+            case .wifi: self = .wifi
+            case .cellular: self = .cellular
+            case .wiredEthernet: self = .neither
+            case .loopback, .other, .unknown: self = .unknown
+            }
+        }
+    }
+
+    private enum Match { case no, maybe, yes }
+
+     
+     
+     
+    static func isWeighable(_ interface: NetworkPathInterfaceKind) -> Bool {
+        StartNetwork(interface) != .unknown
+    }
+
+     
+     
+     
+    private enum RuleNetwork: Equatable {
+         
+        case offered
+         
+         
+         
+        case ethernet
+         
+        case unrecognized
+
+        init(_ type: NEOnDemandRuleInterfaceType) {
+            if OnDemandRuleSpec.interface(of: type) != nil {
+                self = .offered
+            } else if type.rawValue == 1 {
+                self = .ethernet
+            } else {
+                self = .unrecognized
+            }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func find(on manager: NEVPNManager, interface: NetworkPathInterfaceKind) -> Self? {
+        guard manager.isOnDemandEnabled else { return nil }
+        let network = StartNetwork(interface)
+        var named: [OnDemandRuleSpec] = []
+        var somethingMightMatchFirst = false
+        for (position, native) in (manager.onDemandRules ?? []).enumerated() {
+            let rule = OnDemandRuleSpec(native: native, position: position).normalized()
+            let kind = RuleNetwork(native.interfaceTypeMatch)
+            let verdict = match(rule, kind: kind, on: network)
+            if verdict == .no { continue }
+            let isNamed = kind == .offered
+                && rule.action == .disconnect
+                && (network != .unknown || rule.interface.nativeValue == .any)
+            if isNamed { named.append(rule) }
+            if verdict == .yes {
+                if isNamed, !somethingMightMatchFirst {
+                    return Self(rules: [rule], isCertain: true, interface: interface)
+                }
+                break
+            }
+            somethingMightMatchFirst = true
+        }
+        guard !named.isEmpty else { return nil }
+        return Self(rules: named, isCertain: false, interface: interface)
+    }
+
+     
+     
+     
+     
+    static func canStopAStart(on manager: NEVPNManager) -> Bool {
+        manager.isOnDemandEnabled
+            && manager.onDemandRules?.contains(where: { $0 is NEOnDemandRuleDisconnect }) == true
+    }
+
+    private static func match(_ rule: OnDemandRuleSpec, kind: RuleNetwork, on network: StartNetwork) -> Match {
+        let byInterface: Match
+        switch kind {
+        case .ethernet:
+             
+            byInterface = network == .neither ? .yes : network == .unknown ? .maybe : .no
+        case .unrecognized:
+            byInterface = .maybe
+        case .offered:
+             
+             
+            switch rule.interface.nativeValue {
+            case .any:
+                byInterface = .yes
+            case .wiFi:
+                byInterface = network == .wifi ? .yes : network == .unknown ? .maybe : .no
+            default:
+                byInterface = network == .cellular ? .yes : network == .unknown ? .maybe : .no
+            }
+        }
+        guard byInterface != .no else { return .no }
+         
+        if !rule.ssids.isEmpty, network == .cellular || network == .neither { return .no }
+        return rule.hasConditions ? .maybe : byInterface
+    }
+}
 
  
  

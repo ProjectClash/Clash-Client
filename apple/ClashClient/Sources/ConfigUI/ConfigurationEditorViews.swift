@@ -32,6 +32,7 @@ final class ConfigurationEditorSession: ObservableObject {
     }
      
      
+     
     private var running: OrderedJSON?
      
      
@@ -44,10 +45,62 @@ final class ConfigurationEditorSession: ObservableObject {
     private var shown: OrderedJSON?
 
     private func showWaitingEdits() {
-        let waiting = savingEdits + queuedEdits + (pendingEdits ?? [])
-        shown = waiting.isEmpty ? running
-            : running.map { running in waiting.reduce(running) { document, edit in (try? document.applying(edit)) ?? document } }
+        shown = savingEdits.isEmpty && queuedEdits.isEmpty && savedUnread.isEmpty ? running
+            : running.map { running in
+                Self.made(queuedEdits, on: Self.applying(savedUnread + savingEdits, to: running)).document
+            }
         layouts = [:]
+    }
+
+     
+     
+     
+     
+    private var savedUnread: [ConfigurationPageEdit] = [] {
+        didSet { if oldValue != savedUnread { waitingEditsChanged() } }
+    }
+
+     
+     
+     
+    private var settingsNow: OrderedJSON {
+        Self.applying(savedUnread, to: running ?? .object([]))
+    }
+
+     
+     
+     
+    var settingsAsRead: OrderedJSON { settingsNow }
+
+    private static func applying(_ edits: [ConfigurationPageEdit], to document: OrderedJSON) -> OrderedJSON {
+        edits.reduce(document) { document, edit in (try? document.applying(edit)) ?? document }
+    }
+
+     
+     
+    private static func made(_ queued: [QueuedEdit], on document: OrderedJSON)
+        -> (edits: [ConfigurationPageEdit], document: OrderedJSON, lost: Bool) {
+        var document = document
+        var edits: [ConfigurationPageEdit] = []
+        var lost = false
+        for edit in queued {
+            var made: [ConfigurationPageEdit] = []
+            switch edit {
+            case .made(let edit): made = [edit]
+            case .reading(let change):
+                do { made = try change(document) } catch { lost = true }
+            }
+            document = applying(made, to: document)
+            edits += made
+        }
+        return (edits, document, lost)
+    }
+
+     
+     
+    private enum QueuedEdit {
+        case made(ConfigurationPageEdit)
+        case reading(SettingsChange)
     }
     @Published private(set) var catalog: ProfilesViewModel.SyntaxCatalog? {
         didSet { layouts = [:] }
@@ -74,18 +127,71 @@ final class ConfigurationEditorSession: ObservableObject {
         layouts[key] = made
         return made
     }
-    @Published private(set) var isSaving = false
-    @Published var failure: String?
      
      
      
-    @Published var pendingEdits: [ConfigurationPageEdit]? {
-        didSet { showWaitingEdits() }
+     
+     
+    var isSaving: Bool { runsUnderWay > 0 || !savingEdits.isEmpty || writingOriginal }
+    private var runsUnderWay = 0 {
+         
+        willSet { if (newValue > 0) != (runsUnderWay > 0), savingEdits.isEmpty { objectWillChange.send() } }
     }
      
      
      
-    @Published var refusal: Refusal?
+     
+    private var ownDNSTurn: (editsBefore: Int, go: CheckedContinuation<Void, Never>)?
+
+     
+     
+     
+    private var editsQueued = 0
+    private var editsHandedFromQueue = 0
+
+     
+     
+     
+     
+     
+    private func untilOwnDNSTurn(pressedAfter: Int) async -> Bool {
+        guard isSaving else { return false }
+        let before = max(0, pressedAfter - editsHandedFromQueue)
+        await withCheckedContinuation { ownDNSTurn = (before, $0) }
+        return true
+    }
+    @Published var failure: String? {
+        didSet {
+            failuresSaid &+= 1
+            if failure == nil { sayLostOnceNothingElseIs() }
+        }
+    }
+
+     
+     
+     
+    private var lostUnsaid = false
+
+    private func sayLost() {
+        lostUnsaid = true
+        sayLostOnceNothingElseIs()
+    }
+
+    private func sayLostOnceNothingElseIs() {
+        guard lostUnsaid, failure == nil, refusal == nil else { return }
+        lostUnsaid = false
+        failure = Self.changedWhileOpen
+    }
+     
+     
+     
+    private var failuresSaid = 0
+     
+     
+     
+    @Published var refusal: Refusal? {
+        didSet { if refusal == nil { sayLostOnceNothingElseIs() } }
+    }
      
     @Published var notice: ClashDisplayText?
 
@@ -111,7 +217,10 @@ final class ConfigurationEditorSession: ObservableObject {
         self.catalogSource = catalogSource
     }
 
-    func reload() async {
+     
+     
+    @discardableResult
+    func reload() async -> Bool {
          
          
          
@@ -121,7 +230,7 @@ final class ConfigurationEditorSession: ObservableObject {
         let loadingModules = Task { [model] in await model.publishedModules() }
         let loaded: ProfilesViewModel.ConfigurationEditorPage?
         do {
-            loaded = try await model.loadConfigurationEditorPage(profileID: profileID)
+            loaded = try await model.loadConfigurationEditorPage(profileID: profileID, withMenu: true)
             if loadFailure != nil { loadFailure = nil }
         } catch is CancellationError {
             loaded = nil
@@ -138,7 +247,10 @@ final class ConfigurationEditorSession: ObservableObject {
         let published = await loadingModules.value
         heldOverModules = model.keysHeldOverModules(profileID: profileID)
         if published != modules { modules = published }
-        if let loaded { page = loaded }
+        if let loaded {
+            page = loaded
+            savedUnread = []
+        }
         scriptedGeneration += 1
         let generation = scriptedGeneration
         Task { [model, profileID] in
@@ -146,6 +258,7 @@ final class ConfigurationEditorSession: ObservableObject {
             guard generation == self.scriptedGeneration, built != self.scripted else { return }
             self.scripted = built
         }
+        return loaded != nil
     }
 
      
@@ -160,13 +273,18 @@ final class ConfigurationEditorSession: ObservableObject {
     var awaitsCatalog: Bool { catalog == nil && !catalogUnavailable }
 
      
-    private var queuedEdits: [ConfigurationPageEdit] = [] {
+     
+    private var queuedTarget: Bool?
+     
+    private var queuedEdits: [QueuedEdit] = [] {
         didSet { waitingEditsChanged() }
     }
      
      
     private var savingEdits: [ConfigurationPageEdit] = [] {
-        didSet { waitingEditsChanged() }
+        didSet {
+            waitingEditsChanged()
+        }
     }
 
     private func waitingEditsChanged() {
@@ -192,8 +310,26 @@ final class ConfigurationEditorSession: ObservableObject {
     private var shownOriginal: OrderedJSON?
 
     private func showSavingOriginal() {
-        guard let saving = savingOriginal, let page, page.readDigest == saving.on else { shownOriginal = nil; return }
-        shownOriginal = ConfigurationShownText.applying(saving.steps, to: page.document)
+        guard let page else { shownOriginal = nil; return }
+        var shown: OrderedJSON?
+        if let saving = savingOriginal, page.readDigest == saving.on {
+            shown = ConfigurationShownText.applying(saving.steps, to: page.document)
+        }
+         
+         
+         
+        let pending = writingChanges + owedOriginal.map(\.change)
+        if !pending.isEmpty {
+            var document = shown ?? page.document
+            for change in pending {
+                if case .write(let steps) = change(document), !steps.isEmpty,
+                   let next = ConfigurationShownText.applying(steps, to: document) {
+                    document = next
+                }
+            }
+            shown = document
+        }
+        shownOriginal = shown
     }
 
      
@@ -210,48 +346,116 @@ final class ConfigurationEditorSession: ObservableObject {
      
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     func edit(_ edits: [ConfigurationPageEdit]) {
         guard !edits.isEmpty else { return }
+        let target = editTarget
         if isSaving {
-            queuedEdits += edits
+            queue(edits.map(QueuedEdit.made), target: target)
             return
         }
-        if page?.ownLayer == nil, case .composed(_, .shared)? = page?.form {
-             
-             
-            pendingEdits = (pendingEdits ?? []) + edits
+        hand(edits, target: target)
+    }
+
+     
+     
+    typealias SettingsChange = (OrderedJSON) throws -> [ConfigurationPageEdit]
+
+     
+    struct SettingsChangeLost: Error {}
+
+     
+     
+     
+     
+     
+    func edit(reading change: @escaping SettingsChange) {
+        let target = editTarget
+        if isSaving {
+            queue([.reading(change)], target: target)
             return
         }
-        savingEdits = edits
-        Task { await save(edits) }
+        do {
+            hand(try change(settingsDocument), target: target)
+        } catch {
+            failure = Self.changedWhileOpen
+        }
     }
 
-    func confirmPendingEdits() {
-        guard let edits = pendingEdits else { return }
-        pendingEdits = nil
-        savingEdits = edits
-        Task { await save(edits) }
+     
+    static let changedWhileOpen = "This configuration changed while its settings were open. Reopen them and try again."
+
+    private func queue(_ edits: [QueuedEdit], target: Bool?) {
+        queuedTarget = queuedEdits.isEmpty || queuedTarget == target ? target : nil
+        queuedEdits += edits
+        editsQueued += edits.count
     }
 
-    private func save(_ edits: [ConfigurationPageEdit]) async {
+     
+     
+    private func madeNow(_ queued: [QueuedEdit]) -> [ConfigurationPageEdit] {
+        let made = Self.made(queued, on: settingsNow)
          
          
+         
+        if made.lost { sayLost() }
+        return made.edits
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    private var editTarget: Bool? {
+        guard let page else { return nil }
+        if page.ownLayer != nil { return false }
+        if case .composed = page.form { return true }
+        return nil
+    }
+
+    private func hand(_ edits: [ConfigurationPageEdit], target: Bool?) {
+        guard !edits.isEmpty else { return }
+        savingEdits = edits
+        Task { await save(edits, target: target) }
+    }
+
+    private func save(_ edits: [ConfigurationPageEdit], target: Bool?) async {
+         
+        guard let target, target == editTarget else {
+            savingEdits = []
+            failure = Self.changedWhileOpen
+            flushQueued()
+            return
+        }
         var readScheme: String?
-        if page?.ownLayer == nil {
-            guard case .composed(let scheme, _)? = page?.form else {
-                savingEdits = []
-                return
-            }
-            readScheme = scheme.id
-        }
-        await run { try await self.model.editConfigurationSettings(self.profileID, edits: edits, readScheme: readScheme) }
+        if target, case .composed(let scheme, _)? = page?.form { readScheme = scheme.id }
+        await run(handedOn: true) { try await self.model.editConfigurationSettings(self.profileID, edits: edits, readScheme: readScheme) }
     }
 
+     
+     
      
      
      
      
     @Published private(set) var pressedSwitches = ClashPressedSwitches<String>()
+
+     
+     
+    let storedSwitches = ClashStoredSwitch<String>()
 
      
     func shownSwitch(_ key: String, else read: Bool) -> Bool { pressedSwitches.shown(key, else: read) }
@@ -266,18 +470,26 @@ final class ConfigurationEditorSession: ObservableObject {
         }
     }
 
-    var hasSwitchesInFlight: Bool { !pressedSwitches.isEmpty }
+    var hasSwitchesInFlight: Bool { !pressedSwitches.isEmpty || storedSwitches.hasPending }
 
-    private static let ownDNSSwitchKey = "dns.custom"
+    static let ownDNSSwitchKey = "dns.custom"
 
      
-    var shownOwnDNSSwitch: Bool? { page?.ownDNSSwitch.map { shownSwitch(Self.ownDNSSwitchKey, else: $0) } }
+    var shownOwnDNSSwitch: Bool? { page?.ownDNSSwitch.map { storedSwitches.shown(Self.ownDNSSwitchKey, stored: $0) } }
 
+     
+     
+     
+     
      
     func setOwnDNSSwitch(_ on: Bool) {
-        guard !isSaving else { return }
-        pressSwitch(Self.ownDNSSwitchKey, on) {
-            await self.run { try self.model.updateOwnDNSSwitch(profileID: self.profileID, on: on) }
+        let pressedAfter = editsQueued
+        storedSwitches.press(Self.ownDNSSwitchKey, on) { [weak self] on in
+            guard let self else { return }
+            let held = await self.untilOwnDNSTurn(pressedAfter: pressedAfter)
+            let saved = await self.run { try self.model.updateOwnDNSSwitch(profileID: self.profileID, on: on) }
+            if held { self.runEnded() }
+            if !saved { throw ClashStoredWriteSaidElsewhere() }
         }
     }
 
@@ -292,12 +504,20 @@ final class ConfigurationEditorSession: ObservableObject {
      
     @discardableResult
     func editOriginal(_ path: [ConfigurationTextPathStep], _ edit: ConfigurationTextEdit) async -> Bool {
+        await editOriginalReporting(path, edit) == .saved
+    }
+
+     
+    func editOriginalReporting(_ path: [ConfigurationTextPathStep], _ edit: ConfigurationTextEdit) async -> RunOutcome {
          
          
         let read = page?.readDigest
-        return await handingOn([ConfigurationTextStep(path: path, edit: edit)]) {
-            await run { try await self.model.editOriginalConfiguration(self.profileID, at: path, edit, readDigest: read) }
+        var ended = RunOutcome.failedOutright
+        _ = await handingOn([ConfigurationTextStep(path: path, edit: edit)]) {
+            ended = await self.runReporting { try await self.model.editOriginalConfiguration(self.profileID, at: path, edit, readDigest: read) }
+            return ended == .saved
         }
+        return ended
     }
 
      
@@ -349,23 +569,311 @@ final class ConfigurationEditorSession: ObservableObject {
         return saved
     }
 
-    @discardableResult
-    func run(_ work: @escaping () async throws -> Void) async -> Bool {
-        let appliesBefore = model.lastTunnelApply.sequence
-        isSaving = true
-        defer {
-            isSaving = false
-             
-            let queued = queuedEdits
-            queuedEdits = []
-            edit(queued)
+     
+     
+     
+     
+    fileprivate func runEnded(lettingQueuedOut: Bool = true) {
+        runsUnderWay -= 1
+        if lettingQueuedOut {
+            flushQueued()
+            driveOriginal()
         }
+    }
+
+     
+
+     
+     
+     
+     
+    enum OriginalChangeOutcome: Equatable {
+         
+        case write([ConfigurationTextStep])
+         
+        case refuseDeleting(String, usedBy: [String])
+         
+        case cannot
+    }
+
+    typealias OriginalChange = @MainActor (OrderedJSON) -> OriginalChangeOutcome
+
+     
+     
+     
+     
+    private var owedOriginal: [(change: OriginalChange, answer: CheckedContinuation<Bool, Never>)] = [] {
+        didSet {
+            showSavingOriginal()
+            objectWillChange.send()
+        }
+    }
+    private var writingOriginal = false {
+        willSet { if newValue != writingOriginal { objectWillChange.send() } }
+    }
+     
+     
+     
+    private var writingChanges: [OriginalChange] = [] {
+        didSet { showSavingOriginal() }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func queueOriginal(_ change: @escaping OriginalChange) async -> Bool {
+        await withCheckedContinuation { answer in
+            owedOriginal.append((change, answer))
+            driveOriginal()
+        }
+    }
+
+     
+     
+    private func driveOriginal() {
+        guard !isSaving, !owedOriginal.isEmpty else { return }
+        writingOriginal = true
+        let batch = owedOriginal
+        writingChanges = batch.map(\.change)
+        owedOriginal = []
+        Task {
+            await writeOriginal(batch)
+            writingChanges = []
+            writingOriginal = false
+             
+            flushQueued()
+            driveOriginal()
+        }
+    }
+
+    private func writeOriginal(_ batch: [(change: OriginalChange, answer: CheckedContinuation<Bool, Never>)]) async {
+        var outcome = [Bool](repeating: false, count: batch.count)
+        var refused: [DeletingRefused] = []
+        let failuresBefore = failuresSaid
+        var next = 0
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        writing: while next < batch.count, let page {
+            var document = page.document
+            var steps: [ConfigurationTextStep] = []
+            var run: [Int] = []
+             
+             
+             
+             
+            var readOnRun: [Int] = []
+            var refusedBeforeRun = refused.count
+            var alone: Int?
+            reading: while next < batch.count {
+                let index = next
+                next += 1
+                let onRun = !run.isEmpty
+                switch batch[index].change(document) {
+                case .cannot:
+                    break
+                case .refuseDeleting(let name, let places):
+                    refused.append(DeletingRefused(name: name, places: places))
+                case .write(let own) where own.isEmpty:
+                    outcome[index] = true
+                case .write(let own):
+                    guard !(own.count == 1 && ProfilesViewModel.providerField(at: own[0].path) != nil),
+                          let changed = ConfigurationShownText.applying(own, to: document) else {
+                        alone = index
+                        break reading
+                    }
+                    if run.isEmpty { refusedBeforeRun = refused.count }
+                    steps += own
+                    document = changed
+                    run.append(index)
+                    readOnRun.append(index)
+                    continue reading
+                }
+                if onRun { readOnRun.append(index) }
+            }
+            if !run.isEmpty {
+                 
+                let ended = await editOriginalReporting(steps: steps, readDigest: page.readDigest)
+                 
+                if ended != .saved { for index in readOnRun { outcome[index] = false } }
+                switch ended {
+                case .saved:
+                    for index in run { outcome[index] = true }
+                case .failedOutright:
+                     
+                    break writing
+                case .refused, .changedSinceRead:
+                     
+                     
+                     
+                    refused.removeSubrange(refusedBeforeRun...)
+                    for index in readOnRun {
+                        if ended == .refused, run == [index] { continue }
+                        let (written, endedAlone) = await writeAlone(batch[index].change, refused: &refused)
+                        outcome[index] = written
+                        if endedAlone == .failedOutright { break writing }
+                    }
+                }
+            }
+            if let alone {
+                let (written, ended) = await writeAlone(batch[alone].change, refused: &refused)
+                outcome[alone] = written
+                if ended == .failedOutright { break writing }
+            }
+        }
+         
+         
+        if !refused.isEmpty {
+            let failedMeanwhile = failuresSaid != failuresBefore ? failure : nil
+            refuseDeleting(refused)
+            if let failedMeanwhile, let said = failure { failure = failedMeanwhile + "\n\n" + said }
+        }
+        zip(batch, outcome).forEach { $0.answer.resume(returning: $1) }
+    }
+
+     
+     
+    private func writeAlone(_ change: OriginalChange, refused: inout [DeletingRefused]) async -> (written: Bool, ended: RunOutcome?) {
+        guard let current = page else { return (false, nil) }
+        switch change(current.document) {
+        case .cannot:
+            return (false, nil)
+        case .refuseDeleting(let name, let places):
+            refused.append(DeletingRefused(name: name, places: places))
+            return (false, nil)
+        case .write(let own) where own.isEmpty:
+            return (true, nil)
+        case .write(let own) where own.count == 1:
+            let ended = await editOriginalReporting(own[0].path, own[0].edit)
+            return (ended == .saved, ended)
+        case .write(let own):
+            let ended = await editOriginalReporting(steps: own, readDigest: current.readDigest)
+            return (ended == .saved, ended)
+        }
+    }
+
+     
+     
+    var hasOriginalChangesOwed: Bool { writingOriginal || !owedOriginal.isEmpty }
+
+     
+    private func flushQueued() {
+         
+         
+         
+        guard !isSaving else { return }
+        if let turn = ownDNSTurn {
+            if turn.editsBefore > 0, !queuedEdits.isEmpty {
+                 
+                let before = Array(queuedEdits.prefix(turn.editsBefore))
+                queuedEdits.removeFirst(before.count)
+                editsHandedFromQueue += before.count
+                ownDNSTurn?.editsBefore = 0
+                 
+                let made = madeNow(before)
+                if !made.isEmpty { return hand(made, target: queuedTarget) }
+            }
+             
+            ownDNSTurn = nil
+            beginHolding()
+            return turn.go.resume()
+        }
+        guard !queuedEdits.isEmpty else { return driveOriginal() }
+        let queued = queuedEdits
+        let target = queuedTarget
+        editsHandedFromQueue += queued.count
+        queuedEdits = []
+        queuedTarget = nil
+        let made = madeNow(queued)
+        guard !made.isEmpty else { return driveOriginal() }
+        hand(made, target: target)
+    }
+
+     
+    fileprivate func beginHolding() { runsUnderWay += 1 }
+
+     
+    enum RunOutcome: Equatable {
+        case saved
+         
+         
+         
+        case refused
+         
+        case changedSinceRead
+         
+         
+         
+         
+        case failedOutright
+    }
+
+    private static func outcome(of error: Error) -> RunOutcome {
+        if let editing = error as? OriginalEditingError { return editing == .changedSinceRead ? .changedSinceRead : .failedOutright }
+        if error is CancellationError { return .failedOutright }
+         
+         
+         
+        switch error as? ConfigurationLibraryError {
+        case .busy?, .unreadable?, .staleGeneration?, .readOnlySource?, .immutableVersion?, .retainedSnapshot?:
+            return .failedOutright
+        default:
+            break
+        }
+        if case .sourceUnavailable? = error as? PipelineError { return .failedOutright }
+        let error = error as NSError
+        if error.domain == NSPOSIXErrorDomain { return .failedOutright }
+         
+        if error.domain == NSCocoaErrorDomain, (NSFileErrorMinimum...NSFileErrorMaximum).contains(error.code) { return .failedOutright }
+        return .refused
+    }
+
+     
+     
+     
+     
+     
+     
+    @discardableResult
+    func run(handedOn: Bool = false, _ work: @escaping () async throws -> Void) async -> Bool {
+        await runReporting(handedOn: handedOn, work) == .saved
+    }
+
+     
+     
+     
+     
+    func runReporting(handedOn: Bool = false, _ work: @escaping () async throws -> Void) async -> RunOutcome {
+        let appliesBefore = model.lastTunnelApply.sequence
+        runsUnderWay += 1
+        defer { runEnded() }
         var saved = false
+        var failed = RunOutcome.failedOutright
         do {
             try await work()
             saved = true
         } catch is CancellationError {
         } catch let refused as ConfigurationTextEditRefusal {
+            failed = .refused
             refusal = Refusal(sentence: refused.errorDescription ?? refused.message, coreWords: refused.failureReason,
                               editTheSourceInstead: refused.editTheSourceInstead)
         } catch OriginalEditingError.followsSubscription {
@@ -376,17 +884,28 @@ final class ConfigurationEditorSession: ObservableObject {
              
             model.detachingLinkOriginals.insert(profileID)
             defer { model.detachingLinkOriginals.remove(profileID) }
-            do { try await work(); saved = true } catch {
+            do { try await work(); saved = true } catch let refused as ConfigurationTextEditRefusal {
+                failed = .refused
+                refusal = Refusal(sentence: refused.errorDescription ?? refused.message, coreWords: refused.failureReason,
+                                  editTheSourceInstead: refused.editTheSourceInstead)
+            } catch {
+                failed = Self.outcome(of: error)
                 failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         } catch let refused as OriginalEditingError where refused == .notYAMLText {
             refusal = Refusal(sentence: refused.errorDescription ?? "", coreWords: nil, editTheSourceInstead: true)
         } catch {
+            failed = Self.outcome(of: error)
             failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
-        await reload()
+        let reloaded = await reload()
          
-        savingEdits = []
+         
+         
+        if handedOn {
+            if saved, !reloaded { savedUnread += savingEdits }
+            savingEdits = []
+        }
          
          
          
@@ -401,12 +920,16 @@ final class ConfigurationEditorSession: ObservableObject {
                 }
             }
         }
-        return saved
+        return saved ? .saved : failed
     }
 
      
      
-    func value(at path: [String]) -> OrderedJSON? { (shownOriginal ?? page?.document)?.node(at: path) }
+    func value(at path: [String]) -> OrderedJSON? { shownDocument?.node(at: path) }
+
+     
+     
+    var shownDocument: OrderedJSON? { shownOriginal ?? page?.document }
 
      
      
@@ -462,7 +985,6 @@ struct ConfigurationCompileResult: Identifiable {
  
  
  
- 
 struct ConfigurationEditorAlerts: ViewModifier {
     @ObservedObject var session: ConfigurationEditorSession
     let editSource: () -> Void
@@ -514,19 +1036,6 @@ struct ConfigurationEditorAlerts: ViewModifier {
                 Button { session.failure = nil } label: { Text(clash: .copy("OK")) }
             } message: {
                 Text(clash: .copy(session.failure ?? ""))
-            }
-            .alert(
-                Text(clash: .copy("Save as your own rule scheme?")),
-                isPresented: Binding(get: { isActive && session.pendingEdits != nil }, set: { if !$0 { session.pendingEdits = nil } })
-            ) {
-                Button { session.confirmPendingEdits() } label: { Text(clash: .copy("Save")) }
-                    .accessibilityIdentifier("configuration-editor.confirm-own-scheme")
-                Button(role: .cancel) { session.pendingEdits = nil } label: { Text(clash: .copy("Cancel")) }
-            } message: {
-                if case .composed(let scheme, _)? = session.page?.form {
-                    Text(clash: .format("Only “%@” will use it; rule scheme “%@” stays as it is.",
-                                       [session.page?.label ?? "", scheme.displayLabel]))
-                }
             }
     }
 }
@@ -662,7 +1171,7 @@ struct ConfigurationInboundListenersSection: View {
                     .accessibilityIdentifier("configuration-editor.inbound.listeners.empty")
             }
             ForEach(Array(items.prefix(Self.shownAtMost).enumerated()), id: \.offset) { index, item in
-                NavigationLink {
+                ClashNativeNavigationLink {
                     ConfigurationObjectItemView(session: session, location: location, index: index)
                         .configurationPushedAlertHost(session)
                 } label: {
@@ -672,7 +1181,7 @@ struct ConfigurationInboundListenersSection: View {
                 .accessibilityIdentifier("configuration-editor.inbound.listener.\(index)")
             }
             if items.count > Self.shownAtMost {
-                NavigationLink {
+                ClashNativeNavigationLink {
                     ConfigurationObjectListView(session: session, location: location,
                                                 title: ClashCopy.string("Inbound Listeners", locale: locale))
                         .configurationPushedAlertHost(session)
@@ -853,14 +1362,16 @@ struct ConfigurationSettingsSectionView: View {
     private var content: some View {
         let (layout, listsListeners) = drawn
         return List {
-            if section == .dns, basePath == ConfigurationSectionLayout.base(of: .dns), let on = session.shownOwnDNSSwitch {
+            if section == .dns, basePath == ConfigurationSectionLayout.base(of: .dns), let stored = session.page?.ownDNSSwitch {
+                 
+                 
                  
                  
                 Section {
-                    Toggle(isOn: Binding(get: { on }, set: { session.setOwnDNSSwitch($0) })) {
+                    ClashStoredToggle(session.storedSwitches, key: ConfigurationEditorSession.ownDNSSwitchKey, stored: stored,
+                                      identifier: "configuration-editor.dns.custom", set: { session.setOwnDNSSwitch($0) }) {
                         Text(clash: .copy("Use custom DNS"))
                     }
-                    .accessibilityIdentifier("configuration-editor.dns.custom")
                 } footer: {
                     Text(clash: .copy("Off: these settings apply only when this configuration’s file has no DNS of its own."))
                 }
@@ -906,7 +1417,7 @@ struct ConfigurationSettingsSectionView: View {
                  
                  
                 Section {
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         ConfigurationSettingsNotApplyingView(items: layout.notApplying)
                     } label: {
                         ConfigurationNotApplyingLabel(count: layout.platformDecided.count)
@@ -925,8 +1436,14 @@ struct ConfigurationSettingsSectionView: View {
              
              
              
-            if entryField != nil {
-                ToolbarItem(placement: .primaryAction) {
+             
+             
+             
+             
+             
+             
+            ToolbarItemGroup(placement: .primaryAction) {
+                if entryField != nil {
                     ControlGroup {
                         Button { adding = true } label: { Image(systemName: ClashSymbol.plus.name) }
                             .accessibilityIdentifier("configuration-editor.key.add")
@@ -939,7 +1456,7 @@ struct ConfigurationSettingsSectionView: View {
          
          
          
-        .sheet(isPresented: $adding) {
+        .clashSheet(isPresented: $adding) {
             let map = session.field(at: basePath.map(ConfigurationDocumentStep.key), in: session.settingsDocument)
             ConfigurationNewKeyForm(suggestions: map?.key?.values ?? [], taken: writtenKeys,
                                     document: session.settingsDocument, entryField: entryField,
@@ -981,14 +1498,14 @@ struct ConfigurationSettingsSectionView: View {
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) { useDefault(row) }
             }
         case .page:
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationValueView(session: session, path: row.path)
                     .configurationPushedAlertHost(session)
             } label: { label(row) }
                 .accessibilityIdentifier("configuration-editor.key.\(row.id)")
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) { useDefault(row) }
         case .drill:
-            NavigationLink {
+            ClashNativeNavigationLink {
                 if row.field?.kind == .objectList {
                      
                      
@@ -1120,7 +1637,7 @@ struct ConfigurationSettingsSectionView: View {
              
              
              
-            NavigationLink { ConfigurationLinkedPageView(pages: linkedPage, page: .owner(owner)).equatable() } label: {
+            ClashNativeNavigationLink { ConfigurationLinkedPageView(pages: linkedPage, page: .owner(owner)).equatable() } label: {
                 label(row, caption: caption)
             }
                 .accessibilityIdentifier("configuration-editor.key.owner.\(row.id)")
@@ -1142,7 +1659,7 @@ struct ConfigurationSettingsSectionView: View {
 
     private var lanShareRow: some View {
         Section {
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ProxyShareConfigurationView(profiles: session.model, session: session)
             } label: {
                 ConfigurationRowLabel(title: .copy("LAN Proxy Share"), value: ConfigurationLANShareStatus.words(for: session))
@@ -1166,26 +1683,18 @@ struct ConfigurationSettingsSectionView: View {
         if basePath.isEmpty, section == .general {
             if group.rows.contains(where: { $0.key == "mode" }), let home = session.model.outboundModeSetOnHome() {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(clash: .formatCopy("Home is set to “%@”, which runs over this for now.", [Self.modeTitle(home)]))
+                    Text(clash: ClashGeneralOverrideNote.outboundModeSetOnHome(ConfigurationOutboundModeWords.title(home)))
                     Button {
                         do { try session.model.followConfigurationOutboundMode() } catch {
                             session.failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                         }
                         notesRead += 1
-                    } label: { Text(clash: .copy("Follow the Configuration Again")) }
+                    } label: { Text(clash: ClashGeneralOverrideNote.followConfiguration) }
                     .accessibilityIdentifier("configuration-editor.general.follow-configuration")
                 }
             } else if group.rows.contains(where: { $0.key == "log-level" }), let level = session.model.logLevelForcedByLogSettings() {
-                Text(clash: .format("Log Settings is set to “%@”, which runs over this.", [level]))
+                Text(clash: ClashGeneralOverrideNote.logLevelForcedByLogSettings(level))
             }
-        }
-    }
-
-    static func modeTitle(_ mode: Profile.OutboundMode) -> String {
-        switch mode {
-        case .global: "Global"
-        case .rule: "Rule"
-        case .direct: "Direct"
         }
     }
 
@@ -2046,7 +2555,7 @@ struct ConfigurationListRows: View {
             .onDelete(perform: editMode?.wrappedValue.isEditing == true ? nil : { items.remove(atOffsets: $0) })
             .onMove(perform: ordered ? move : nil)
             if let known {
-                NavigationLink {
+                ClashNativeNavigationLink {
                      
                      
                     ConfigurationKnownValuesPage(set: known,
@@ -2622,7 +3131,7 @@ struct ConfigurationNewKeyForm: View {
                 .keyboardType(.URL)
                 .accessibilityIdentifier("configuration-editor.new-key.policy-domain")
             case .geosite:
-                NavigationLink {
+                ClashNativeNavigationLink {
                     ConfigurationKnownValuePickPage(set: .geosite, title: "GEOSITE", text: $policyValue)
                 } label: {
                     HStack {
@@ -2845,7 +3354,7 @@ struct ConfigurationReadOnlySectionView: View {
                 }
             }
             ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                NavigationLink {
+                ClashNativeNavigationLink {
                     ScrollView {
                         Text(verbatim: entry.value.serialized())
                             .font(.footnote.monospaced())
@@ -2964,7 +3473,7 @@ struct ConfigurationOriginalEntriesView: View {
                 }
             }
             ForEach(shown) { entry in
-                NavigationLink {
+                ClashNativeNavigationLink {
                      
                      
                      
@@ -2984,17 +3493,27 @@ struct ConfigurationOriginalEntriesView: View {
             .onDelete(perform: editMode.isEditing ? nil : delete)
              
             .onMove(perform: isGroups && search.isEmpty ? move : nil)
+             
+             
+             
+             
+            .deleteDisabled(session.isSaving || session.hasOriginalChangesOwed)
+            .moveDisabled(session.isSaving || session.hasOriginalChangesOwed)
         }
         .searchable(text: $search)
         .navigationTitle(Text(clash: .copy(ConfigurationEditorCopy.title(of: section))))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if isGroups, entries.count > 1 { ConfigurationReorderButton(editMode: $editMode, identifier: "configuration-editor.list.reorder") }
+                if isGroups, entries.count > 1 {
+                    ConfigurationReorderButton(editMode: $editMode, identifier: "configuration-editor.list.reorder")
+                        .disabled(session.isSaving || session.hasOriginalChangesOwed)
+                }
             }
              
             ToolbarItem(placement: .primaryAction) {
                 ControlGroup {
                     Button { adding = true } label: { Image(systemName: ClashSymbol.plus.name) }
+                        .disabled(session.isSaving || session.hasOriginalChangesOwed)
                         .accessibilityLabel(Text(clash: .copy("Add")))
                         .accessibilityIdentifier("configuration-editor.original.add")
                 }
@@ -3002,8 +3521,7 @@ struct ConfigurationOriginalEntriesView: View {
             }
         }
         .environment(\.editMode, $editMode)
-        .disabled(session.isSaving)
-        .sheet(isPresented: $adding) {
+        .clashSheet(isPresented: $adding) {
             ConfigurationOriginalNewEntryForm(section: section, catalog: session.catalog,
                                               taken: Set(entries.map(\.name))) { name, json in
                 let insertion = Self.insertion(of: json, named: name, groups: isGroups, into: session.value(at: [key]))
@@ -3027,8 +3545,14 @@ struct ConfigurationOriginalEntriesView: View {
         }
         Task {
             guard await !session.keptRulesRefuseDeleting(names, ruleSets: !isGroups) else { return }
+             
+             
+            session.beginHolding()
+            defer { session.runEnded() }
             for name in names {
-                guard let step = OriginalEntry.step(of: name, in: session.value(at: [key])) else { continue }
+                 
+                 
+                guard let step = OriginalEntry.step(of: name, in: session.page?.document.topLevelValue(key)) else { continue }
                 guard await session.editOriginal([.key(key), step], .delete) else { return }
             }
         }
@@ -3110,6 +3634,7 @@ struct ConfigurationOriginalEntryView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(session.isSaving || session.hasOriginalChangesOwed)
                 .accessibilityIdentifier("configuration-editor.original.rename")
             }
              
@@ -3121,21 +3646,17 @@ struct ConfigurationOriginalEntryView: View {
                                                            fieldIdentifier: "configuration-editor.original.field",
                                                            useDefaultIdentifier: "configuration-editor.original.use-default"),
                                         isSaving: session.isSaving,
-                                        members: isGroups ? { value in AnyView(membersRow(value)) } : nil) { key, value, written in
-                guard let path else { return }
-                Task {
-                    if let value {
-                        let json = value.serialized()
-                        await session.editOriginal(path + [.key(key)], written ? .set(json: json) : .insert(json: json))
-                    } else {
-                        await session.editOriginal(path + [.key(key)], .delete)
-                    }
-                }
+                                        members: isGroups ? { value in AnyView(membersRow(value)) } : nil) { field, value, _ in
+                 
+                 
+                Task { await session.queueOriginal { document in entrySteps(document, field: field, to: value) } }
             }
         }
         .navigationTitle(Text(verbatim: name))
-        .disabled(session.isSaving)
-        .sheet(isPresented: $renaming) {
+         
+         
+         
+        .clashSheet(isPresented: $renaming) {
             ConfigurationRenameSheet(current: name,
                                      taken: Set(OriginalEntry.all(in: session.value(at: [key])).map(\.name))) { newName in
                 Task {
@@ -3167,11 +3688,17 @@ struct ConfigurationOriginalEntryView: View {
                 }
                 .accessibilityIdentifier("configuration-editor.original.members.option.\(member)")
             }
-            NavigationLink {
-                ConfigurationOriginalMembersView(session: session, group: name, members: members) { chosen in
-                    guard let path else { return false }
-                    let json = OrderedJSON.array(chosen.map(OrderedJSON.string)).serialized()
-                    return await session.editOriginal(path + [.key("proxies")], value == nil ? .insert(json: json) : .set(json: json))
+            ClashNativeNavigationLink {
+                ConfigurationOriginalMembersView(session: session, group: name, members: members, written: {
+                    session.value(at: [key]).flatMap { list in
+                        OriginalEntry.all(in: list).first { $0.name == name }?.value.topLevelValue("proxies")
+                    }.flatMap(ConfigurationOriginalMembersView.names)
+                }) { change in
+                     
+                     
+                     
+                     
+                    await session.queueOriginal { document in memberSteps(document, change) }
                 }
                 .configurationPushedAlertHost(session)
             } label: {
@@ -3187,9 +3714,60 @@ struct ConfigurationOriginalEntryView: View {
     private func setMember(_ member: String, on: Bool, members: [String], shown: [String], written: Bool) {
         if visitMembers == nil { visitMembers = shown }
         let next = ConfigurationMemberSwitches.switching(member, on: on, members: members, shown: shown)
-        guard next != members, !next.isEmpty, let path else { return }
+        guard next != members, !next.isEmpty else { return }
+         
+         
+        Task {
+            await session.queueOriginal { document in
+                memberSteps(document) { current in current = ConfigurationMemberSwitches.switching(member, on: on, members: current, shown: shown) }
+            }
+        }
+    }
+
+    private func memberSteps(_ document: OrderedJSON, _ change: (inout [String]) -> Void) -> ConfigurationEditorSession.OriginalChangeOutcome {
+        Self.memberSteps(document, key: key, name: name, change)
+    }
+
+    private func entrySteps(_ document: OrderedJSON, field: String, to value: OrderedJSON?) -> ConfigurationEditorSession.OriginalChangeOutcome {
+        Self.entrySteps(document, key: key, name: name, field: field, to: value)
+    }
+
+     
+    private static func entry(in document: OrderedJSON, key: String, name: String) -> (step: ConfigurationTextPathStep, value: OrderedJSON)? {
+        let list = document.topLevelValue(key)
+        guard let step = OriginalEntry.step(of: name, in: list),
+              let found = OriginalEntry.all(in: list).first(where: { $0.name == name }) else { return nil }
+        return (step, found.value)
+    }
+
+     
+     
+     
+     
+    static func memberSteps(_ document: OrderedJSON, key: String, name: String,
+                            _ change: (inout [String]) -> Void) -> ConfigurationEditorSession.OriginalChangeOutcome {
+        guard let entry = entry(in: document, key: key, name: name) else { return .cannot }
+        let written = entry.value.topLevelValue("proxies")
+        let current = written.flatMap(ConfigurationOriginalMembersView.names) ?? []
+        var next = current
+        change(&next)
+        guard next != current, !next.isEmpty else { return .write([]) }
         let json = OrderedJSON.array(next.map(OrderedJSON.string)).serialized()
-        Task { await session.editOriginal(path + [.key("proxies")], written ? .set(json: json) : .insert(json: json)) }
+        return .write([ConfigurationTextStep(path: [.key(key), entry.step, .key("proxies")],
+                                             edit: written == nil ? .insert(json: json) : .set(json: json))])
+    }
+
+     
+     
+    static func entrySteps(_ document: OrderedJSON, key: String, name: String, field: String,
+                           to value: OrderedJSON?) -> ConfigurationEditorSession.OriginalChangeOutcome {
+        guard let entry = entry(in: document, key: key, name: name) else { return .cannot }
+        let path: [ConfigurationTextPathStep] = [.key(key), entry.step, .key(field)]
+        let written = entry.value.topLevelValue(field)
+        guard let value else { return .write(written == nil ? [] : [ConfigurationTextStep(path: path, edit: .delete)]) }
+        guard value != written else { return .write([]) }
+        let json = value.serialized()
+        return .write([ConfigurationTextStep(path: path, edit: written == nil ? .insert(json: json) : .set(json: json))])
     }
 
 }
@@ -3325,7 +3903,7 @@ struct ConfigurationEntryFieldRows: View {
                                         useDefault: row.value != nil ? { write(row.key, nil, true) } : nil, field: field)
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) { useDefault(row) }
         } else {
-            NavigationLink {
+            ClashNativeNavigationLink {
                 switch Self.destination(for: row.field?.kind) {
                 case .map:
                     ConfigurationEntryMapPage(title: title, value: row.value, steps: steps + [.key(row.key)],
@@ -3442,7 +4020,7 @@ struct ConfigurationSchemeGroupPage: View {
                 }
                 .accessibilityIdentifier("configuration.rules.group.members.option.\(member)")
             }
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationMembersChecklist(title: editor.name, members: members, options: memberOptions,
                                               allowsEmpty: ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: [], use: writtenUses)) { chosen in
                     await editor.write("proxies", chosen.isEmpty ? nil : .array(chosen.map(OrderedJSON.string)))
@@ -3487,7 +4065,7 @@ struct ConfigurationSchemeGroupPage: View {
                 }
                 .accessibilityIdentifier("configuration.rules.group.providers.option.\(provider)")
             }
-            NavigationLink {
+            ClashNativeNavigationLink {
                 ConfigurationMembersChecklist(title: editor.name, members: uses, options: providerOptions,
                                               allowsEmpty: ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: writtenMembers, use: [])) { chosen in
                     await editor.write("use", chosen.isEmpty ? nil : .array(chosen.map(OrderedJSON.string)))
@@ -3780,7 +4358,7 @@ struct ConfigurationEntryMapPage: View {
             Section {
                 ForEach(entries.indices, id: \.self) { position in
                     let entry = entries[position]
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         ConfigurationFieldValuePage(title: entry.key, value: entry.value, field: entryField(entry.key),
                                                     document: document) { write(entry.key, $0) }
                     } label: {
@@ -3817,7 +4395,7 @@ struct ConfigurationEntryMapPage: View {
                 .clashReaderControlGroupStyle()
             }
         }
-        .sheet(isPresented: $adding) {
+        .clashSheet(isPresented: $adding) {
             ConfigurationNewKeyForm(suggestions: mapField?.key?.values ?? [], taken: Set(entries.map(\.key)),
                                     document: document, entryField: entryField("\u{1F}"),
                                     keyFormat: mapField?.key?.format) { key, value in
@@ -3873,7 +4451,7 @@ struct ConfigurationEntryObjectListPage: View {
                     }
                 }
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         List {
                             ConfigurationEntryFieldRows(entry: item, steps: steps + [.index(index)], document: document,
                                                         catalog: catalog, skip: [],
@@ -3921,7 +4499,7 @@ struct ConfigurationEntryObjectListPage: View {
             }
         }
         .environment(\.editMode, $editMode)
-        .sheet(isPresented: $adding) {
+        .clashSheet(isPresented: $adding) {
             ConfigurationEntryNewItemForm(form: Self.newItem(fields: itemFields)) { item in
                 items.append(item)
                 save(.array(items))
@@ -4324,32 +4902,7 @@ struct ConfigurationRenameSheet: View {
 
  
 
-enum ConfigurationEditorCopy {
-     
-     
-     
-     
-    static func title(of section: ConfigurationOutlineSection) -> String {
-        switch section {
-        case .general: "General Configuration (Configuration Chapter)"
-        case .dns: "DNS"
-        case .sniffer: "Domain Sniffing (Configuration Chapter)"
-        case .inbound: "Inbounds (Configuration Chapter)"
-        case .proxies: "Proxies (Configuration Chapter)"
-        case .proxyProviders: "Proxy Providers (Configuration Chapter)"
-        case .proxyGroups: "Proxy Groups (Configuration Chapter)"
-        case .rules: "Route Rules (Configuration Chapter)"
-        case .ruleProviders: "Rule Providers (Configuration Chapter)"
-        case .subRules: "Sub-rules"
-        case .tunnels: "Tunnels (Configuration Chapter)"
-        case .ntp: "NTP"
-        case .experimental: "Experimental (Configuration Chapter)"
-        case .unknown: "Unknown Keys"
-        case .customRules: "Custom Rules"
-        case .overrideScript: "Override Script"
-        }
-    }
-
+extension ConfigurationEditorCopy {
      
     static func plain(_ value: OrderedJSON) -> String? {
         switch value {
@@ -4443,8 +4996,13 @@ extension ConfigurationEditorSession {
      
     func keptRulesRefuseDeleting(_ names: [String], ruleSets: Bool = false) async -> Bool {
         guard let file = page?.keptRules?.file, !names.isEmpty else { return false }
-        isSaving = true
-        defer { isSaving = false }
+        beginHolding()
+         
+         
+         
+         
+        var refused = true
+        defer { runEnded(lettingQueuedOut: refused) }
         do {
             let found = try await Task.detached(priority: .userInitiated) { () throws -> (String, [String])? in
                 let catalog = try PublishedRules.open(sourceAt: file)
@@ -4456,7 +5014,10 @@ extension ConfigurationEditorSession {
                 }
                 return nil
             }.value
-            guard let found else { return false }
+            guard let found else {
+                refused = false
+                return false
+            }
             refuseDeleting(found.0, usedBy: found.1)
         } catch {
             ClashLogStore.shared.append("kept rules: \(error.localizedDescription)", stream: .app, level: .warning)

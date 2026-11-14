@@ -1,5 +1,10 @@
 {
   "values": {
+    "bbr3": {
+      "en": "There's no BBRv3 here, so this connection runs BBR instead.",
+      "zh-Hans": "这里没有 BBRv3，会按 BBR 运行。",
+      "zh-Hant": "這裡沒有 BBRv3，會按 BBR 執行。"
+    },
     "easytier": {
       "en": "EasyTier isn't built into the iPhone, iPad and Apple TV version; such a node refuses every connection.",
       "zh-Hans": "iPhone、iPad 和 Apple TV 版没有内置 EasyTier，这种节点会拒绝所有连接。",

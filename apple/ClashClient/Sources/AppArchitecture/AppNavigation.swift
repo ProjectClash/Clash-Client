@@ -676,7 +676,7 @@ enum PresentationEvidence {
         let stamp = ISO8601DateFormatter()
         stamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var lines: [String] = []
-        for case let entry as OSLogEntryLog in entries where entry.date >= start {
+        for case let entry as OSLogEntryLog in entries where entry.date.timeIntervalSince(start) >= 0 {
             let message = entry.composedMessage
             let lowered = message.lowercased()
             guard ["present", "sheet", "transition", "detached"].contains(where: { lowered.contains($0) }) else { continue }

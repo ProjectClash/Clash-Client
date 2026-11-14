@@ -13,6 +13,16 @@ import SwiftUI
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 public struct ClashStableNavigationLink<
     Value: Hashable,
     Destination: View,
@@ -246,6 +256,10 @@ private struct ClashDestinationPopScope<Content: View>: View {
             \.clashPopRoute,
             ClashRoutePusher(token: token) { _ in dismiss() }
         )
+         
+         
+         
+        .environment(\.clashDeparturePage, token)
     }
 }
 

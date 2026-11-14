@@ -4,8 +4,6 @@ import Foundation
  
  
 struct DeveloperDataManager {
-    static let appGroupIdentifier = ClashAppIdentifiers.appGroup
-
     private let containerURL: URL
     private let defaults: UserDefaults
     private let credentials: CredentialStore

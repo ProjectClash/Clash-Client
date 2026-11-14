@@ -34,9 +34,6 @@ struct ClashMacNodeScopePage: View {
      
      
     var savesUnchanged = false
-     
-     
-    var refusesEmpty = false
     @State private var choices: ClashMacNodeScopeChoices?
     @State private var selectedNodes: Set<String> = []
     @State private var selectedCollections: Set<String> = []
@@ -93,7 +90,7 @@ struct ClashMacNodeScopePage: View {
 
     var body: some View {
          
-        ClashMacSheetFrame(title: .verbatim(source.label), width: 600, height: 560) {
+        ClashMacSheetFrame(title: ClashConfigurationSourceCopy.name(source), width: 600, height: 560) {
             VStack(spacing: 0) {
                  
                  
@@ -116,13 +113,6 @@ struct ClashMacNodeScopePage: View {
                     }
                     if choices == nil, error == nil {
                         Section { ProgressView().controlSize(.small) }
-                    }
-                     
-                     
-                    if refusesEmpty, choices != nil, selectedNodes.isEmpty, selectedCollections.isEmpty {
-                        Section {
-                            Text(clash: .copy("At least one node source stays on.")).foregroundStyle(.secondary)
-                        }
                     }
                     if !shownCollections.isEmpty {
                         Section {
@@ -167,8 +157,8 @@ struct ClashMacNodeScopePage: View {
                 closeIdentifier: "configuration-center.scope.cancel",
                 primaryTitle: .copy("Done"),
                 primaryIdentifier: "configuration-center.scope.done",
-                primaryDisabled: choices == nil || (!dirty && !savesUnchanged)
-                    || (refusesEmpty && selectedNodes.isEmpty && selectedCollections.isEmpty),
+                 
+                primaryDisabled: choices == nil || (!dirty && !savesUnchanged),
                 onClose: back,
                 onPrimary: {
                     guard let choices else { return }

@@ -1,3 +1,4 @@
+import ClashClientKit
 import ClashClientUI
 import SwiftUI
 #if canImport(AppKit)
@@ -481,10 +482,44 @@ enum CodeEditorIndentation {
     }
 }
 
+ 
+ 
+ 
+ 
+struct CodeEditorDiagnostic: Equatable {
+    let id = UUID()
+    let line: Int
+
+     
+     
+    static func parsed(from description: String, in text: String) -> CodeEditorDiagnostic? {
+        CodeEditorDiagnosticParser.line(in: description)
+            .flatMap { CodeEditorDiagnosticParser.markableLine($0, in: text) }
+            .map { CodeEditorDiagnostic(line: $0) }
+    }
+}
+
 enum CodeEditorDiagnosticParser {
+     
+     
+     
+     
+     
+     
+     
+    static func markableLine(_ line: Int, in text: String) -> Int? {
+        let lines = text.components(separatedBy: "\n")
+        guard line > 0, line <= lines.count else { return nil }
+        func holdsSomething(_ index: Int) -> Bool {
+            lines[index].contains { $0 != " " && $0 != "\t" && $0 != "\r" }
+        }
+        if let next = (line - 1..<lines.count).first(where: holdsSomething) { return next + 1 }
+        return lines.indices.last(where: holdsSomething).map { $0 + 1 }
+    }
+
     static func line(in description: String) -> Int? {
         let expression = try! NSRegularExpression(
-            pattern: "(?:at\\s+)?line\\s*[:#]?\\s*(\\d+)",
+            pattern: "(?:at\\s+)?\\bline\\s*[:#]?\\s*(\\d+)",
             options: [.caseInsensitive]
         )
         let range = NSRange(description.startIndex..., in: description)
@@ -632,7 +667,12 @@ struct CodeEditorCommand: Equatable {
         case paste
         case selectAll
         case select(NSRange)
+         
+        case mark(NSRange)
 
+         
+         
+         
          
          
          
@@ -707,7 +747,8 @@ struct CodeEditorPanel: View {
     @Binding var text: String
     let language: CodeEditorLanguage
     var minHeight: CGFloat = 300
-    var diagnosticLine: Int?
+     
+    var diagnostic: CodeEditorDiagnostic?
     var isEditable = true
     var expandsVertically = false
     var chrome: CodeEditorChrome = .full
@@ -738,6 +779,9 @@ struct CodeEditorPanel: View {
     @State private var textLength = 0
     @State private var lineIndexTask: Task<Void, Never>?
     @StateObject private var history = CodeEditorHistory()
+     
+     
+    @State private var lineTooLong = false
 
      
      
@@ -858,6 +902,17 @@ struct CodeEditorPanel: View {
         }
     }
 
+    @ViewBuilder
+    private var lineTooLongNotice: some View {
+        if lineTooLong, !softWrap {
+            Label("This line is too long, so it is shown wrapped.", systemImage: ClashSymbol.infoCircle.name)
+                .font(.caption)
+                .foregroundStyle(CodeEditorPalette.secondaryText)
+                .padding(.horizontal, ClashTheme.Spacing.row)
+                .padding(.vertical, ClashTheme.Spacing.compact)
+        }
+    }
+
     private var findRequested: Bool { findPresented?.wrappedValue ?? false }
 
     var body: some View {
@@ -871,6 +926,8 @@ struct CodeEditorPanel: View {
             }
 
             largeFileNotice
+
+            lineTooLongNotice
 
             CodeTextEditor(
                 text: $text,
@@ -887,7 +944,8 @@ struct CodeEditorPanel: View {
                 onFind: { findPresented?.wrappedValue = true },
                 typing: typing,
                 position: position,
-                onPositionChange: onPositionChange
+                onPositionChange: onPositionChange,
+                onLineTooLong: { lineTooLong = $0 }
             )
             .frame(
                 minHeight: minHeight,
@@ -932,9 +990,11 @@ struct CodeEditorPanel: View {
              
             jump(to: search.textChanged(to: newText))
         }
-        .onChange(of: diagnosticLine) { line in
-            guard let line, let range = CodeEditorSearch.range(ofLine: line, in: text) else { return }
-            command = CodeEditorCommand(action: .select(range))
+        .onChange(of: diagnostic) { diagnostic in
+            guard let diagnostic, let range = CodeEditorSearch.range(ofLine: diagnostic.line, in: text) else { return }
+             
+             
+            command = CodeEditorCommand(action: findFieldFocused ? .select(range) : .mark(range))
         }
          
          
@@ -1002,18 +1062,21 @@ private struct CodeTextEditor: UIViewRepresentable {
      
     var position: CodeEditorViewport?
     var onPositionChange: ((CodeEditorViewport) -> Void)?
+     
+    var onLineTooLong: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-    static func dismantleUIView(_ view: LineNumberTextView, coordinator: Coordinator) {
+    static func dismantleUIView(_ across: CodeEditorAcrossView, coordinator: Coordinator) {
          
          
         coordinator.reportsPosition = false
         coordinator.positionWorkItem?.cancel()
     }
 
-    func makeUIView(context: Context) -> LineNumberTextView {
+    func makeUIView(context: Context) -> CodeEditorAcrossView {
         let view = LineNumberTextView()
+        let across = CodeEditorAcrossView(textView: view)
         view.delegate = context.coordinator
         view.language = language
         view.isEditable = isEditable
@@ -1025,9 +1088,14 @@ private struct CodeTextEditor: UIViewRepresentable {
         context.coordinator.mirror.reset(to: text)
          
         view.textStorage.delegate = context.coordinator
+        context.coordinator.view = view
+        view.onLineTooLongChange = { [weak coordinator = context.coordinator] tooLong in
+             
+            DispatchQueue.main.async { coordinator?.parent.onLineTooLong?(tooLong) }
+        }
         view.showsLineNumbers = showsLineNumbers
         view.softWrap = softWrap
-        view.rebuildLineStarts()
+        view.rebuildLineStarts(exact: true)
         if showsKeyBar {
             view.inputAccessoryView = CodeEditorKeyBar(keys: context.coordinator.keys(for: view))
         }
@@ -1045,10 +1113,11 @@ private struct CodeTextEditor: UIViewRepresentable {
             DispatchQueue.main.async { selection = view.selectedRange }
         }
         DispatchQueue.main.async { view.highlightVisibleSyntax() }
-        return view
+        return across
     }
 
-    func updateUIView(_ view: LineNumberTextView, context: Context) {
+    func updateUIView(_ across: CodeEditorAcrossView, context: Context) {
+        let view = across.textView
         context.coordinator.parent = self
         view.language = language
         view.isEditable = isEditable
@@ -1060,10 +1129,10 @@ private struct CodeTextEditor: UIViewRepresentable {
          
          
         if text != context.coordinator.lastEmittedText,
-           !view.isFirstResponder {
+           !view.isFirstResponder || context.coordinator.markedSinceTyping {
             context.coordinator.isUpdating = true
             view.text = text
-            view.rebuildLineStarts()
+            view.rebuildLineStarts(exact: true)
             view.undoManager?.removeAllActions()
             history.reset(to: text)
             context.coordinator.lastEmittedText = text
@@ -1097,13 +1166,26 @@ private struct CodeTextEditor: UIViewRepresentable {
                 changeInLength: delta,
                 storage: textStorage.mutableString
             )
+             
+             
+            editedSinceChange = SourceLineWidth.edited(editedSinceChange, then: editedRange, changeInLength: delta)
+            view?.noteCharactersChanged(editedRange: editedRange, changeInLength: delta)
         }
+
+         
+        var editedSinceChange: NSRange?
+         
+        weak var view: LineNumberTextView?
         var parent: CodeTextEditor
         var lastCommandID: UUID?
         var isUpdating = false
         var highlightWorkItem: DispatchWorkItem?
         var scrollHighlightWorkItem: DispatchWorkItem?
         var lastEmittedText = ""
+         
+         
+         
+        var markedSinceTyping = false
          
          
         var reportsPosition = true
@@ -1139,14 +1221,25 @@ private struct CodeTextEditor: UIViewRepresentable {
              
              
             let emitted = mirror.text
+            markedSinceTyping = false
             parent.history.recordChange(from: lastEmittedText, to: emitted)
             lastEmittedText = emitted
             parent.text = emitted
             if parent.showsKeyBar, view.isFirstResponder, parent.typing?.wrappedValue == false {
                 parent.typing?.wrappedValue = true
             }
+            if let edited = editedSinceChange {
+                editedSinceChange = nil
+                view.measureEdit(edited)
+                if view.isFirstResponder {
+                    view.revealAcross(NSRange(location: NSMaxRange(view.selectedRange), length: 0))
+                }
+            }
             highlightWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak view] in
+            let workItem = DispatchWorkItem { [weak self, weak view] in
+                 
+                 
+                self?.highlightWorkItem = nil
                 view?.rebuildLineStarts()
                 view?.highlightVisibleSyntax()
             }
@@ -1157,7 +1250,14 @@ private struct CodeTextEditor: UIViewRepresentable {
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard !isUpdating else { return }
             parent.selection = textView.selectedRange
-            if let view = textView as? LineNumberTextView { reportPosition(of: view, after: 0.2) }
+            if let view = textView as? LineNumberTextView {
+                 
+                 
+                if view.isFirstResponder {
+                    view.revealAcross(NSRange(location: NSMaxRange(view.selectedRange), length: 0))
+                }
+                reportPosition(of: view, after: 0.2)
+            }
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
@@ -1181,8 +1281,10 @@ private struct CodeTextEditor: UIViewRepresentable {
              
             view.layoutGutter()
             scrollHighlightWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak view] in
-                view?.highlightVisibleSyntax()
+            let workItem = DispatchWorkItem { [weak self, weak view] in
+                 
+                 
+                view?.highlightVisibleSyntax(whileTyping: self?.highlightWorkItem != nil)
             }
             scrollHighlightWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
@@ -1209,11 +1311,17 @@ private struct CodeTextEditor: UIViewRepresentable {
             case .selectAll:
                 view.becomeFirstResponder()
                 view.selectAll(nil)
-            case .select(let range):
+            case .select(let range), .mark(let range):
                 let safeLocation = min(max(0, range.location), (view.text as NSString).length)
                 let safeLength = min(max(0, range.length), (view.text as NSString).length - safeLocation)
                 view.selectedRange = NSRange(location: safeLocation, length: safeLength)
                 view.scrollRangeToVisible(view.selectedRange)
+                 
+                 
+                if case .mark = action {
+                    markedSinceTyping = true
+                    view.becomeFirstResponder()
+                }
             }
         }
 
@@ -1384,12 +1492,41 @@ private final class CodeEditorKeyBar: UIInputView {
     }
 }
 
-private final class LineNumberTextView: UITextView {
+ 
+ 
+ 
+struct CodeEditorGutterLabel: Equatable {
+    let number: Int
+    let top: CGFloat
+}
+
+ 
+ 
+ 
+protocol CodeEditorGutterReporting: AnyObject {
+     
+    func gutterLabels() -> [CodeEditorGutterLabel]
+     
+    var gutterFrame: CGRect { get }
+     
+    var gutterDraws: Int { get }
+     
+    var drawnGutterLabels: [CodeEditorGutterLabel] { get }
+     
+     
+    var lineTooLongToScroll: Bool { get }
+     
+     
+    var highlightPasses: Int { get }
+}
+
+private final class LineNumberTextView: UITextView, CodeEditorGutterReporting {
     private let gutterWidth: CGFloat = 42
      
      
     private var pinchBaseline: CGFloat = 1
 
+     
      
      
     var softWrap = CodeEditorSoftWrap.isOn {
@@ -1416,6 +1553,16 @@ private final class LineNumberTextView: UITextView {
     }
     private var lineStarts = [0]
     private var highlightedRange = NSRange(location: 0, length: 0)
+     
+     
+    private var changedSinceHighlight = 0
+
+     
+     
+     
+    func noteCharactersChanged(editedRange: NSRange, changeInLength delta: Int) {
+        changedSinceHighlight += editedRange.length + max(0, editedRange.length - delta)
+    }
      
      
     private var lastHighlightedVisibleRange: NSRange?
@@ -1485,9 +1632,79 @@ private final class LineNumberTextView: UITextView {
     var pendingPosition: CodeEditorViewport?
     var onPositionRestored: (() -> Void)?
 
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private(set) var documentWidth: CGFloat = 0
+
+     
+    static let widestDrawnWidth = CGFloat(SourceLineWidth.widestScrolledWidth)
+
+     
+     
+    private(set) var lineTooLongToScroll = false {
+        didSet {
+            guard lineTooLongToScroll != oldValue else { return }
+            onLineTooLongChange?(lineTooLongToScroll)
+        }
+    }
+    var onLineTooLongChange: ((Bool) -> Void)?
+
+     
+     
+    var wraps: Bool { softWrap || lineTooLongToScroll }
+
+     
+     
+     
+    var horizontalOffset: CGFloat = 0 {
+        didSet {
+            guard horizontalOffset != oldValue else { return }
+            layoutGutter(redraws: false)
+        }
+    }
+
+     
+     
+     
+    override func scrollRangeToVisible(_ range: NSRange) {
+        super.scrollRangeToVisible(range)
+        revealAcross(range)
+    }
+
+     
+     
+    func revealAcross(_ range: NSRange) {
+        guard !wraps, let across = superview as? CodeEditorAcrossView,
+              range.location != NSNotFound, NSMaxRange(range) <= textStorage.length else { return }
+         
+        across.layoutIfNeeded()
+        let span: CGRect
+        if range.length == 0 {
+            guard let position = position(from: beginningOfDocument, offset: range.location) else { return }
+            span = caretRect(for: position)
+        } else {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            span = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
+                .offsetBy(dx: textContainerInset.left, dy: textContainerInset.top)
+        }
+        guard span.minX.isFinite, span.maxX.isFinite else { return }
+        across.reveal(from: span.minX - textContainerInset.left, to: span.maxX + textContainerInset.right)
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
-        layoutGutter()
+        layoutGutter(redraws: false)
         if let position = pendingPosition, bounds.width > 0, window != nil {
             pendingPosition = nil
             restore(position)
@@ -1510,7 +1727,14 @@ private final class LineNumberTextView: UITextView {
          
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if position.editing, self.isEditable, self.window != nil { self.becomeFirstResponder() }
+            if position.editing, self.isEditable, self.window != nil {
+                self.becomeFirstResponder()
+                 
+                 
+                 
+                 
+                self.revealAcross(NSRange(location: NSMaxRange(self.selectedRange), length: 0))
+            }
             self.onPositionRestored?()
         }
     }
@@ -1552,17 +1776,17 @@ private final class LineNumberTextView: UITextView {
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
         if traitCollection.preferredContentSizeCategory != previousTraitCollection?.preferredContentSizeCategory {
-            font = UIFont.monospacedSystemFont(
-                ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize,
-                weight: .regular
-            )
-            typingAttributes[.font] = font
+             
+             
+            applyFont()
         }
         highlightVisibleSyntax()
         gutterView.setNeedsDisplay()
     }
 
-    func rebuildLineStarts() {
+     
+     
+    func rebuildLineStarts(exact: Bool = false) {
         let began = DispatchTime.now().uptimeNanoseconds
         defer {
             ClashPerf.span(
@@ -1578,15 +1802,99 @@ private final class LineNumberTextView: UITextView {
         lastHighlightedVisibleRange = nil
         let source = text as NSString
         lineStarts = [0]
-        if source.length > 0 {
-            for index in 0..<source.length where source.character(at: index) == 10 {
-                lineStarts.append(index + 1)
+        if softWrap {
+            if source.length > 0 {
+                for index in 0..<source.length where source.character(at: index) == 10 {
+                    lineStarts.append(index + 1)
+                }
             }
+        } else {
+             
+            widestLineColumns = SourceLineWidth.widestColumns(in: source, range: NSRange(location: 0, length: source.length)) {
+                self.lineStarts.append($0)
+            }
+            applyDocumentWidth(exact: exact)
         }
         gutterView.setNeedsDisplay()
     }
 
-    func highlightVisibleSyntax() {
+     
+     
+     
+     
+    func measureEdit(_ edited: NSRange) {
+         
+         
+         
+        guard !softWrap, !lineTooLongToScroll else { return }
+        let source = textStorage.mutableString as NSString
+        let widest = SourceLineWidth.widestColumns(in: source, range: SourceLineWidth.linesToMeasure(in: source, edited: edited))
+        guard widest > widestLineColumns else { return }
+        widestLineColumns = widest
+        applyDocumentWidth(exact: false)
+    }
+
+     
+     
+    private var widestLineColumns = 0
+
+     
+    private var columnWidth: CGFloat {
+        guard let font else { return 0 }
+        return ("0" as NSString).size(withAttributes: [.font: font]).width
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func applyDocumentWidth(exact: Bool) {
+        var wanted: CGFloat = 0
+        var tooLong = false
+        if !softWrap {
+             
+            if let next = SourceLineWidth.nextDocumentWidth(
+                current: Double(documentWidth), columns: widestLineColumns, columnWidth: Double(columnWidth),
+                insets: Double(textContainerInset.left + textContainerInset.right), exact: exact
+            ) {
+                wanted = CGFloat(next)
+            } else {
+                tooLong = true
+            }
+        }
+        guard wanted != documentWidth || tooLong != lineTooLongToScroll else { return }
+        documentWidth = wanted
+        lineTooLongToScroll = tooLong
+        superview?.setNeedsLayout()
+        superview?.layoutIfNeeded()
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func highlightVisibleSyntax(whileTyping: Bool = false) {
         let began = DispatchTime.now().uptimeNanoseconds
         defer {
             ClashPerf.span(
@@ -1610,6 +1918,13 @@ private final class LineNumberTextView: UITextView {
         layoutManager.ensureLayout(forBoundingRect: visible, in: textContainer)
         let glyphs = layoutManager.glyphRange(forBoundingRect: visible, in: textContainer)
         let characters = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        let colouredFrom = highlightedRange.location + changedSinceHighlight
+        let colouredTo = NSMaxRange(highlightedRange) - changedSinceHighlight
+        if whileTyping, colouredFrom < colouredTo,
+           characters.location >= colouredFrom,
+           NSMaxRange(characters) <= colouredTo {
+            return
+        }
          
          
          
@@ -1630,6 +1945,7 @@ private final class LineNumberTextView: UITextView {
             return
         }
         lastHighlightedVisibleRange = inspected
+        highlightPasses += 1
         let result = CodeSyntaxHighlighter.highlight(text, language: language, around: characters)
         let storageLength = textStorage.length
         let oldLocation = min(highlightedRange.location, storageLength)
@@ -1644,6 +1960,7 @@ private final class LineNumberTextView: UITextView {
             )
         }
         highlightedRange = result.inspectedRange
+        changedSinceHighlight = 0
         for token in result.tokens {
             textStorage.addAttribute(
                 .foregroundColor,
@@ -1669,6 +1986,7 @@ private final class LineNumberTextView: UITextView {
 
         override func draw(_ rect: CGRect) {
             guard let owner, let context = UIGraphicsGetCurrentContext() else { return }
+            owner.gutterDraws += 1
             owner.drawGutter(in: context, bounds: bounds)
         }
     }
@@ -1692,14 +2010,6 @@ private final class LineNumberTextView: UITextView {
                    width: 0.5, height: gutterBounds.height)
         )
 
-        let visible = CGRect(origin: contentOffset, size: bounds.size)
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: visible, in: textContainer)
-        let characterRange = layoutManager.characterRange(
-            forGlyphRange: glyphRange,
-            actualGlyphRange: nil
-        )
-        let firstLine = max(0, lowerBound(lineStarts, characterRange.location) - 1)
-        let end = NSMaxRange(characterRange)
         let numberFont = UIFont.monospacedDigitSystemFont(
             ofSize: max(9, (font?.pointSize ?? 12) - 2),
             weight: .regular
@@ -1708,34 +2018,61 @@ private final class LineNumberTextView: UITextView {
             .font: numberFont,
             .foregroundColor: CodeEditorPalette.uiSecondaryText
         ]
-         
-         
-        let source = text as NSString
-        let lastCharacter = max(0, source.length - 1)
-        let isEmpty = source.length == 0
-
-        for lineIndex in firstLine..<lineStarts.count {
-            let character = lineStarts[lineIndex]
-            if character > end { break }
-            let y: CGFloat
-            if isEmpty {
-                y = textContainerInset.top
-            } else {
-                let glyph = layoutManager.glyphIndexForCharacter(
-                    at: min(character, lastCharacter)
-                )
-                y = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
-                    + textContainerInset.top
-            }
-            let value = "\(lineIndex + 1)" as NSString
+        let labels = gutterLabels()
+        drawnGutterLabels = labels
+        for label in labels {
+            let value = "\(label.number)" as NSString
             let size = value.size(withAttributes: attributes)
             value.draw(
                  
                  
-                at: CGPoint(x: gutterWidth - size.width - 7, y: y - contentOffset.y),
+                at: CGPoint(x: gutterWidth - size.width - 7, y: label.top - contentOffset.y),
                 withAttributes: attributes
             )
         }
+    }
+
+    var gutterFrame: CGRect { gutterView.frame }
+    fileprivate(set) var gutterDraws = 0
+    private(set) var highlightPasses = 0
+    private(set) var drawnGutterLabels: [CodeEditorGutterLabel] = []
+
+     
+     
+    func gutterLabels() -> [CodeEditorGutterLabel] {
+         
+         
+        let source = text as NSString
+        guard source.length > 0 else {
+            return [CodeEditorGutterLabel(number: 1, top: textContainerInset.top)]
+        }
+        let visible = CGRect(origin: contentOffset, size: bounds.size)
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visible, in: textContainer)
+        let characterRange = layoutManager.characterRange(
+            forGlyphRange: glyphRange,
+            actualGlyphRange: nil
+        )
+        let firstLine = max(0, lowerBound(lineStarts, characterRange.location) - 1)
+        let end = NSMaxRange(characterRange)
+        let lastCharacter = source.length - 1
+        var labels: [CodeEditorGutterLabel] = []
+        for lineIndex in firstLine..<lineStarts.count {
+            let character = lineStarts[lineIndex]
+            if character > end { break }
+            let glyph = layoutManager.glyphIndexForCharacter(at: min(character, lastCharacter))
+            let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+             
+             
+             
+             
+             
+            let top = character > lastCharacter ? fragment.maxY : fragment.minY
+            labels.append(CodeEditorGutterLabel(
+                number: lineIndex + 1,
+                top: top + textContainerInset.top
+            ))
+        }
+        return labels
     }
 
      
@@ -1752,18 +2089,24 @@ private final class LineNumberTextView: UITextView {
         ]
         lastHighlightedVisibleRange = nil
         highlightVisibleSyntax()
+         
+         
+        if !isPinching { applyDocumentWidth(exact: true) }
         layoutGutter()
     }
 
+    private var isPinching = false
+
+     
+     
     private func applyWrapping() {
-        textContainer.widthTracksTextView = softWrap
-        textContainer.size = CGSize(
-            width: softWrap ? bounds.width : CGFloat.greatestFiniteMagnitude,
-            height: CGFloat.greatestFiniteMagnitude
-        )
-        isDirectionalLockEnabled = softWrap
-        alwaysBounceHorizontal = !softWrap
-        setNeedsLayout()
+        if softWrap {
+            widestLineColumns = 0
+            applyDocumentWidth(exact: true)
+        } else {
+            rebuildLineStarts(exact: true)
+        }
+        superview?.setNeedsLayout()
     }
 
      
@@ -1772,12 +2115,15 @@ private final class LineNumberTextView: UITextView {
         switch gesture.state {
         case .began:
             pinchBaseline = textScale
+            isPinching = true
         case .changed:
             textScale = min(
                 max(pinchBaseline * gesture.scale, CodeEditorTextScale.range.lowerBound),
                 CodeEditorTextScale.range.upperBound
             )
         case .ended, .cancelled, .failed:
+            isPinching = false
+            applyDocumentWidth(exact: true)
             CodeEditorTextScale.factor = textScale
         default:
             break
@@ -1791,16 +2137,41 @@ private final class LineNumberTextView: UITextView {
             bottom: 12,
             right: 12
         )
+        applyDocumentWidth(exact: true)
     }
 
-    func layoutGutter() {
+     
+     
+     
+    private struct GutterBasis: Equatable {
+        var top: CGFloat
+        var size: CGSize
+        var content: CGSize
+    }
+
+    private var drawnBasis: GutterBasis?
+
+     
+     
+     
+     
+     
+     
+     
+    func layoutGutter(redraws: Bool = true) {
         guard showsLineNumbers else { return }
-        let frame = CGRect(x: contentOffset.x, y: contentOffset.y,
+         
+         
+        let frame = CGRect(x: contentOffset.x + horizontalOffset, y: contentOffset.y,
                            width: gutterWidth, height: bounds.height)
         if gutterView.frame != frame {
             gutterView.frame = frame
         }
-        gutterView.setNeedsDisplay()
+        let basis = GutterBasis(top: contentOffset.y, size: bounds.size, content: contentSize)
+        if redraws || basis != drawnBasis {
+            drawnBasis = basis
+            gutterView.setNeedsDisplay()
+        }
     }
 
     private func lowerBound(_ values: [Int], _ target: Int) -> Int {
@@ -1821,6 +2192,70 @@ private final class LineNumberTextView: UITextView {
         case .literal: return CodeEditorPalette.uiLiteral
         case .comment: return CodeEditorPalette.uiComment
         case .keyword: return CodeEditorPalette.uiLiteral
+        }
+    }
+}
+ 
+ 
+ 
+ 
+ 
+ 
+private final class CodeEditorAcrossView: UIScrollView, UIScrollViewDelegate {
+    let textView: LineNumberTextView
+
+    init(textView: LineNumberTextView) {
+        self.textView = textView
+        super.init(frame: .zero)
+        delegate = self
+         
+         
+        contentInsetAdjustmentBehavior = .never
+        showsVerticalScrollIndicator = false
+        alwaysBounceVertical = false
+        backgroundColor = CodeEditorPalette.uiCanvas
+        addSubview(textView)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let unwrapped = !textView.wraps
+        let width = unwrapped ? max(bounds.width, textView.documentWidth) : bounds.width
+        let frame = CGRect(x: 0, y: 0, width: width, height: bounds.height)
+        if textView.frame != frame { textView.frame = frame }
+        let size = CGSize(width: width, height: bounds.height)
+        if contentSize != size { contentSize = size }
+        alwaysBounceHorizontal = unwrapped
+        if !unwrapped, contentOffset.x != 0 { contentOffset.x = 0 }
+        follow()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        follow()
+    }
+
+    private func follow() {
+        textView.horizontalOffset = contentOffset.x
+        let right = max(0, textView.bounds.width - contentOffset.x - bounds.width)
+        if textView.verticalScrollIndicatorInsets.right != right {
+            textView.verticalScrollIndicatorInsets.right = right
+        }
+    }
+
+     
+     
+    func reveal(from minX: CGFloat, to maxX: CGFloat) {
+        var x = contentOffset.x
+        if minX < x || maxX - minX >= bounds.width {
+            x = minX
+        } else if maxX > x + bounds.width {
+            x = maxX - bounds.width
+        }
+        x = min(max(0, x), max(0, contentSize.width - bounds.width))
+        if x != contentOffset.x {
+            setContentOffset(CGPoint(x: x, y: contentOffset.y), animated: false)
         }
     }
 }
@@ -1846,6 +2281,9 @@ private struct CodeTextEditor: NSViewRepresentable {
      
     var position: CodeEditorViewport?
     var onPositionChange: ((CodeEditorViewport) -> Void)?
+     
+     
+    var onLineTooLong: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -1886,6 +2324,10 @@ private struct CodeTextEditor: NSViewRepresentable {
         )
         view.textContainer?.widthTracksTextView = true
         scrollView.documentView = view
+        view.onLineTooLongChange = { [weak coordinator = context.coordinator] tooLong in
+             
+            DispatchQueue.main.async { coordinator?.parent.onLineTooLong?(tooLong) }
+        }
          
          
         scrollView.verticalRulerView = ClashMacLineNumberRuler(
@@ -1902,6 +2344,12 @@ private struct CodeTextEditor: NSViewRepresentable {
          
          
         view.string = text
+         
+         
+         
+         
+        view.softWrap = softWrap
+        view.measureLines()
         view.setSelectedRange(selection)
         context.coordinator.observeScrolling(of: scrollView, textView: view)
 
@@ -1941,7 +2389,7 @@ private struct CodeTextEditor: NSViewRepresentable {
          
          
         if text != context.coordinator.lastEmittedText,
-           view.window?.firstResponder !== view
+           view.window?.firstResponder !== view || context.coordinator.markedSinceTyping
         {
             context.coordinator.isUpdating = true
             view.string = text
@@ -1954,6 +2402,11 @@ private struct CodeTextEditor: NSViewRepresentable {
              
             view.invalidateHighlightCache()
             externallyReplacedText = true
+        }
+         
+        if view.softWrap != softWrap || externallyReplacedText {
+            view.softWrap = softWrap
+            view.measureLines()
         }
         if let command, context.coordinator.lastCommandID != command.id {
             context.coordinator.lastCommandID = command.id
@@ -1983,12 +2436,26 @@ private struct CodeTextEditor: NSViewRepresentable {
                 changeInLength: delta,
                 storage: textStorage.mutableString
             )
+             
+             
+            editedSinceChange = SourceLineWidth.edited(editedSinceChange, then: editedRange, changeInLength: delta)
         }
+
+        func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            (textView as? LineNumberTextView)?.noteReplacement(of: affectedCharRange, with: replacementString)
+            return true
+        }
+         
+        var editedSinceChange: NSRange?
         var lastCommandID: UUID?
         var isUpdating = false
         var highlightWorkItem: DispatchWorkItem?
         var scrollHighlightWorkItem: DispatchWorkItem?
         var lastEmittedText = ""
+         
+         
+         
+        var markedSinceTyping = false
         weak var observedTextView: LineNumberTextView?
 
         init(parent: CodeTextEditor) { self.parent = parent }
@@ -2012,7 +2479,21 @@ private struct CodeTextEditor: NSViewRepresentable {
                 name: NSView.boundsDidChangeNotification,
                 object: nil
             )
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.frameDidChangeNotification,
+                object: nil
+            )
             observedTextView = textView
+             
+             
+            scrollView.contentView.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(visibleFrameDidChange(_:)),
+                name: NSView.frameDidChangeNotification,
+                object: scrollView.contentView
+            )
             scrollView.contentView.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(
                 self,
@@ -2022,10 +2503,36 @@ private struct CodeTextEditor: NSViewRepresentable {
             )
         }
 
+        @objc private func visibleFrameDidChange(_ notification: Notification) {
+            seenWidthMayHaveChanged(notification.object as? NSClipView)
+        }
+
+         
+         
+         
+        private var lastSeenWidth: CGFloat = -1
+        private var seenWidthPass: DispatchWorkItem?
+        private func seenWidthMayHaveChanged(_ clip: NSClipView?) {
+            guard let clip else { return }
+            let seen = clip.bounds.width - clip.contentInsets.left - clip.contentInsets.right
+            guard seen != lastSeenWidth, seenWidthPass == nil else { return }
+            let pass = DispatchWorkItem { [weak self, weak clip] in
+                guard let self else { return }
+                seenWidthPass = nil
+                if let clip { lastSeenWidth = clip.bounds.width - clip.contentInsets.left - clip.contentInsets.right }
+                observedTextView?.visibleWidthDidChange()
+            }
+            seenWidthPass = pass
+            DispatchQueue.main.async(execute: pass)
+        }
+
          
          
         @objc private func visibleBoundsDidChange(_ notification: Notification) {
             guard notification.object is NSClipView else { return }
+             
+             
+            seenWidthMayHaveChanged(notification.object as? NSClipView)
             scrollHighlightWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak view = observedTextView] in
                 view?.highlightVisibleSyntax()
@@ -2053,6 +2560,7 @@ private struct CodeTextEditor: NSViewRepresentable {
                 from: lastEmittedText,
                 to: emitted
             )
+            markedSinceTyping = false
             lastEmittedText = emitted
             parent.text = emitted
              
@@ -2060,8 +2568,18 @@ private struct CodeTextEditor: NSViewRepresentable {
              
              
             view.invalidateHighlightCache()
+             
+             
+             
+            if let edited = editedSinceChange {
+                editedSinceChange = nil
+                view.measureEdit(edited)
+            }
             highlightWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak view] in
+                 
+                 
+                view?.measureAtPause()
                 view?.highlightVisibleSyntax()
             }
             highlightWorkItem = workItem
@@ -2100,7 +2618,7 @@ private struct CodeTextEditor: NSViewRepresentable {
                 view.paste(nil)
             case .selectAll:
                 view.selectAll(nil)
-            case .select(let range):
+            case .select(let range), .mark(let range):
                 let length = (view.string as NSString).length
                 let safeLocation = min(max(0, range.location), length)
                 let safeLength = min(
@@ -2113,6 +2631,7 @@ private struct CodeTextEditor: NSViewRepresentable {
                 )
                 view.setSelectedRange(safeRange)
                 view.scrollRangeToVisible(safeRange)
+                if case .mark = action { markedSinceTyping = true }
             }
         }
 
@@ -2140,6 +2659,9 @@ private struct CodeTextEditor: NSViewRepresentable {
                 (text as NSString).length
             )
             view.string = text
+             
+            editedSinceChange = nil
+            view.measureLines()
             let selectedRange = NSRange(
                 location: selectedLocation,
                 length: 0
@@ -2168,6 +2690,213 @@ private final class LineNumberTextView: NSTextView {
      
      
     private var lastHighlightedInspectedRange: NSRange?
+
+     
+     
+     
+     
+     
+     
+     
+    var softWrap = true
+
+     
+     
+     
+    private(set) var lineTooLongToScroll = false {
+        didSet {
+            guard lineTooLongToScroll != oldValue else { return }
+            onLineTooLongChange?(lineTooLongToScroll)
+        }
+    }
+    var onLineTooLongChange: ((Bool) -> Void)?
+
+     
+     
+    var wraps: Bool { softWrap || lineTooLongToScroll }
+
+     
+    private var widestLineColumns = 0
+
+     
+     
+    private(set) var documentWidth: CGFloat = 0
+
+     
+    private var columnWidth: CGFloat {
+        let font = self.font ?? NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize(for: .small), weight: .regular)
+        return ("0" as NSString).size(withAttributes: [.font: font]).width
+    }
+
+     
+     
+     
+    func measureLines() {
+        if softWrap {
+            widestLineColumns = 0
+        } else {
+            let source = (textStorage?.mutableString ?? NSMutableString()) as NSString
+            widestLineColumns = SourceLineWidth.widestColumns(in: source, range: NSRange(location: 0, length: source.length))
+        }
+        widestMayBeShorter = false
+        applyDocumentWidth(exact: true)
+    }
+
+     
+     
+     
+     
+     
+    func measureEdit(_ edited: NSRange) {
+         
+         
+        guard !softWrap, !lineTooLongToScroll, let storage = textStorage else { return }
+        let source = storage.mutableString as NSString
+        let widest = SourceLineWidth.widestColumns(in: source, range: SourceLineWidth.linesToMeasure(in: source, edited: edited))
+        guard widest > widestLineColumns else { return }
+        widestLineColumns = widest
+        applyDocumentWidth(exact: false)
+    }
+
+     
+     
+    private(set) var widestMayBeShorter = false
+
+     
+     
+     
+     
+     
+     
+     
+    func noteReplacement(of range: NSRange, with replacement: String?) {
+        guard !softWrap, !lineTooLongToScroll, !widestMayBeShorter,
+              let storage = textStorage, NSMaxRange(range) <= storage.length else { return }
+        let breaksTheLine = replacement?.unicodeScalars.contains { [0x0A, 0x0D, 0x2028, 0x2029].contains($0.value) } == true
+        guard range.length > 0 || breaksTheLine else { return }
+        let source = storage.mutableString as NSString
+        let touched = SourceLineWidth.widestColumns(in: source, range: SourceLineWidth.linesToMeasure(in: source, edited: range))
+        if touched >= widestLineColumns { widestMayBeShorter = true }
+    }
+
+     
+     
+     
+     
+     
+     
+    func measureAtPause() {
+        guard !softWrap, lineTooLongToScroll || widestMayBeShorter else { return }
+        measureLines()
+    }
+
+     
+     
+    private var seenWidth: CGFloat {
+        guard let clip = enclosingScrollView?.contentView else { return 0 }
+        return max(clip.bounds.width - clip.contentInsets.left - clip.contentInsets.right, 0)
+    }
+
+     
+    func visibleWidthDidChange() {
+        guard appliedWraps == false else { return }
+        setWidth(max(documentWidth, seenWidth))
+    }
+
+    private func setWidth(_ width: CGFloat) {
+        guard width > 0, abs(frame.width - width) > 0.5 else { return }
+        setFrameSize(NSSize(width: width, height: frame.height))
+    }
+
+    private var appliedWraps: Bool?
+
+    private func applyDocumentWidth(exact: Bool) {
+        var wanted: CGFloat = 0
+        var tooLong = false
+        if !softWrap {
+             
+            let padding = (textContainer?.lineFragmentPadding ?? 0) * 2
+            if let next = SourceLineWidth.nextDocumentWidth(
+                current: Double(documentWidth), columns: widestLineColumns, columnWidth: Double(columnWidth),
+                insets: Double(textContainerInset.width * 2 + padding), exact: exact
+            ) {
+                wanted = CGFloat(next)
+            } else {
+                tooLong = true
+            }
+        }
+        documentWidth = wanted
+        lineTooLongToScroll = tooLong
+        guard let scrollView = enclosingScrollView else { return }
+        guard appliedWraps != wraps else {
+            if !wraps { setWidth(max(documentWidth, seenWidth)) }
+            return
+        }
+        if appliedWraps == nil {
+             
+             
+            appliedWraps = wraps
+            if !wraps { unwrap(in: scrollView) }
+            return
+        }
+        appliedWraps = wraps
+        let clip = scrollView.contentView
+         
+         
+         
+        let top = topRow()
+        let before = clip.bounds.minY
+        if wraps {
+            scrollView.hasHorizontalScroller = false
+            autoresizingMask = [.width]
+            textContainer?.widthTracksTextView = true
+            setWidth(seenWidth)
+            textContainer?.containerSize = NSSize(width: max(frame.width - textContainerInset.width * 2, 0), height: .greatestFiniteMagnitude)
+        } else {
+            unwrap(in: scrollView)
+        }
+         
+         
+         
+        var origin = clip.bounds.origin
+        if let top, let layoutManager, let container = textContainer, top.character < (textStorage?.length ?? 0) {
+            let now = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: top.character), effectiveRange: nil)
+             
+             
+            layoutManager.ensureLayout(forBoundingRect: NSRect(x: 0, y: now.minY, width: 1, height: clip.bounds.height), in: container)
+            sizeToFit()
+            origin.y = before + now.minY - top.y
+        }
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        scrollView.reflectScrolledClipView(clip)
+        scrollView.verticalRulerView?.needsDisplay = true
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func unwrap(in scrollView: NSScrollView) {
+        scrollView.hasHorizontalScroller = true
+        autoresizingMask = []
+        textContainer?.widthTracksTextView = false
+        textContainer?.containerSize = NSSize(width: CGFloat(SourceLineWidth.widestScrolledWidth), height: .greatestFiniteMagnitude)
+        setWidth(max(documentWidth, seenWidth))
+    }
+
+     
+    private func topRow() -> (character: Int, y: CGFloat)? {
+        guard let layoutManager, let container = textContainer, (textStorage?.length ?? 0) > 0 else { return nil }
+        let point = NSPoint(x: 0, y: max(visibleRect.minY - textContainerOrigin.y, 0))
+        let glyph = layoutManager.glyphIndex(for: point, in: container)
+        let row = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return (layoutManager.characterIndexForGlyph(at: glyph), row.minY)
+    }
 
      
      

@@ -154,10 +154,20 @@ struct ProfileCenterAdapter: View {
         ClashOptionalNavigationContainer(owns: ownsNavigationContainer) {
 #if os(iOS)
             ClashConfigurationCenterSections(revealsConfigurations: handoffsTaken) {
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
                 profilesPage
+                    .profileQuickAddPresenters(quickAdd)
             } nodes: {
                 ConfigurationSourceLibraryAdapter(model: model, library: configurationLibrary,
-                    changed: applyCenterLibrary, close: { centerDismiss() },
+                    changed: applyNodeLibraryChange, close: { centerDismiss() },
                     embedded: true, showsClose: ownsNavigationContainer, browseCache: $libraryBrowseCache)
             } rules: {
                 ConfigurationRuleLibraryAdapter(model: model, library: configurationLibrary,
@@ -169,7 +179,10 @@ struct ProfileCenterAdapter: View {
 #endif
         }
         .clashCapturesDismiss(centerDismiss)
+         
+#if !os(iOS)
         .profileQuickAddPresenters(quickAdd)
+#endif
 #if os(iOS)
          
          
@@ -281,6 +294,24 @@ struct ProfileCenterAdapter: View {
         composedProfileIDs = Set(snapshot.recipes.filter { $0.preservesOriginal != true }.map(\.id))
     }
 
+     
+     
+     
+     
+    private func applyLibraryFromAPage(_ snapshot: ConfigurationLibrarySnapshot) {
+        guard ConfigurationCollectionListing.takes(snapshot, over: configurationLibrary) else { return }
+        applyCenterLibrary(snapshot)
+    }
+
+     
+     
+     
+     
+    private func applyNodeLibraryChange(_ snapshot: ConfigurationLibrarySnapshot) {
+        guard ConfigurationCollectionListing.takes(snapshot, over: configurationLibrary) else { return }
+        applyCenterLibrary(snapshot)
+    }
+
     private var usesConfigurationSections: Bool {
 #if os(iOS)
         true
@@ -385,16 +416,18 @@ struct ProfileCenterAdapter: View {
             let canUseOriginal = configurationLibrary.recipes
                 .first(where: { $0.id == id.rawValue })
                 .map { $0.sources.count == 1 } ?? true
+             
+             
+             
             let setUsesOriginal: (Bool) async throws -> Void = { enabled in
                 try await model.setUsesOriginalConfiguration(id.rawValue, enabled: enabled)
-                await rereadCentreLibrary()
             }
             return ClashClientUI.ClashConfigurationPageParts(
                 sections: AnyView(ConfigurationPageSections(canUseOriginal: canUseOriginal, setUsesOriginal: setUsesOriginal,
-                                                            libraryChanged: applyCenterLibrary)),
+                                                            libraryChanged: applyLibraryFromAPage)),
                 actions: AnyView(ConfigurationPageActions()),
                 host: { content in
-                    AnyView(ConfigurationPageHost(model: model, profileID: id.rawValue, libraryChanged: applyCenterLibrary,
+                    AnyView(ConfigurationPageHost(model: model, profileID: id.rawValue, libraryChanged: applyLibraryFromAPage,
                                                   selections: selections, content: content))
                 })
         }
@@ -598,7 +631,9 @@ struct ProfileCenterAdapter: View {
                 .map { $0.sources.count == 1 }
                 ?? (profile.id != LocalDefaultProfileProvisioner.profileID),
             configurationSourceNames: configurationLibrary.recipes.first(where: { $0.id == profile.id }).map { recipe in
-                recipe.sources.map { pin in configurationLibrary.sources.first(where: { $0.id == pin.id })?.label ?? pin.id }
+                recipe.sources.map { pin in
+                    configurationLibrary.sources.first(where: { $0.id == pin.id }).map { $0.displayLabel(locale: locale) } ?? pin.id
+                }
             },
             configurationRuleName: configurationLibrary.recipes.first(where: { $0.id == profile.id }).flatMap { recipe in
                 (configurationLibrary.rules + ConfigurationBuiltins.schemes).first(where: { $0.id == recipe.ruleSchemeID })?.displayLabel
@@ -750,6 +785,16 @@ struct ProfileCenterAdapter: View {
     private func batchSnapshot(
         _ report: BatchUpdateReport
     ) -> ClashProfileBatchReportSnapshot {
+        Self.batchSnapshot(report, isRunning: model.isBatchSyncing, locale: locale)
+    }
+
+     
+     
+     
+     
+    static func batchSnapshot(
+        _ report: BatchUpdateReport, isRunning: Bool, locale: Locale
+    ) -> ClashProfileBatchReportSnapshot {
         ClashProfileBatchReportSnapshot(
             id: report.id,
             title: report.title,
@@ -765,7 +810,7 @@ struct ProfileCenterAdapter: View {
                     label: item.label,
                     state: batchState(item.state),
                     message:
-                        item.failure?.message
+                        item.failure.map { $0.displayMessage.resolved(locale: locale) }
                         ?? item.message
                         ?? item.state.title,
                     diagnosticCode:
@@ -773,11 +818,11 @@ struct ProfileCenterAdapter: View {
                 )
             },
             wasCancelled: report.wasCancelled,
-            isRunning: model.isBatchSyncing
+            isRunning: isRunning
         )
     }
 
-    private func batchState(
+    private static func batchState(
         _ state: BatchUpdateState
     ) -> ClashProfileBatchUpdateState {
         switch state {
@@ -818,6 +863,19 @@ struct ProfileCenterAdapter: View {
         }
     }
 
+     
+     
+     
+    private func networkPage(_ profile: Profile, landsOnSniffer: Bool = false) -> some View {
+        ProfileBaseDocumentHost(profiles: model, profile: profile) { base in
+             
+             
+            ProfileNetworkSettingsView.opening(profile: profile, sourceYAML: base, landsOnSniffer: landsOnSniffer) { draft in
+                try model.updateNetwork(draft)
+            }
+        }
+    }
+
     @ViewBuilder
     private func capabilityView(
         _ destination: ClashProfilesCapabilityDestination
@@ -832,7 +890,27 @@ struct ProfileCenterAdapter: View {
         case .backupRestore:
             BackupRestoreView()
         case .modules:
-            ModulePageHost(model: ModulePageModel.shared)
+            ModulePageHost(model: ModulePageModel.shared, noticePlaces: ClashModulesNoticePlaces(
+                 
+                 
+                 
+                offers: { place in
+                    ModulePageHost.offers(place, activeProfileID: model.activeProfileID,
+                                          exists: { noticeProfile($0) != nil })
+                },
+                page: { place in
+                     
+                     
+                    guard ModulePageHost.offers(place, activeProfileID: model.activeProfileID,
+                                                exists: { noticeProfile($0) != nil }) else {
+                        return AnyView(ClashOpeningCancelButton())
+                    }
+                    switch place {
+                    case .snifferSettings(let id):
+                        guard let profile = noticeProfile(id) else { return AnyView(ClashOpeningCancelButton()) }
+                        return AnyView(networkPage(profile, landsOnSniffer: true))
+                    }
+                }))
         case .subscriptionSettings(let id):
             if let profile = appProfile(id) {
                 ProfileSubscriptionSettingsAdapter(
@@ -841,7 +919,7 @@ struct ProfileCenterAdapter: View {
                     library: librarySubscriptionFacts(for: profile)
                 )
             } else {
-                EmptyView()
+                ClashOpeningCancelButton()
             }
         case .rules(let id):
             if let profile = appProfile(id) {
@@ -860,7 +938,7 @@ struct ProfileCenterAdapter: View {
                     }
                 }
             } else {
-                EmptyView()
+                ClashOpeningCancelButton()
             }
         case .override(let id):
             if let profile = appProfile(id) {
@@ -872,19 +950,13 @@ struct ProfileCenterAdapter: View {
                     try model.updateOverrideSettings(from: $0)
                 }
             } else {
-                EmptyView()
+                ClashOpeningCancelButton()
             }
         case .network(let id):
             if let profile = appProfile(id) {
-                ProfileBaseDocumentHost(profiles: model, profile: profile) { base in
-                     
-                     
-                    ProfileNetworkSettingsView.opening(profile: profile, sourceYAML: base) { draft in
-                        try model.updateNetwork(draft)
-                    }
-                }
+                networkPage(profile)
             } else {
-                EmptyView()
+                ClashOpeningCancelButton()
             }
         case .trust(let id):
             if let profile = appProfile(id) {
@@ -895,7 +967,7 @@ struct ProfileCenterAdapter: View {
                     try await model.updateAdvancedOverrides(draft)
                 }
             } else {
-                EmptyView()
+                ClashOpeningCancelButton()
             }
         case .configurationSources(let id):
 #if os(iOS)
@@ -920,7 +992,7 @@ struct ProfileCenterAdapter: View {
                 ProfileSourceEditorLoader(profile: profile, model: model,
                     savesIndependentSource: composedProfileIDs.contains(profile.id))
             } else {
-                EmptyView()
+                ClashOpeningCancelButton()
             }
         case .runtimePreview(let id):
             if let profile = appProfile(id) {
@@ -932,7 +1004,7 @@ struct ProfileCenterAdapter: View {
                     try await model.loadSavedConfigurationPreview(for: profile.id)
                 })
             } else {
-                EmptyView()
+                ClashOpeningCancelButton()
             }
         }
     }
@@ -941,6 +1013,12 @@ struct ProfileCenterAdapter: View {
         _ id: ClashClientKit.Profile.ID
     ) -> Profile? {
         model.profiles.first { $0.id == id.rawValue }
+    }
+
+     
+     
+    private func noticeProfile(_ id: String) -> Profile? {
+        (try? ClashClientKit.Profile.ID(id)).flatMap(appProfile)
     }
 
     private func handle(
@@ -963,6 +1041,11 @@ struct ProfileCenterAdapter: View {
 
         case .syncAll:
             await model.syncAllAndWait()
+             
+             
+             
+             
+            await rereadCentreLibrary()
             return .none
 
         case .select(let id):
@@ -1411,14 +1494,21 @@ struct InstallLinkConfirmationAlert: ViewModifier {
              
              
              
-            (router.pendingConfirmation.map(
+            let lead = router.pendingConfirmation.map(
                 ProfileImportRouter.confirmationIsLocalConfiguration
             ) == true
                 ? Text("An install link wants to add a profile to Clash.\n\n")
-                : Text("An install link wants to add a profile URL to Clash.\n\n"))
-                + Text(verbatim: router.pendingConfirmation.map {
-                    ProfileImportRouter.confirmationText(for: $0)
-                } ?? "")
+                : Text("An install link wants to add a profile URL to Clash.\n\n")
+            let link = Text(verbatim: router.pendingConfirmation.map {
+                ProfileImportRouter.confirmationText(for: $0)
+            } ?? "")
+             
+             
+            if let line = ProfileImportRouter.confirmationRuleLine(for: router.pendingRules) {
+                lead + Text(clash: line) + Text(verbatim: "\n\n") + link
+            } else {
+                lead + link
+            }
         }
     }
 }
@@ -1476,8 +1566,10 @@ struct ProfileHandoffRefusalAlert: ViewModifier {
                  
                  
                  
+                 
+                 
                 get: {
-                    !router.untoldRefusals.isEmpty && router.pendingConfirmation == nil
+                    !router.untoldRefusals.isEmpty && !router.aQuestionIsAskedOrDue
                         && Self.tells(host: host, centresOnScreen: router.centresOnScreen)
                         && !waits && sceneAllows
                 },
@@ -1940,6 +2032,7 @@ struct ProfileEditorOpeningPlaceholder: View {
             Text(clash: .copy("Opening Editor"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            ClashOpeningCancelButton()
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2010,6 +2103,7 @@ struct ProfileSourceEditorLoader: View {
                     Text(clash: .copy("These rules are too many to edit one by one here. They run as written in the configuration's file."))
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("profile.sourceEditor.tooLarge")
+                    if ClashSheetSurface.coversOnThisSystem { ClashOpeningCancelButton() }
                 }
                 .navigationTitle(Text(clash: .copy("Edit Source")))
             } else if read {

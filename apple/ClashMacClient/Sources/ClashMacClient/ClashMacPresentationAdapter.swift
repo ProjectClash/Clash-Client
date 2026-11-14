@@ -266,13 +266,20 @@ struct ClashSymbolImage: View {
     var body: some View {
         Group {
             if symbol.isCustom {
-                 
-                 
-                if let image = ClashMacSymbolImageCache.image(for: symbol) {
-                    rendered(Image(nsImage: image))
-                } else {
-                    rendered(Image(systemName: symbol.macSystemFallbackName))
+                Group {
+                     
+                     
+                    if let image = ClashMacSymbolImageCache.image(for: symbol) {
+                        rendered(Image(nsImage: image))
+                    } else {
+                        rendered(Image(systemName: symbol.macSystemFallbackName))
+                    }
                 }
+                 
+                 
+                 
+                 
+                .accessibilityHidden(true)
             } else {
                  
                  

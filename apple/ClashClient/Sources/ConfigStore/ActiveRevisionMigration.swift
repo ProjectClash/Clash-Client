@@ -44,7 +44,7 @@ enum ActiveRevisionMigrationError: LocalizedError {
  
 final class ActiveRevisionMigrator {
     static let safetyProfileID = "00000000-0000-0000-0000-000000000001"
-    static let safetyYAML = """
+    static let safetyYAML = #"""
     mode: rule
     log-level: warning
     find-process-mode: off
@@ -62,7 +62,7 @@ final class ActiveRevisionMigrator {
     proxy-groups: []
     rules:
       - MATCH,REJECT
-    """
+    """#
 
     private let store: ConfigResourceStore
     private let preflight: (String) -> PreflightOutcome

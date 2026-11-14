@@ -173,3 +173,101 @@ extension ConfigurationRuleScheme {
             && (pageFollowsSource == true || pageJSON == nil)
     }
 }
+
+ 
+
+public extension ConfigurationRuleScheme {
+     
+     
+     
+     
+     
+     
+    var ownViewBaseID: String? {
+        guard privateToConfigurationID != nil, kind == .custom, isRetainedSnapshot != true,
+              baseSchemeID == nil, collectionKey == nil else { return nil }
+        return rulesFromSchemeID ?? rulesCustomizedFromSchemeID
+    }
+
+     
+     
+     
+     
+    var plainViewBaseID: String? { ownViewBaseID == nil ? nil : rulesFromSchemeID }
+}
+
+public extension ConfigurationLibrarySnapshot {
+     
+     
+     
+     
+     
+     
+    func ownView(of baseID: String?, for profileID: String?) -> ConfigurationRuleScheme? {
+        guard let baseID, let profileID else { return nil }
+        return rules.first { $0.privateToConfigurationID == profileID && $0.plainViewBaseID == baseID }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func placingOwnViews(in listed: [ConfigurationRuleScheme], for profileID: String?,
+                         running current: String? = nil) -> [ConfigurationRuleScheme] {
+        let owner = profileID ?? current.flatMap { id in rules.first { $0.id == id && $0.ownViewBaseID != nil } }?.privateToConfigurationID
+        guard let owner else { return listed }
+        var rows = listed
+        let views = rules.filter { $0.privateToConfigurationID == owner && $0.ownViewBaseID != nil }
+         
+        for view in views.filter({ $0.plainViewBaseID != nil }) + views.filter({ $0.plainViewBaseID == nil })
+        where !rows.contains(where: { $0.id == view.id }) {
+            guard let baseID = view.ownViewBaseID else { continue }
+            let plain = view.plainViewBaseID != nil
+            if plain, baseID == current { continue }
+            if plain, let index = rows.firstIndex(where: { $0.id == baseID }) {
+                rows[index] = view
+            } else if let index = rows.lastIndex(where: { $0.id == baseID || $0.ownViewBaseID == baseID || ($0.baseSchemeID ?? $0.id) == baseID }) {
+                rows.insert(view, at: index + 1)
+            } else {
+                rows.append(view)
+            }
+        }
+        return rows
+    }
+
+     
+     
+     
+     
+     
+     
+    mutating func namingOwnViews(of baseID: String) {
+        guard let base = rules.first(where: { $0.id == baseID && $0.ownViewBaseID == nil }) else { return }
+        for index in rules.indices where rules[index].ownViewBaseID == baseID && rules[index].label != base.label {
+            rules[index].label = base.label
+        }
+    }
+
+     
+     
+     
+     
+    var schemeIDsInUse: Set<String> {
+        let previous = recipes.compactMap { $0.ownCopyOf?.previous }
+        return Set(recipes.map(\.ruleSchemeID)).union(recipes.compactMap(\.composedRuleSchemeID))
+            .union(previous.map(\.ruleSchemeID)).union(previous.compactMap(\.composedRuleSchemeID))
+    }
+}

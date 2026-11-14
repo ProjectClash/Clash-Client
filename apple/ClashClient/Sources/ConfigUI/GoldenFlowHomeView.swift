@@ -9,9 +9,20 @@ import ClashClientUI
  
  
  
+ 
+ 
+private struct DirectGlobalQuestion {
+    let profileID: String
+    let previousMode: Profile.OutboundMode
+    let exit: ClashTunnelOutboundMode.GlobalExit
+}
+
 private struct OutboundModeRefusal {
     let title: String
-    let message: String
+     
+     
+     
+    let message: ClashDisplayText
      
      
      
@@ -23,11 +34,20 @@ private struct OutboundModeRefusal {
     ) -> OutboundModeRefusal {
         OutboundModeRefusal(
             title: "Mode Not Changed",
-            message: """
-                \(mode.rawValue.capitalized) mode could not be saved to this \
-                profile: \(error.localizedDescription)
-                """
+             
+             
+             
+             
+            message: .format(saveFailedRow(mode), [error.localizedDescription])
         )
+    }
+
+    private static func saveFailedRow(_ mode: Profile.OutboundMode) -> String {
+        switch mode {
+        case .global: return "Global mode could not be saved to this profile: %@"
+        case .rule: return "Rule mode could not be saved to this profile: %@"
+        case .direct: return "Direct mode could not be saved to this profile: %@"
+        }
     }
 }
 
@@ -63,6 +83,13 @@ struct GoldenFlowHomeAdapter: View {
      
      
     @State private var startupExplanation: ClashStartupExplanation?
+     
+     
+     
+     
+     
+     
+    @StateObject private var trafficFeedOwner: HomeTrafficFeedOwner
      
      
      
@@ -154,8 +181,14 @@ struct GoldenFlowHomeAdapter: View {
      
     let openProfiles: () -> Void
     let openProxies: () -> Void
+     
+     
+     
+    let openProxiesToChooseInGlobal: () -> Void
     let openRules: () -> Void
     let openActiveRules: () -> Void
+     
+    let openOnDemand: () -> Void
      
      
     let openLogs: () -> Void
@@ -218,6 +251,15 @@ struct GoldenFlowHomeAdapter: View {
      
      
      
+    @State private var proxiesOpening: ProxyBrowsingVisibility.Opening = .browsing
+     
+     
+     
+     
+    @State private var directGlobalQuestion: DirectGlobalQuestion?
+     
+     
+     
     @Binding private var sessionPresentation:
         ClashClientUI.ClashRootDestination?
     @State private var proxiesPreparationGeneration: UInt64 = 0
@@ -245,14 +287,17 @@ struct GoldenFlowHomeAdapter: View {
         openThroughDoor: @escaping (_ door: String, _ open: @escaping @MainActor () -> Void) -> Void,
         openProfiles: @escaping () -> Void,
         openProxies: @escaping () -> Void,
+        openProxiesToChooseInGlobal: @escaping () -> Void,
         openRules: @escaping () -> Void,
         openActiveRules: @escaping () -> Void,
+        openOnDemand: @escaping () -> Void,
         openLogs: @escaping () -> Void,
         openDNSQuery: @escaping () -> Void,
         rebind: @escaping () -> Void
     ) {
         self.vpn = vpn
         self.command = command
+        _trafficFeedOwner = StateObject(wrappedValue: HomeTrafficFeedOwner(traffic: Self.cardTraffic(command.traffic)))
         self.nodes = nodes
         self.stats = stats
         self.profileRefreshToken = profileRefreshToken
@@ -263,8 +308,10 @@ struct GoldenFlowHomeAdapter: View {
         self.openThroughDoor = openThroughDoor
         self.openProfiles = openProfiles
         self.openProxies = openProxies
+        self.openProxiesToChooseInGlobal = openProxiesToChooseInGlobal
         self.openRules = openRules
         self.openActiveRules = openActiveRules
+        self.openOnDemand = openOnDemand
         self.openLogs = openLogs
         self.openDNSQuery = openDNSQuery
         self.rebind = rebind
@@ -294,6 +341,13 @@ struct GoldenFlowHomeAdapter: View {
             ClashSymbolImage(symbol: symbol)
         }
         .equatable()
+        .environment(\.clashTrafficFeed, trafficFeedOwner.feed)
+        .onReceive(command.$traffic) { traffic in
+             
+             
+            guard presentedHomeSnapshot == nil else { return }
+            trafficFeedOwner.update(Self.cardTraffic(traffic))
+        }
          
          
         .environment(\.clashHomeIssueOpensAccount, true)
@@ -361,9 +415,11 @@ struct GoldenFlowHomeAdapter: View {
         .onChange(of: editorDestination?.id) { destination in
             if destination == nil {
                 presentedHomeSnapshot = nil
+                trafficFeedOwner.update(Self.cardTraffic(command.traffic))
                 startupOutcome.refresh()
                 recomputeTally()
                 pendingProxiesGroup = nil
+                proxiesOpening = .browsing
                 proxiesPreparationGeneration &+= 1
                 preparedProxiesPresentation = nil
             } else if presentedHomeSnapshot == nil {
@@ -392,7 +448,7 @@ struct GoldenFlowHomeAdapter: View {
             guard let page = pendingSessionPage else { return }
             pendingSessionPage = nil
             switch page {
-            case .proxies: presentProxiesOverview()
+            case .proxies: presentProxiesSheet(.browsing, group: nil)
             case .rules: presentRulesOverview()
             default: break
             }
@@ -415,6 +471,10 @@ struct GoldenFlowHomeAdapter: View {
              
              
             recomputeConfiguredMode()
+             
+             
+            proxiesOpening = ProxyBrowsingVisibility.opening(
+                proxiesOpening, after: .modeChanged(.init(coreValue: mode)))
             guard command.isConnected,
                   mode.caseInsensitiveCompare("global") == .orderedSame else {
                 return
@@ -427,7 +487,10 @@ struct GoldenFlowHomeAdapter: View {
             item: $editorDestination,
             role: .page
         ) { destination in
-            ClashLazyView {
+             
+             
+             
+            ClashLazyView(defersOneTurn: true) {
                 editorSheet(destination)
             }
                 .clashPageSizedSheet()
@@ -435,7 +498,7 @@ struct GoldenFlowHomeAdapter: View {
                  
                 .onAppear { ClashPushClock.arrived() }
         }
-        .sheet(
+        .clashSheet(
             item: $runtimeConfigurationProfile,
             onDismiss: {
                 runtimeConfigurationPreparationGeneration &+= 1
@@ -591,7 +654,7 @@ struct GoldenFlowHomeAdapter: View {
             }
             rebuildFailureCaptureIfNeeded()
         }
-        .sheet(item: $presentedConnectionIssue) { issue in
+        .clashSheet(item: $presentedConnectionIssue) { issue in
              
              
              
@@ -607,22 +670,35 @@ struct GoldenFlowHomeAdapter: View {
             presenting: modeRefusal
         ) { refusal in
             if refusal.offersNodeChoice {
-                Button("Choose Node") {
-                    pendingProxiesGroup = GlobalProxySelectionPolicy.groupName
-                     
-                     
-                     
-                     
-                    if shellLayout == .regularSidebar {
-                        openProxies()
-                    } else {
-                        presentProxiesOverview()
-                    }
-                }
+                Button("Choose Node") { openGlobalToChooseANode() }
             }
             Button("OK", role: .cancel) {}
         } message: { refusal in
-            Text(clash: .copy(refusal.message))
+            Text(clash: refusal.message)
+        }
+         
+         
+         
+        .alert(
+            "Switch to Global Mode?",
+            isPresented: Binding(
+                get: { directGlobalQuestion != nil },
+                set: { if !$0 { directGlobalQuestion = nil } }
+            ),
+            presenting: directGlobalQuestion
+        ) { question in
+            Button("Choose Node") { openGlobalToChooseANode() }
+            Button("Switch Anyway") { switchToGlobalOverDirect(question) }
+            Button("Cancel", role: .cancel) {}
+        } message: { question in
+            Text(clash: .copy(ClashTunnelOutboundMode.questionKey(question.exit)))
+        }
+        .onChange(of: nodes.replaysEndedOnGlobalWithoutAProxy) { _ in
+             
+             
+             
+            guard command.isConnected else { return }
+            Task { await enforceConnectedGlobalMode() }
         }
         .onChange(of: favoriteCards) { cards in
             HomeFavoriteCardPreferences().save(cards)
@@ -647,6 +723,7 @@ struct GoldenFlowHomeAdapter: View {
                 profile: live,
                 openProxiesGroup: { group in
                     pendingProxiesGroup = group
+                    proxiesOpening = .browsing
                     presentProxiesOverview(for: profile)
                 }
             )
@@ -674,19 +751,23 @@ struct GoldenFlowHomeAdapter: View {
                          
                          
                          
-                        initiallyExpandedGroup: HomeProxiesEntryPolicy.groupToOpen(
+                         
+                         
+                         
+                        initiallyExpandedGroup: HomeProxiesEntryPolicy.homeEntry(
                             pending: pendingProxiesGroup,
                             lastOpened: nodes.currentGroupName,
-                            groups: HomeProxiesEntryPolicy.candidates(
-                                preparedProxiesPresentation.sourceModel.groups,
-                                mode: ProxyBrowsingVisibility.Mode(coreValue: command.mode),
-                                name: \.name,
-                                isHidden: \.hidden
-                            ),
+                            groups: preparedProxiesPresentation.sourceModel.groups,
+                            name: \.name,
+                            isHidden: \.hidden,
+                            coreMode: command.mode,
                              
                              
-                            readerFoldedAll: nodes.readerFoldedAllGroups
-                        )
+                            liveCatalog: command.isConnected && nodes.isRuntimeAvailable,
+                            readerFoldedAll: nodes.readerFoldedAllGroups,
+                            opening: proxiesOpening
+                        ),
+                        opening: proxiesOpening
                     )
                 } else {
                     HomePreparationPlaceholder(
@@ -715,6 +796,8 @@ struct GoldenFlowHomeAdapter: View {
                     generation: proxiesPreparationGeneration
                 )
             }
+        case .onDemand:
+            HomeOnDemandPage(vpn: vpn)
         }
     }
 
@@ -734,24 +817,11 @@ struct GoldenFlowHomeAdapter: View {
      
      
      
-     
-    private var selectedRoute: (name: String?, delay: Int?) {
-        guard configuredMode == .global,
-              let group = nodes.groups.first(
-                  where: { $0.name == GlobalProxySelectionPolicy.groupName }
-              )
-        else {
-            return (nil, nil)
-        }
-        let route =
-            group.resolvedNow.isEmpty
-                ? group.now
-                : group.resolvedNow
-        return (
-            route.isEmpty ? nil : route,
-             
-             
-            nodes.routeDelay(from: group.name)
+    private var namedRoute: HomeNamedRoute.Route {
+        HomeNamedRoute.route(
+            mode: configuredMode, groups: nodes.groups, delays: nodes.delays,
+            terminals: nodes.resolvedNowByGroup, groupsAreTheCores: nodes.groupsAreTheCores,
+            finalRuleTarget: HomeNamedRoute.finalRuleTarget(of: rulesOverview)
         )
     }
 
@@ -787,7 +857,11 @@ struct GoldenFlowHomeAdapter: View {
                 : nil,
             strippedNotices: strippedNotices,
             unreadableRuleSets: unreadableRuleSets,
-            modulesListener: modulesListener
+            modulesListener: modulesListener,
+             
+             
+            onDemandNote: vpn.onDemandNoteForTheReasonSheet(locale: locale),
+            openOnDemand: { throughDoor("home.connection-issue.on-demand") { openOnDemandPage() } }
         )
         .onDisappear {
              
@@ -1070,7 +1144,9 @@ struct GoldenFlowHomeAdapter: View {
      
      
     private var connectionErrorMessage: String {
-        let live = vpn.reportableLastError
+         
+         
+        let live = vpn.homeLastErrorRow
         guard let startupExplanation else { return live }
          
          
@@ -1089,30 +1165,70 @@ struct GoldenFlowHomeAdapter: View {
         return ClashCopy.string(for: startupExplanation.summary, locale: locale)
     }
 
+     
+     
+     
+     
+    static func errorSubject(for line: String, refusal: CoreStartRefusal?) -> String? {
+        guard let refusal, line == refusal.message else { return nil }
+        return refusal.words
+    }
+
     private var presentation: HomeConnectionPresentation {
-        HomeConnectionPresenter.presentation(
+        let route = namedRoute
+        let line = connectionErrorMessage
+        return HomeConnectionPresenter.presentation(
             for: HomeConnectionFacts(
                 activeProfileName: currentProfile.map { ProfileRowPresentation.label(for: $0, locale: .current) },
                 vpnStatus: homeVPNStatus,
-                errorMessage: connectionErrorMessage,
+                errorMessage: line,
                 vpnAuthorization: vpn.systemVPNAuthorization,
-                errorIsStartupStopped: vpn.reportableLastError.isEmpty
+                errorIsStartupStopped: vpn.lastError.isEmpty
                     && startupExplanation != nil,
                 errorIsProviderNotLaunched: VPNDisconnectErrorPresentation
-                    .isProviderNotLaunched(vpn.reportableLastError),
+                    .isProviderNotLaunched(vpn.homeLastErrorRow),
+                 
+                 
+                 
+                 
+                errorOnDemandRuleNames: vpn.startRefusedByOnDemand?.isCertain == true
+                    ? vpn.onDemandRuleNames(locale: locale) : nil,
+                 
+                errorSubject: Self.errorSubject(for: line, refusal: vpn.startRefusedByCore),
                 allowsSystemVPNProfileReset:
                     vpn.systemVPNProfileResetAvailable,
                 isSwitchingProxy: nodes.isSwitchingProxy,
                 recoveryMode: .none,
                 mode: configuredMode.rawValue,
-                selectedProxyName: selectedRoute.name,
+                 
+                selectedProxyName: configuredMode == .global ? route.node : nil,
                 selectedProxyDelayMilliseconds:
-                    selectedRoute.delay,
+                    configuredMode == .global ? route.delay : nil,
                 runningPreviousRevision: startupOutcome.record?.homeShowsPreviousRevision(vpnStatus: vpn.status) ?? false,
                 runningPreviousProfileName: startupOutcome.record?.runningProfileID(ifNot: currentProfile?.id)
-                    .flatMap { id in profiles.profiles.first { $0.id == id }?.label }
+                    .flatMap { id in profiles.profiles.first { $0.id == id }?.label },
+                globalExitWithoutProxy: command.isConnected
+                    && command.mode.caseInsensitiveCompare("global") == .orderedSame
+                    ? Self.homeLine(for: nodes.globalExit) : nil,
+                finalRuleRoute: configuredMode == .rule
+                    ? route.node.map {
+                        ClashHomeFinalRuleRoute(group: route.group, node: $0, delayMilliseconds: route.delay)
+                    } : nil
             )
         )
+    }
+
+     
+     
+    private static func cardTraffic(_ traffic: ClashTrafficSnapshot) -> AppleClientTrafficSnapshot {
+        guard !ClashClientUI.ClashPerfExperiment.freezesTrafficFigures else { return AppleClientTrafficSnapshot() }
+        return AppleClientTrafficSnapshot(
+            uploadBytesPerSecond: traffic.upload,
+            downloadBytesPerSecond: traffic.download,
+            uploadTotalBytes: traffic.uploadTotal,
+            downloadTotalBytes: traffic.downloadTotal,
+            uploadRatesBytesPerSecond: traffic.uploadHistory,
+            downloadRatesBytesPerSecond: traffic.downloadHistory)
     }
 
     private var sharedSnapshot: AppleClientSnapshot {
@@ -1169,22 +1285,12 @@ struct GoldenFlowHomeAdapter: View {
                             rawValue: configuredMode.rawValue
                         ) ?? .rule
                 ),
-                traffic: ClashClientUI.ClashPerfExperiment.freezesTrafficFigures
-                    ? AppleClientTrafficSnapshot()
-                    : AppleClientTrafficSnapshot(
-                    uploadBytesPerSecond: command.traffic.upload,
-                    downloadBytesPerSecond: command.traffic.download,
-                    uploadTotalBytes: command.traffic.uploadTotal,
-                    downloadTotalBytes: command.traffic.downloadTotal,
-                     
-                     
-                     
-                    uploadRatesBytesPerSecond:
-                        command.traffic.uploadHistory,
-                    downloadRatesBytesPerSecond:
-                        command.traffic.downloadHistory,
-                    coreStartedAtUnixSeconds:
-                        command.runtimeDiagnostics?.startTimeUnix ?? 0
+                 
+                 
+                traffic: AppleClientTrafficSnapshot(
+                    coreStartedAtUnixSeconds: HomeConnectionClock.startedAtUnixSeconds(
+                        coreReported: command.runtimeDiagnostics?.startTimeUnix,
+                        connectedSince: vpn.connectedSince)
                 ),
                 proxyGroupCount: timedTally?.proxyGroups ?? 0,
                 proxyCount: timedTally?.proxies ?? 0,
@@ -1254,15 +1360,7 @@ struct GoldenFlowHomeAdapter: View {
     }
 
      
-     
-     
-    private var homeVPNStatus: String {
-        let status = vpn.status
-        guard vpn.isPreparingStart,
-              !["connected", "connecting", "reasserting", "disconnecting"].contains(status.lowercased())
-        else { return status }
-        return "connecting"
-    }
+    private var homeVPNStatus: String { vpn.homeStatus }
 
     private var appleConnectionPhase: AppleClientConnectionPhase {
         switch homeVPNStatus.lowercased() {
@@ -1329,15 +1427,28 @@ struct GoldenFlowHomeAdapter: View {
              
              
             Task { @MainActor in _ = await vpn.resetSystemVPNProfile() }
+        case .openOnDemand:
+             
+             
+            throughDoor("home.on-demand") { openOnDemandPage() }
          
          
          
         case .openProxies:
+             
+             
+             
+             
+             
+             
+            let choosesInGlobal = presentation.issue?.kind == .globalOnDirect
             throughDoor("home.proxies") {
-                if shellLayout == .regularSidebar {
+                if choosesInGlobal {
+                    openGlobalToChooseANode()
+                } else if shellLayout == .regularSidebar {
                     openProxies()
                 } else {
-                    presentProxiesOverview()
+                    presentProxiesSheet(.browsing, group: nil)
                 }
             }
         case .openRules:
@@ -1614,6 +1725,8 @@ struct GoldenFlowHomeAdapter: View {
         else {
             return
         }
+         
+        if mode != .global { GlobalOverDirectConsent.shared.revoke(profileID: nodes.activeProfileID ?? profile.id) }
 
          
          
@@ -1658,30 +1771,7 @@ struct GoldenFlowHomeAdapter: View {
              
             configuredMode = mode
             Task {
-                guard await nodes.ensureGlobalProxySelection() else {
-                     
-                     
-                     
-                    guard ModeIntentClock.isCurrent(intent) else { return }
-                    configuredMode = previousMode
-                     
-                     
-                     
-                     
-                    modeRefusal = OutboundModeRefusal(
-                        title: "Global Mode Unavailable",
-                        message: GlobalProxySelectionPolicy.refusal(
-                            groups: nodes.groups
-                        )
-                            ?? """
-                            The core did not confirm a node for the GLOBAL \
-                            group, so Global mode was not applied.
-                            """,
-                        offersNodeChoice: true
-                    )
-                    return
-                }
-                 
+                let check = await nodes.checkGlobalMode()
                  
                  
                  
@@ -1689,23 +1779,32 @@ struct GoldenFlowHomeAdapter: View {
                  
                  
                 guard ModeIntentClock.isCurrent(intent) else { return }
-                do {
-                    try profiles.updateOutboundMode(
-                        profileID: profile.id,
-                        mode: mode,
-                        kernelCarriesTheChange: command.isConnected
-                    )
-                    guard await command.setMode(mode.rawValue) else {
-                        repairAfterFailedModePatch(
-                            profile: profile,
-                            intent: intent
-                        )
-                        return
-                    }
-                } catch {
+                switch GlobalModeConfirmation.switchStep(check: check, groups: nodes.groups) {
+                case .switchNow:
+                    await commitGlobalMode(profile: profile, intent: intent, previousMode: previousMode)
+                case .ask(let exit):
+                     
+                     
+                     
                     configuredMode = previousMode
-                    recomputeConfiguredMode()
-                    modeRefusal = .saveFailed(mode: mode, error: error)
+                    directGlobalQuestion = DirectGlobalQuestion(profileID: profile.id, previousMode: previousMode, exit: exit)
+                case .refuse(let sentence):
+                     
+                     
+                     
+                    configuredMode = previousMode
+                    modeRefusal = OutboundModeRefusal(
+                        title: "Global Mode Unavailable",
+                        message: .copy(sentence),
+                        offersNodeChoice: true
+                    )
+                case .notKnown:
+                     
+                    configuredMode = previousMode
+                    modeRefusal = OutboundModeRefusal(
+                        title: "Global Mode Unavailable",
+                        message: .copy(GlobalModeConfirmation.switchNotConfirmed)
+                    )
                 }
             }
             return
@@ -1780,33 +1879,144 @@ struct GoldenFlowHomeAdapter: View {
     }
 
      
+    private func commitGlobalMode(
+        profile: Profile,
+        intent: UInt64,
+        previousMode: Profile.OutboundMode
+    ) async {
+        guard ModeIntentClock.isCurrent(intent) else { return }
+        do {
+            try profiles.updateOutboundMode(
+                profileID: profile.id,
+                mode: .global,
+                kernelCarriesTheChange: command.isConnected
+            )
+            guard await command.setMode(Profile.OutboundMode.global.rawValue) else {
+                repairAfterFailedModePatch(
+                    profile: profile,
+                    intent: intent
+                )
+                return
+            }
+        } catch {
+            configuredMode = previousMode
+            recomputeConfiguredMode()
+            modeRefusal = .saveFailed(mode: .global, error: error)
+        }
+    }
+
+     
+     
+     
+    private func switchToGlobalOverDirect(_ question: DirectGlobalQuestion) {
+        guard let profile = currentProfile, profile.id == question.profileID else { return }
+        GlobalOverDirectConsent.shared.grant(profileID: nodes.activeProfileID ?? profile.id)
+        let intent = ModeIntentClock.next()
+        configuredMode = .global
+        Task { await commitGlobalMode(profile: profile, intent: intent, previousMode: question.previousMode) }
+    }
+
+     
+    private static func homeLine(for exit: ClashTunnelOutboundMode.GlobalExit?) -> ClashHomeGlobalExit? {
+        switch exit {
+        case .direct: return .direct
+        case .reject: return .reject
+        case .other: return .other
+        case .proxy, nil: return nil
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func openGlobalToChooseANode() {
+        if shellLayout == .regularSidebar {
+            openProxiesToChooseInGlobal()
+        } else {
+            presentProxiesSheet(.choosingInGlobal, group: GlobalProxySelectionPolicy.groupName)
+        }
+    }
+
+     
+     
+     
+     
+     
+    private func presentProxiesSheet(_ opening: ProxyBrowsingVisibility.Opening, group: String?) {
+        guard let currentProfile else { return }
+        pendingProxiesGroup = group
+        proxiesOpening = opening
+        presentProxiesOverview(for: currentProfile)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
      
      
      
     private func enforceConnectedGlobalMode() async {
-         
-         
-         
-        let observedIntent = ModeIntentClock.sequence
-        let confirmed = await nodes.ensureGlobalProxySelection()
-        guard ModeIntentClock.isCurrent(observedIntent) else { return }
-        switch GlobalModeConfirmation.verdict(
-            groupCount: nodes.groups.count,
-            hasGlobalGroup: nodes.groups.contains { $0.name == GlobalProxySelectionPolicy.groupName },
-            selectionConfirmed: confirmed
-        ) {
-        case .confirmed:
-            return
-        case .notYetKnown:
+        await ConnectedGlobalModeEnforcer.shared.enforce(.init(
+            isConnected: { command.isConnected },
+            isConnectedUnderGlobal: {
+                command.isConnected && command.mode.caseInsensitiveCompare("global") == .orderedSame
+            },
+            runningMode: { command.mode.lowercased() },
+             
+             
+             
+            check: { await nodes.checkGlobalMode() },
+            inventory: {
+                (nodes.groups.count, nodes.groups.contains { $0.name == GlobalProxySelectionPolicy.groupName })
+            },
+            consentHolds: {
+                GlobalOverDirectConsent.shared.holds(profileID: nodes.activeProfileID ?? currentProfile?.id)
+            },
+            refusal: { GlobalProxySelectionPolicy.refusal(groups: nodes.groups) },
+            intentSequence: { ModeIntentClock.sequence },
+            intentIsCurrent: { ModeIntentClock.isCurrent($0) },
              
              
              
              
              
-            return
-        case .refused:
-            break
-        }
+             
+            runByRules: { await command.setMode(Profile.OutboundMode.rule.rawValue, closesConnections: false) },
+            storedModeIsGlobal: {
+                currentProfile.flatMap { profiles.cachedOutboundMode(for: $0) }.map { $0 == .global } ?? true
+            },
+            modeChosenSince: { ClashWidgetFactsPublisher.modeChosen(after: $0) },
+            runGlobal: { await command.setMode(Profile.OutboundMode.global.rawValue) },
+            putBackToRule: { sentence in await putGlobalBackToRule(saying: sentence) },
+            say: { sentence in
+                modeRefusal = OutboundModeRefusal(title: "Global Mode Unavailable", message: .copy(sentence), offersNodeChoice: true)
+            },
+            pause: { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+        ))
+    }
+
+     
+     
+    private func putGlobalBackToRule(saying sentence: String) async {
         if let profile = currentProfile {
             try? profiles.updateOutboundMode(
                 profileID: profile.id,
@@ -1816,6 +2026,11 @@ struct GoldenFlowHomeAdapter: View {
         }
         configuredMode = .rule
         await command.setMode(Profile.OutboundMode.rule.rawValue)
+        modeRefusal = OutboundModeRefusal(
+            title: "Global Mode Unavailable",
+            message: .copy(sentence),
+            offersNodeChoice: true
+        )
     }
 
     private func performPrimaryAction(
@@ -1849,13 +2064,6 @@ struct GoldenFlowHomeAdapter: View {
         case .none:
             break
         }
-    }
-
-    private func presentProxiesOverview() {
-        guard let currentProfile else {
-            return
-        }
-        presentProxiesOverview(for: currentProfile)
     }
 
     private func presentProxiesOverview(for profile: Profile) {
@@ -2064,7 +2272,7 @@ struct GoldenFlowHomeAdapter: View {
                     libraryNodes = ModuleRouteHiding.publishedNodeCount(profileID: profile.id, store: store)
                         ?? ConfigurationSections.entryCount(ofSection: "proxies", in: source)
                 } else {
-                    effective = (try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile)) ?? source
+                    effective = (try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile, scripts: .silent)) ?? source
                 }
             } else if let url = resourceURL, let profile = projectionProfile {
                  
@@ -2081,7 +2289,7 @@ struct GoldenFlowHomeAdapter: View {
                     effective = leaving
                 } else if let source = try? String(contentsOf: url, encoding: .utf8) {
                      
-                    effective = (try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile)) ?? source
+                    effective = (try? ProfileRuntimeConfigBuilder.buildProduction(raw: source, profile: profile, scripts: .silent)) ?? source
                 } else {
                     effective = nil
                 }
@@ -2181,6 +2389,7 @@ struct GoldenFlowHomeAdapter: View {
                 switch editor.wrappedValue {
                 case .proxiesOverview: kinds.append("proxiesOverview")
                 case .rulesOverview: kinds.append("rulesOverview")
+                case .onDemand: kinds.append("onDemand")
                 case nil: break
                 }
                 if runtimeConfiguration.wrappedValue != nil { kinds.append("runtimeConfiguration") }
@@ -2202,6 +2411,26 @@ struct GoldenFlowHomeAdapter: View {
         presentedConnectionIssue = presentation.issue
     }
 
+    private func presentOnDemand() {
+        presentationRecovery.supersede()
+        editorDestination = .onDemand
+    }
+
+    private func openOnDemandPage() {
+        Self.routeToOnDemand(layout: shellLayout, rail: openOnDemand, sheet: { presentOnDemand() })
+    }
+
+     
+     
+     
+    static func routeToOnDemand(layout: AppShellLayout, rail: () -> Void, sheet: () -> Void) {
+        if layout == .regularSidebar {
+            rail()
+        } else {
+            sheet()
+        }
+    }
+
     private func connectCurrentProfile() {
         guard let profile = currentProfile else {
             throughDoor("home.connect", openProfiles)
@@ -2217,6 +2446,9 @@ struct GoldenFlowHomeAdapter: View {
 private enum HomeProfileEditorDestination: Identifiable {
     case rulesOverview(Profile)
     case proxiesOverview(Profile)
+     
+     
+    case onDemand
 
     var id: String {
         switch self {
@@ -2224,7 +2456,32 @@ private enum HomeProfileEditorDestination: Identifiable {
             "\(profile.id)|rules-overview"
         case .proxiesOverview(let profile):
             "\(profile.id)|proxies-overview"
+        case .onDemand:
+            "on-demand"
         }
+    }
+}
+
+ 
+ 
+ 
+private struct HomeOnDemandPage: View {
+     
+     
+    @StateObject private var dismiss = ClashDismissHandle()
+    @ObservedObject var vpn: VPNController
+
+    var body: some View {
+        ClashFeatureNavigationContainer {
+            OnDemandConfigView(vpn: vpn, usesRegularDetailLayout: false)
+                .clashToolbarUnlessInPanel {
+                    ToolbarItem(placement: .cancellationAction) {
+                        ClashSheetCloseButton { dismiss.closeModalOrDismiss() }
+                    }
+                }
+                .clashSheetPresentation()
+        }
+        .clashCapturesDismiss(dismiss)
     }
 }
 
@@ -2528,5 +2785,22 @@ enum HomeFailureCensus {
             dnsFilter: pricedDNS(fakeIPFilterEntries(source: source, trim: trim)),
             geoSite: geoItems(kind: "GEOSITE", source: source, trim: trim),
             geoIP: geoItems(kind: "GEOIP", source: source, trim: trim))
+    }
+}
+
+ 
+ 
+ 
+@MainActor
+final class HomeTrafficFeedOwner: ObservableObject {
+    let feed: ClashClientUI.ClashTrafficFeed
+
+    init(traffic: AppleClientTrafficSnapshot) {
+        feed = ClashClientUI.ClashTrafficFeed(traffic: traffic)
+    }
+
+     
+    func update(_ traffic: AppleClientTrafficSnapshot) {
+        if feed.traffic != traffic { feed.traffic = traffic }
     }
 }

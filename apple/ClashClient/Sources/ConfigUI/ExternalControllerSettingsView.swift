@@ -105,7 +105,7 @@ struct ExternalControllerSettingsView: View {
      
      
     var hasLocalConsumers = true
-    var defaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.appGroup)
+    var defaults: UserDefaults? = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite)
 
     @Environment(\.clashFeedback) private var feedback
     @State private var settings = ClashRemoteControlSettings.default

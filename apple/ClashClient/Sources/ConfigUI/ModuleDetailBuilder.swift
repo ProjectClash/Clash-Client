@@ -33,6 +33,11 @@ enum ModuleDetailBuilder {
             case preparing
              
             case unavailable
+             
+             
+             
+             
+            case onHold
         }
 
          
@@ -46,6 +51,7 @@ enum ModuleDetailBuilder {
             case .notReady(.certificate): return "Certificate Needed"
             case .notReady(.preparing): return "Getting Ready"
             case .notReady(.unavailable): return "Not Available Yet"
+            case .notReady(.onHold): return "On Hold for Now"
             case .working: return nil
             }
         }
@@ -55,6 +61,7 @@ enum ModuleDetailBuilder {
         var wait: ClashModuleDecryptionWait? {
             switch self {
             case .off: return .off
+            case .notReady(.onHold): return .onHold
             case .notReady: return .notReady
             case .working: return nil
             }
@@ -66,9 +73,13 @@ enum ModuleDetailBuilder {
      
     static func detail(record: ModuleRecord, facts: ModulePageFacts, source text: Data?, isUpdating: Bool,
                        locale: Locale) -> ClashModuleDetailSnapshot {
+         
+        let counted = facts.modules[record.id].map { ModulePageSnapshotBuilder.counted(facts, record: record, ir: $0) }
         var out = detail(record: record, ir: facts.modules[record.id], source: text, decryption: ModulePageSnapshotBuilder.decryption(facts),
                          isUpdating: isUpdating, locale: locale, publication: facts.summary, storedValues: facts.storedValues,
-                         settingsRefusal: facts.settingsModuleID == record.id ? facts.settingsFailure?.displayText : nil)
+                         settingsRefusal: facts.settingsModuleID == record.id ? facts.settingsFailure?.displayText : nil,
+                         counted: counted,
+                         scriptFile: facts.locations.map { locations in { locations.script(record.id, sha256: $0) } })
         out.panels = panels(record: record, ir: facts.modules[record.id], facts: facts)
          
          
@@ -100,12 +111,22 @@ enum ModuleDetailBuilder {
      
     static func detail(record: ModuleRecord, ir: ModuleIR?, source text: Data?, decryption: Decryption,
                        isUpdating: Bool, locale: Locale, publication: ModulePublicationSummary? = nil,
-                       storedValues: [String: String] = [:], settingsRefusal: ClashDisplayText? = nil) -> ClashModuleDetailSnapshot {
+                       storedValues: [String: String] = [:], settingsRefusal: ClashDisplayText? = nil,
+                       counted: ModulePageSnapshotBuilder.Counted? = nil,
+                       scriptFile: ((String) -> URL)? = nil) -> ClashModuleDetailSnapshot {
         let source: ClashModuleSource
         let failure: ClashDisplayText?
         var failureIsSentence = false
-        let lines = ir.flatMap { writtenLines(text, of: $0) }
-        let ir = ir.map { published($0, record: record, publication: publication, written: lines) }
+        let lines: [Substring]?
+        let taken: ModuleIR?
+        if let counted {
+            lines = counted.written
+            taken = counted.published
+        } else {
+            lines = ir.flatMap { writtenLines(text, of: $0) }
+            taken = ir.map { published($0, record: record, publication: publication, written: lines) }
+        }
+        let ir = taken
         let row = ModulePageSnapshotBuilder.row(record, ir: ir, locale: locale, decryption: decryption, written: lines)
          
         let unreadFailure: ClashDisplayText? = record.failureFromALaterBuild ? "Update failed" : nil
@@ -130,7 +151,19 @@ enum ModuleDetailBuilder {
             source = .unknown
             failure = row.failure.map { _ in "Update failed" }
         }
-        let sections = ir.map { self.sections($0, written: lines, waiting: decryption.waiting) } ?? []
+        var sections = ir.map { self.sections($0, written: lines, waiting: decryption.waiting, scriptFile: scriptFile) } ?? []
+         
+         
+         
+        if record.enabled, let ir, let index = sections.firstIndex(where: { $0.id == "appScripts" }) {
+            sections[index].items = zip(sections[index].items, ir.appScripts).map { item, script in
+                var item = item
+                if script.kind == .cron, appScriptRuns(script) {
+                    item.runNow = ModuleAppScriptEntry.id(module: record.id, origin: script.origin)
+                }
+                return item
+            }
+        }
          
         let counts = ir.map { self.counts($0, decryption: decryption, written: lines) } ?? Counts(kept: 0, waiting: 0, unavailable: 0)
         var out = ClashModuleDetailSnapshot(
@@ -463,7 +496,14 @@ enum ModuleDetailBuilder {
      
      
      
-    static func sections(_ ir: ModuleIR, written: [Substring]?, waiting waits: ClashDisplayText?) -> [Section] {
+     
+     
+     
+    static func sections(_ ir: ModuleIR, written: [Substring]?, waiting waits: ClashDisplayText?,
+                         scriptFile: ((String) -> URL)? = nil) -> [Section] {
+        func source(_ name: String, _ link: String, _ body: String?) -> ClashModuleScriptSource {
+            ClashModuleScriptSource(name: name, link: link, file: body.flatMap { body in scriptFile.map { $0(body) } })
+        }
         let numbered = ir.manifest.format != .stash
         let files = fileAddresses(ir)
         let all: [(id: String, title: ClashDisplayText, items: [Item], waits: ClashDisplayText?)] = [
@@ -480,11 +520,17 @@ enum ModuleDetailBuilder {
             ("settings", "General", settingItems(ir, written: written), nil),
              
             ("scripts", "Scripts", ir.scripts.enumerated().map {
-                Item(id: "script-\($0.offset)", text: $0.element.name, secondary: $0.element.pattern)
+                Item(id: "script-\($0.offset)", text: $0.element.name, secondary: $0.element.pattern,
+                     script: source($0.element.name, $0.element.scriptURL, $0.element.bodySHA256))
             }, waits),
              
              
-            ("appScripts", ir.scripts.isEmpty ? "Scripts" : "Other Scripts", appScriptItems(ir), nil),
+            ("appScripts", ir.scripts.isEmpty ? "Scripts" : "Other Scripts", appScriptItems(ir).enumerated().map { index, item in
+                var item = item
+                let script = ir.appScripts[index]
+                item.script = source(script.name, script.scriptURL, script.bodySHA256)
+                return item
+            }, nil),
             ("skipped", "Skipped", ir.ignored.enumerated().map {
                 Item(id: "skipped-\($0.offset)", text: $0.element.text, detail: $0.element.reason.authoredText.displayText,
                      place: numbered ? place($0.element.origin) : nil)

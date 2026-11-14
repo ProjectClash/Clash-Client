@@ -82,7 +82,23 @@ struct ClashMacRuleSetImportForm: View {
     let back: () -> Void
     let done: () -> Void
     @Environment(\.locale) private var locale
-    @State private var draft = ClashMacRuleSetImportDraft()
+    @State private var draft: ClashMacRuleSetImportDraft
+     
+     
+     
+    private let readRuleSet: (@MainActor (Data) async -> ClashRuleSetSniff.Found?)?
+
+     
+     
+    init(add: @escaping @MainActor (ClashMacRuleSetImportDraft) async throws -> Void, back: @escaping () -> Void,
+         done: @escaping () -> Void, initial: ClashMacRuleSetImportDraft = ClashMacRuleSetImportDraft(),
+         readRuleSet: (@MainActor (Data) async -> ClashRuleSetSniff.Found?)? = nil) {
+        self.add = add
+        self.back = back
+        self.done = done
+        self.readRuleSet = readRuleSet
+        _draft = State(initialValue: initial)
+    }
     @State private var choosingFile = false
     @State private var busy = false
     @State private var error: String?
@@ -189,10 +205,26 @@ struct ClashMacRuleSetImportForm: View {
         let scoped = picked.startAccessingSecurityScopedResource()
         defer { if scoped { picked.stopAccessingSecurityScopedResource() } }
         do {
-            draft.fileData = try Data(contentsOf: picked)
+            let data = try Data(contentsOf: picked)
+            draft.fileData = data
             draft.fileName = picked.lastPathComponent
             if draft.name.isEmpty { draft.name = picked.deletingPathExtension().lastPathComponent }
             if picked.pathExtension.lowercased() == "mrs" { draft.format = "mrs" }
+             
+             
+             
+             
+             
+            let (formatAtPick, behaviorAtPick) = (draft.format, draft.behavior)
+            Task { @MainActor in
+                let found: ClashRuleSetSniff.Found?
+                if let readRuleSet { found = await readRuleSet(data) }
+                else { found = await Task.detached(priority: .userInitiated) { ClashRuleSetSniff.ruleSet(in: data) }.value }
+                guard let found, draft.fileData == data, draft.format == formatAtPick, draft.behavior == behaviorAtPick
+                else { return }
+                draft.format = found.format
+                if let behavior = found.behavior { draft.behavior = behavior }
+            }
             error = nil
         } catch {
             self.error = ClashErrorCopy.message(error, locale: locale)

@@ -513,7 +513,7 @@ public extension View {
          
         let sheetItem = ClashModalItemSplit.binding(item, keeping: { !immersive($0) })
         let coverItem = ClashModalItemSplit.binding(item, keeping: immersive)
-        sheet(item: sheetItem) { value in
+        clashSheet(item: sheetItem) { value in
             content(value)
                  
                  
@@ -557,7 +557,7 @@ public extension View {
             builder: { AnyView(content()) }
         ))
 #else
-        sheet(isPresented: isPresented, onDismiss: onDismiss) {
+        clashSheet(isPresented: isPresented, onDismiss: onDismiss) {
             content()
                  
                 .environment(\.clashProductModalDismiss) { isPresented.wrappedValue = false }
@@ -565,6 +565,74 @@ public extension View {
         }
 #endif
     }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @ViewBuilder
+    func clashSheet<Item: Identifiable, C: View>(
+        item: Binding<Item?>,
+        onDismiss: (() -> Void)? = nil,
+        @ViewBuilder content: @escaping (Item) -> C
+    ) -> some View {
+#if os(iOS)
+        if ClashSheetSurface.coversOnThisSystem {
+            fullScreenCover(item: item, onDismiss: onDismiss, content: content)
+        } else {
+            sheet(item: item, onDismiss: onDismiss, content: content)
+        }
+#else
+        sheet(item: item, onDismiss: onDismiss, content: content)
+#endif
+    }
+
+     
+    @ViewBuilder
+    func clashSheet<C: View>(
+        isPresented: Binding<Bool>,
+        onDismiss: (() -> Void)? = nil,
+        @ViewBuilder content: @escaping () -> C
+    ) -> some View {
+#if os(iOS)
+        if ClashSheetSurface.coversOnThisSystem {
+            fullScreenCover(isPresented: isPresented, onDismiss: onDismiss, content: content)
+        } else {
+            sheet(isPresented: isPresented, onDismiss: onDismiss, content: content)
+        }
+#else
+        sheet(isPresented: isPresented, onDismiss: onDismiss, content: content)
+#endif
+    }
+}
+
+ 
+public enum ClashSheetSurface {
+     
+     
+    public static let coversOnThisSystem: Bool = {
+#if os(iOS)
+        if let forced = ProcessInfo.processInfo.environment["CLASH_SHEETS_AS_COVERS"] {
+            return forced == "1"
+        }
+        if #available(iOS 16.4, *) { return false }
+        if #available(iOS 16.0, *) { return true }
+#endif
+        return false
+    }()
 }
 
 #if !os(macOS)
@@ -1004,7 +1072,7 @@ public extension View {
      
      
     func clashProductModalRoot(
-        title: String,
+        title: ClashDisplayText,
         actionTitle: String? = nil,
         actionDisabled: Bool = false,
         action: (() -> Void)? = nil
@@ -1026,7 +1094,7 @@ public extension View {
      
      
     func clashProductModalChild(
-        title: String,
+        title: ClashDisplayText,
         searchText: Binding<String>? = nil,
         actionTitle: String? = nil,
         actionRole: ClashModalActionRole = .primary,
@@ -1231,7 +1299,7 @@ enum ClashChromeAudit {
 }
 
 private struct ClashProductModalRootModifier: ViewModifier {
-    let title: String
+    let title: ClashDisplayText
     let actionTitle: String?
     let actionDisabled: Bool
     let action: (() -> Void)?
@@ -1243,7 +1311,7 @@ private struct ClashProductModalRootModifier: ViewModifier {
     private func trace() {
         guard ProcessInfo.processInfo.environment["CLASH_NAV_TRACE"] == "1" else { return }
         FileHandle.standardError.write(
-            "[chrome] root title=\(title) insideProductModal=\(insideProductModal) chromeApplied=\(chromeApplied)\n".data(using: .utf8)!)
+            "[chrome] root title=\(title.rawValue) insideProductModal=\(insideProductModal) chromeApplied=\(chromeApplied)\n".data(using: .utf8)!)
     }
 
     @ViewBuilder
@@ -1251,7 +1319,7 @@ private struct ClashProductModalRootModifier: ViewModifier {
 #if os(macOS)
         let _ = trace()
         if insideProductModal && chromeApplied {
-            let _ = ClashChromeAudit.secondChrome(title, kind: "Root")
+            let _ = ClashChromeAudit.secondChrome(title.rawValue, kind: "Root")
             content
         } else if insideProductModal {
             content
@@ -1265,7 +1333,7 @@ private struct ClashProductModalRootModifier: ViewModifier {
                 .toolbar(.hidden, for: .windowToolbar)
                 .safeAreaInset(edge: .top, spacing: 0) {
                     HStack(spacing: ClashTheme.Spacing.row) {
-                        Text(clash: .copy(title))
+                        Text(clash: title)
                             .font(.headline)
                         Spacer(minLength: ClashTheme.Spacing.compact)
                         if let actionTitle, let action {
@@ -1315,7 +1383,7 @@ private struct ClashProductModalRootModifier: ViewModifier {
 private struct ClashProductModalChildModifier: ViewModifier {
      
     @Environment(\.clashRootDepartureGuard) private var departureGuard
-    let title: String
+    let title: ClashDisplayText
     let searchText: Binding<String>?
     let actionTitle: String?
     let actionRole: ClashModalActionRole
@@ -1325,6 +1393,7 @@ private struct ClashProductModalChildModifier: ViewModifier {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.clashPopRoute) private var popRoute
+    @Environment(\.clashDeparturePage) private var departurePage
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
     @Environment(\.clashProductChromeApplied) private var chromeApplied
@@ -1347,7 +1416,7 @@ private struct ClashProductModalChildModifier: ViewModifier {
              
              
             if actionTitle != nil {
-                let _ = ClashChromeAudit.secondChrome(title, kind: "Child")
+                let _ = ClashChromeAudit.secondChrome(title.rawValue, kind: "Child")
             }
             content
         } else if insideProductModal {
@@ -1398,6 +1467,12 @@ private struct ClashProductModalChildModifier: ViewModifier {
                                  
                                  
                                  
+                                 
+                                 
+                                 
+                                 
+                                 
+                                 
                                 let leave: () -> Void = {
                                     if let backAction {
                                         backAction()
@@ -1407,7 +1482,11 @@ private struct ClashProductModalChildModifier: ViewModifier {
                                         dismiss()
                                     }
                                 }
-                                ClashDeparture.request(departureGuard, leave: leave)
+                                ClashDeparture.requestBack(
+                                    departureGuard,
+                                    from: departurePage,
+                                    leave: leave
+                                )
                             } label: {
                                 Image(
                                     systemName:
@@ -1429,7 +1508,7 @@ private struct ClashProductModalChildModifier: ViewModifier {
                         .accessibilityLabel("Back")
                         .accessibilityIdentifier("clash.modal.child.back")
 
-                        Text(clash: .copy(title))
+                        Text(clash: title)
                             .font(.headline)
                         Spacer(minLength: ClashTheme.Spacing.compact)
                         if let searchText {
@@ -1501,7 +1580,7 @@ public extension View {
      
      
     func clashNativeSheetChild(
-        title: String,
+        title: ClashDisplayText,
         searchText: Binding<String>? = nil,
         backAction: (() -> Void)? = nil,
         actionTitle: String? = nil,
@@ -1544,7 +1623,7 @@ private struct ClashWindowToolbarHiddenInsidePanel: ViewModifier {
 private struct ClashNativeSheetChildModifier: ViewModifier {
      
     @Environment(\.clashRootDepartureGuard) private var departureGuard
-    let title: String
+    let title: ClashDisplayText
     let searchText: Binding<String>?
     let backAction: (() -> Void)?
     var actionTitle: String? = nil
@@ -1553,6 +1632,7 @@ private struct ClashNativeSheetChildModifier: ViewModifier {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.clashPopRoute) private var popRoute
+    @Environment(\.clashDeparturePage) private var departurePage
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
 
@@ -1586,7 +1666,12 @@ private struct ClashNativeSheetChildModifier: ViewModifier {
                                 dismiss()
                             }
                         }
-                        ClashDeparture.request(departureGuard, leave: leave)
+                         
+                        ClashDeparture.requestBack(
+                            departureGuard,
+                            from: departurePage,
+                            leave: leave
+                        )
                     } label: {
                         Image(
                             systemName:
@@ -1608,7 +1693,7 @@ private struct ClashNativeSheetChildModifier: ViewModifier {
                     .accessibilityLabel(Text(clash: .copy("Back")))
                     .accessibilityIdentifier("clash.sheet.child.back")
 
-                    Text(clash: .copy(title))
+                    Text(clash: title)
                         .font(.headline)
                     Spacer(minLength: ClashTheme.Spacing.compact)
                     if let searchText {

@@ -63,6 +63,13 @@ struct ProviderDownloadFailure: Error, LocalizedError {
 
  
  
+struct ProviderRequest {
+    let request: URLRequest
+    let sent: RefusedCredential
+}
+
+ 
+ 
  
  
 struct ProviderValidationFailure: Error, LocalizedError {
@@ -232,6 +239,7 @@ enum ProviderNote: Hashable, Codable, Sendable {
      
      
      
+     
     static func merging(catalog note: ProviderNote?, tunnel entry: ProviderRefreshState.Entry?,
                         line: (key: String, arguments: [String])?, catalogDate: Date?) -> ProviderNote? {
         guard let entry else { return note }
@@ -256,7 +264,16 @@ enum ProviderNote: Hashable, Codable, Sendable {
             return .checkFailed(line.map { .app($0.key, arguments: $0.arguments) }
                 ?? entry.error.map { .app("Update failed: %@", arguments: [$0]) } ?? .app("Update failed"))
         case .pendingApp?:
-            guard let line, later(entry.pendingCheckedAt ?? entry.lastAttemptAt) else { return note }
+            guard later(entry.pendingCheckedAt ?? entry.lastAttemptAt) else { return note }
+             
+             
+             
+             
+             
+            guard let line else {
+                if case .fetchedByCore? = note { return note }
+                return nil
+            }
             return .held(.app(line.key, arguments: line.arguments))
         case .updated?, .unchanged?:
             guard entry.checkedAt != nil, later(entry.lastCheckedAt) else { return note }
@@ -988,7 +1005,7 @@ final class ProviderMaterializer {
          
          
          
-        var requests: [Int: URLRequest] = [:]
+        var requests: [Int: ProviderRequest] = [:]
         var onHand: [Int: AcquiredPayload] = [:]
          
          
@@ -1035,14 +1052,14 @@ final class ProviderMaterializer {
                  
                  
                 if provider.kind == "rule", provider.updateIntervalSeconds <= 0, Self.isOwed(record),
-                   (libraryDate ?? .distantPast) <= (owedSince ?? .distantPast) {
+                   (libraryDate ?? .distantPast).timeIntervalSince(owedSince ?? .distantPast) <= 0 {
                     return previous
                 }
                  
                  
                  
                 if provider.kind == "rule", record.payloadURL == nil {
-                    return (Self.received(record) ?? .distantPast) >= (libraryDate ?? .distantPast) ? previous : libraryFile
+                    return (Self.received(record) ?? .distantPast).timeIntervalSince(libraryDate ?? .distantPast) >= 0 ? previous : libraryFile
                 }
                 guard record.payloadURL == provider.url, Self.answers(record, requestOf: provider) else { return libraryFile }
                  
@@ -1054,7 +1071,7 @@ final class ProviderMaterializer {
                  
                  
                  
-                return (Self.received(record) ?? .distantPast) >= (libraryDate ?? .distantPast) ? previous : libraryFile
+                return (Self.received(record) ?? .distantPast).timeIntervalSince(libraryDate ?? .distantPast) >= 0 ? previous : libraryFile
             }
              
              
@@ -1155,22 +1172,7 @@ final class ProviderMaterializer {
                             data: kept, reusedFrom: source, refreshed: false,
                             subscriptionUserInfo: nil, failure: nil)
                     }
-                    var request = URLRequest(url: Self.stripUserinfo(from: url))
-                    if let authorization = Self.basicAuthorization(from: url) {
-                        request.setValue(authorization, forHTTPHeaderField: "Authorization")
-                    }
-                    try applyHeaders(provider.requestHeaders, to: &request, provider: provider.name)
-                    if request.value(forHTTPHeaderField: "User-Agent") == nil {
-                        request.setValue(
-                            userAgent ?? ClientUserAgent.resolved(),
-                            forHTTPHeaderField: "User-Agent"
-                        )
-                    }
-                    if let auth = credentials.get("provider.auth.\(provider.name)"),
-                       let authString = String(data: auth, encoding: .utf8) {
-                        request.setValue(authString, forHTTPHeaderField: "Authorization")
-                    }
-                    requests[index] = request
+                    requests[index] = try request(for: provider, at: url, userAgent: userAgent)
                     continue
                 }
                 if let reused = try? Data(contentsOf: source), reused.count <= maxBytesEach {
@@ -1181,27 +1183,7 @@ final class ProviderMaterializer {
                     continue
                 }
             }
-             
-             
-             
-             
-             
-            var request = URLRequest(url: Self.stripUserinfo(from: url))
-            if let authorization = Self.basicAuthorization(from: url) {
-                request.setValue(authorization, forHTTPHeaderField: "Authorization")
-            }
-            try applyHeaders(provider.requestHeaders, to: &request, provider: provider.name)
-            if request.value(forHTTPHeaderField: "User-Agent") == nil {
-                request.setValue(
-                    userAgent ?? ClientUserAgent.resolved(),
-                    forHTTPHeaderField: "User-Agent"
-                )
-            }
-            if let auth = credentials.get("provider.auth.\(provider.name)"),
-               let authString = String(data: auth, encoding: .utf8) {
-                request.setValue(authString, forHTTPHeaderField: "Authorization")
-            }
-            requests[index] = request
+            requests[index] = try request(for: provider, at: url, userAgent: userAgent)
         }
 
          
@@ -1598,6 +1580,36 @@ final class ProviderMaterializer {
 
      
      
+     
+     
+     
+     
+     
+     
+    private func request(for provider: RemoteResourcePlan.Provider, at url: URL,
+                         userAgent: String?) throws -> ProviderRequest {
+        var request = URLRequest(url: Self.stripUserinfo(from: url))
+        if let authorization = Self.basicAuthorization(from: url) {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
+        try applyHeaders(provider.requestHeaders, to: &request, provider: provider.name)
+        if request.value(forHTTPHeaderField: "User-Agent") == nil {
+            request.setValue(
+                userAgent ?? ClientUserAgent.resolved(),
+                forHTTPHeaderField: "User-Agent"
+            )
+        }
+        var saved: String?
+        if let auth = credentials.get("provider.auth.\(provider.name)"),
+           let authString = String(data: auth, encoding: .utf8) {
+            request.setValue(authString, forHTTPHeaderField: "Authorization")
+            saved = authString
+        }
+        return ProviderRequest(request: request, sent: RefusedCredential.of(request, link: url, saved: saved))
+    }
+
+     
+     
     static func stripUserinfo(from url: URL) -> URL {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.user != nil || components.password != nil else {
@@ -1707,7 +1719,7 @@ final class ProviderMaterializer {
 
     private func acquirePayloads(
         plan: RemoteResourcePlan,
-        requests: [Int: URLRequest],
+        requests: [Int: ProviderRequest],
         onHand: [Int: AcquiredPayload],
         maxBytesEach: Int,
         budget: ProviderFetchBudget = .patient,
@@ -1724,11 +1736,15 @@ final class ProviderMaterializer {
         var acquired = onHand
          
          
-        @Sendable func payload(_ answer: ProviderDownloadRound.Answer, at: Date, name: String, url: String?, cap: Int) throws -> AcquiredPayload {
+        @Sendable func payload(_ answer: ProviderDownloadRound.Answer, at: Date, name: String, url: String?, cap: Int,
+                               sent: RefusedCredential) throws -> AcquiredPayload {
             switch answer {
             case .failed(let error):
+                 
+                 
                 return AcquiredPayload(data: nil, refreshed: false, subscriptionUserInfo: nil,
-                    failure: ProviderDownloadFailure(provider: name, url: url, underlying: error))
+                    failure: ProviderDownloadFailure(provider: name, url: url,
+                        underlying: DownloadError.refusingALink(error, sent: sent)))
             case .fetched(let data, let subscriptionUserInfo):
                  
                  
@@ -1750,7 +1766,7 @@ final class ProviderMaterializer {
         }
         var toFetch: [(index: Int, request: URLRequest, name: String, url: String?, cap: Int)] = []
         for (index, provider) in plan.providers.enumerated() {
-            guard acquired[index] == nil, let request = requests[index] else { continue }
+            guard acquired[index] == nil, let request = requests[index]?.request else { continue }
              
              
              
@@ -1792,7 +1808,8 @@ final class ProviderMaterializer {
                     acquired[index] = AcquiredPayload(data: bytes, reusedFrom: newer.file, refreshed: false,
                                                       subscriptionUserInfo: nil, failure: nil, acquiredAt: newer.date)
                 } else {
-                    var answered = try payload(answer, at: at, name: provider.name, url: provider.url, cap: cap)
+                    var answered = try payload(answer, at: at, name: provider.name, url: provider.url, cap: cap,
+                                               sent: requests[index]?.sent ?? .other)
                     answered.answeredByRound = true
                     acquired[index] = answered
                 }
@@ -1876,13 +1893,15 @@ final class ProviderMaterializer {
             }
             for try await (index, answer, at) in group {
                 if let leader = leaderItems[index] {
-                    acquired[index] = try payload(answer, at: at, name: leader.name, url: leader.url, cap: leader.cap)
+                    acquired[index] = try payload(answer, at: at, name: leader.name, url: leader.url, cap: leader.cap,
+                                                  sent: requests[index]?.sent ?? .other)
                 }
                  
                  
                 for follower in followers[index] ?? [] {
                     acquired[follower.index] = try payload(answer, at: at, name: follower.name, url: follower.url,
-                                                           cap: follower.cap)
+                                                           cap: follower.cap,
+                                                           sent: requests[follower.index]?.sent ?? .other)
                 }
                 if next < leaders.count {
                     start(leaders[next])

@@ -13,19 +13,44 @@ import SwiftUI
 extension ConfigurationEditorSession {
      
      
+     
+     
     @discardableResult
-    func editOriginal(steps: [ConfigurationTextStep]) async -> Bool {
-        await handingOn(steps) {
-            await run { try await self.model.editOriginalConfiguration(self.profileID, steps: steps) }
+    func editOriginal(steps: [ConfigurationTextStep], readDigest: String? = nil) async -> Bool {
+        await editOriginalReporting(steps: steps, readDigest: readDigest) == .saved
+    }
+
+     
+    func editOriginalReporting(steps: [ConfigurationTextStep], readDigest: String? = nil) async -> RunOutcome {
+        var ended = RunOutcome.failedOutright
+        _ = await handingOn(steps) {
+            ended = await self.runReporting { try await self.model.editOriginalConfiguration(self.profileID, steps: steps, readDigest: readDigest) }
+            return ended == .saved
         }
+        return ended
     }
 
      
      
     func refuseDeleting(_ name: String, usedBy places: [String]) {
-        let sentence = ClashCopy.string(for: .format("“%@” is still in use. Change these first.", [name]),
-                                       locale: AppPreferences.language().locale)
-        failure = ([sentence] + places.prefix(5)).joined(separator: "\n")
+        refuseDeleting([DeletingRefused(name: name, places: places)])
+    }
+
+     
+    struct DeletingRefused {
+        let name: String
+        let places: [String]
+    }
+
+     
+     
+    func refuseDeleting(_ refused: [DeletingRefused]) {
+        let locale = AppPreferences.language().locale
+        var said = Set<String>()
+        failure = refused.filter { said.insert($0.name).inserted }.map { item in
+            let sentence = ClashCopy.string(for: .format("“%@” is still in use. Change these first.", [item.name]), locale: locale)
+            return ([sentence] + item.places.prefix(5)).joined(separator: "\n")
+        }.joined(separator: "\n\n")
     }
 }
 
@@ -307,7 +332,7 @@ struct ConfigurationOriginalSubRulesView: View {
                     }
                 }
                 ForEach(shown, id: \.name) { branch in
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         ConfigurationOriginalRulesView(session: session, base: ["sub-rules", branch.name],
                                                        title: .verbatim(branch.name))
                             .configurationPushedAlertHost(session)
@@ -336,7 +361,7 @@ struct ConfigurationOriginalSubRulesView: View {
             }
         }
         .disabled(session.isSaving)
-        .sheet(isPresented: $adding) {
+        .clashSheet(isPresented: $adding) {
             ConfigurationNewSubRuleSheet(taken: Set(branches.map(\.name))) { name in
                 let step = OriginalListEdits.adding(name, .array([]), toMappingAt: "sub-rules",
                                                     exists: session.value(at: ["sub-rules"]) != nil)
@@ -444,7 +469,7 @@ struct ConfigurationOriginalProxiesView: View {
                     }
                 }
                 ForEach(shown, id: \.index) { node in
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         nodeEditor(node)
                     } label: {
                         HStack(alignment: .firstTextBaseline) {
@@ -480,7 +505,7 @@ struct ConfigurationOriginalProxiesView: View {
          
          
          
-        .sheet(isPresented: Binding(get: { addingType != nil }, set: { if !$0 { addingType = nil } })) {
+        .clashSheet(isPresented: Binding(get: { addingType != nil }, set: { if !$0 { addingType = nil } })) {
             ClashFeatureNavigationContainer {
                 ProxyNodeDetailsView(record: CustomNodesView.newNodeTemplate, retest: {},
                                      saveNode: { _, edited in try await add(edited) },
@@ -489,7 +514,7 @@ struct ConfigurationOriginalProxiesView: View {
             }
             .clashModalPresentation(.page)
         }
-        .sheet(isPresented: $pickingFromLibrary) {
+        .clashSheet(isPresented: $pickingFromLibrary) {
             ConfigurationLibraryNodePicker(store: session.model.configurationLibraryStore, profileID: session.profileID,
                                            document: session.page?.document ?? .object([])) { picked, sources in
                 Task { await session.addLibraryNodes(picked, from: sources) }
@@ -722,7 +747,7 @@ struct ConfigurationOriginalProxyProvidersView: View {
         let types = ConfigurationTypeWords.names(.proxyProviders, copy: fieldCopy, locale: locale)
         let words = search.trimmingCharacters(in: .whitespaces).lowercased()
         let shownLinks = links.filter { source in
-            words.isEmpty || [source.label, ConfigurationLibraryPicks.linkTitle(source, in: document)]
+            words.isEmpty || [source.record.displayLabel(locale: locale), ConfigurationLibraryPicks.linkTitle(source, in: document)]
                 .contains { $0.lowercased().contains(words) }
         }
         List {
@@ -745,7 +770,7 @@ struct ConfigurationOriginalProxyProvidersView: View {
                         .accessibilityIdentifier("configuration-editor.list.empty")
                 }
                 ForEach(ownEntries) { entry in
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         ConfigurationOriginalProxyProviderView(session: session, name: entry.name)
                             .configurationPushedAlertHost(session)
                     } label: {
@@ -755,19 +780,26 @@ struct ConfigurationOriginalProxyProvidersView: View {
                             Text(verbatim: ConfigurationTypeWords.word(entry.type, in: types)).foregroundStyle(.secondary)
                         }
                     }
+                     
+                     
+                     
                     .accessibilityIdentifier("configuration-editor.original-providers.entry")
                 }
                 .onDelete { offsets in let shown = ownEntries; delete(offsets.map { shown[$0].name }) }
                 Button { adding = true } label: {
                     Label { Text(clash: .copy("New…")) } icon: { Image(systemName: ClashSymbol.plus.name) }
                 }
+                .disabled(session.isSaving || session.hasOriginalChangesOwed)
                 .accessibilityIdentifier("configuration-editor.original-providers.add")
             }
         }
         .searchable(text: $search)
         .navigationTitle(Text(clash: .copy(ConfigurationEditorCopy.title(of: .proxyProviders))))
-        .sheet(isPresented: $adding) { ConfigurationNewProxyProviderSheet(session: session).clashModalPresentation(.form) }
-        .disabled(session.isSaving)
+        .clashSheet(isPresented: $adding) { ConfigurationNewProxyProviderSheet(session: session).clashModalPresentation(.form) }
+         
+         
+         
+         
         .task { await loadLibrary() }
     }
 
@@ -777,11 +809,9 @@ struct ConfigurationOriginalProxyProvidersView: View {
         let name = ConfigurationLibraryPicks.addedSetName(source, in: document)
         let key = "library-link." + source.id
         return Toggle(isOn: Binding(get: { session.shownSwitch(key, else: name != nil) }, set: { on in
-            if on, name == nil {
-                session.pressSwitch(key, true) { await session.addLibraryProvider(source) }
-            } else if !on, let name {
-                deleteLink(name, key: key)
-            }
+             
+            if !on, session.refusesSwitchingOff(source) { return }
+            session.pressSwitch(key, on) { await session.setLibraryLink(source, on: on) }
         })) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: ConfigurationLibraryPicks.linkTitle(source, in: document))
@@ -808,7 +838,7 @@ struct ConfigurationOriginalProxyProvidersView: View {
         guard ConfigurationLibraryPicks.linkTitle(source, in: document) != source.label else {
             return .format("Link · %@ nodes", [count])
         }
-        return .format("%@ · Link · %@ nodes", [source.label, count])
+        return ClashConfigurationSourceCopy.sentence("%@ · Link · %@ nodes", naming: source.record, then: [count])
     }
 
     private func loadLibrary() async {
@@ -826,23 +856,20 @@ struct ConfigurationOriginalProxyProvidersView: View {
         }
     }
 
+     
+     
+     
     private func delete(_ names: [String]) {
-        guard let document = session.page?.document else { return }
-        for name in names {
-            let places = OriginalListEdits.uses(ofProvider: name, in: document)
-            if !places.isEmpty { return session.refuseDeleting(name, usedBy: places) }
-        }
-        Task { await session.editOriginal(steps: OriginalListEdits.deleting(names, fromMappingAt: "proxy-providers")) }
-    }
-
-     
-     
-    private func deleteLink(_ name: String, key: String) {
-        guard let document = session.page?.document else { return }
-        let places = OriginalListEdits.uses(ofProvider: name, in: document)
-        if !places.isEmpty { return session.refuseDeleting(name, usedBy: places) }
-        session.pressSwitch(key, false) {
-            await session.editOriginal(steps: OriginalListEdits.deleting([name], fromMappingAt: "proxy-providers"))
+        Task {
+            await session.queueOriginal { document in
+                for name in names {
+                    let places = OriginalListEdits.uses(ofProvider: name, in: document)
+                    if !places.isEmpty { return .refuseDeleting(name, usedBy: places) }
+                }
+                let written = Set(OriginalEntry.all(in: document.topLevelValue("proxy-providers")).map(\.name))
+                let left = names.filter(written.contains)
+                return .write(left.isEmpty ? [] : OriginalListEdits.deleting(left, fromMappingAt: "proxy-providers"))
+            }
         }
     }
 }
@@ -881,11 +908,12 @@ struct ConfigurationOriginalProxyProviderView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(session.isSaving || session.hasOriginalChangesOwed)
                 .accessibilityIdentifier("configuration-editor.original-providers.rename")
             }
             if let catalog = session.catalog?.fieldCatalog {
                 let layout = ProxyProviderCatalog.layout(of: session.value(at: ["proxy-providers", name]), in: catalog)
-                    .splittingOffThePlatformsRows()
+                    .splittingOffThePlatformsRows(in: session.value(at: ["proxy-providers", name]))
                  
                  
                 let sections = ProxyNodeCatalogSections.sections(of: layout, layoutPath: ProviderFieldCatalog.proxyBase,
@@ -908,7 +936,7 @@ struct ConfigurationOriginalProxyProviderView: View {
                 }
                 if !layout.platformDecided.isEmpty {
                     Section {
-                        NavigationLink {
+                        ClashNativeNavigationLink {
                             ConfigurationSettingsNotApplyingView(items: layout.notApplying)
                         } label: {
                             ConfigurationNotApplyingLabel(count: layout.platformDecided.count)
@@ -920,7 +948,7 @@ struct ConfigurationOriginalProxyProviderView: View {
                  
                 Section {
                     ForEach(fields, id: \.key) { field in
-                        NavigationLink {
+                        ClashNativeNavigationLink {
                             ConfigurationOriginalValueView(session: session, title: field.key, value: field.value,
                                                            choices: field.key == "type" ? Self.types(session.catalog) : nil) { json in
                                 await session.editOriginal(path + [.key(field.key)], .set(json: json))
@@ -939,8 +967,9 @@ struct ConfigurationOriginalProxyProviderView: View {
             }
         }
         .navigationTitle(Text(verbatim: name))
-        .disabled(session.isSaving)
-        .sheet(isPresented: $renaming) {
+         
+         
+        .clashSheet(isPresented: $renaming) {
             ConfigurationRenameSheet(current: name,
                                      taken: Set(OriginalEntry.all(in: session.value(at: ["proxy-providers"])).map(\.name))) { newName in
                 Task {
@@ -1030,18 +1059,31 @@ struct ConfigurationNewProxyProviderForm: View {
  
  
 struct ConfigurationOriginalMembersView: View {
+     
+     
+    typealias Change = (inout [String]) -> Void
+
     @ObservedObject var session: ConfigurationEditorSession
     let group: String
-    let save: ([String]) async -> Bool
+     
+    let save: (@escaping Change) async -> Bool
+     
+    let written: () -> [String]?
     @State private var members: [String]
+     
+     
+     
+    @State private var owed = 0
      
     @State private var query = ""
     @State private var editMode: EditMode = .inactive
 
-    init(session: ConfigurationEditorSession, group: String, members: [String], save: @escaping ([String]) async -> Bool) {
+    init(session: ConfigurationEditorSession, group: String, members: [String],
+         written: @escaping () -> [String]?, save: @escaping (@escaping Change) async -> Bool) {
         self.session = session
         self.group = group
         self.save = save
+        self.written = written
         _members = State(initialValue: members)
     }
 
@@ -1087,8 +1129,21 @@ struct ConfigurationOriginalMembersView: View {
                     ForEach(members, id: \.self) { name in
                         Text(verbatim: name)
                     }
-                    .onDelete(perform: editMode.isEditing ? nil : { offsets in change { $0.remove(atOffsets: offsets) } })
-                    .onMove { from, to in change { $0.move(fromOffsets: from, toOffset: to) } }
+                     
+                     
+                     
+                    .onDelete(perform: editMode.isEditing ? nil : { offsets in
+                        let names = Set(offsets.map { members[$0] })
+                        change { $0.removeAll(where: names.contains) }
+                    })
+                    .onMove { from, to in
+                        var order = members
+                        order.move(fromOffsets: from, toOffset: to)
+                        change { list in
+                            let present = Set(list), ordered = Set(order)
+                            list = order.filter(present.contains) + list.filter { !ordered.contains($0) }
+                        }
+                    }
                 } header: { Text("Selected (in priority order)") }
             }
             options("Built-in", filtered(builtins))
@@ -1106,7 +1161,12 @@ struct ConfigurationOriginalMembersView: View {
             }
         }
         .environment(\.editMode, $editMode)
-        .disabled(session.isSaving)
+         
+         
+         
+         
+         
+         
         .accessibilityIdentifier("configuration-editor.original.members.list")
     }
 
@@ -1139,13 +1199,19 @@ struct ConfigurationOriginalMembersView: View {
     }
 
      
-    private func change(_ edit: (inout [String]) -> Void) {
-        let before = members
+     
+    private func change(_ edit: @escaping Change) {
         var after = members
         edit(&after)
-        guard after != before, !after.isEmpty else { return }
+        guard after != members, !after.isEmpty else { return }
         members = after
-        Task { if await !save(after) { members = before } }
+        owed += 1
+        Task {
+            _ = await save(edit)
+            owed -= 1
+             
+            if owed == 0 { members = written() ?? [] }
+        }
     }
 }
 #endif

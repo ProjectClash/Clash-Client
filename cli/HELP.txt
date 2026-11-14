@@ -1,5 +1,5 @@
 ---
-name: Clash App 控制器
+name: clash-cli
 description: 通过 Clash App 内置的 clash-cli，在 Mac 终端里实时监控和控制 Clash App（本机 Mac，或局域网里的 iPhone / iPad / Apple TV）。支持状态/连接/流量/规则查询、规则命中分析、节点与策略组切换、节点测速、DNS 查询。当用户提到 Clash App、切换节点、查看连接、实时流量、规则匹配、节点测速、外部控制器时使用。
 ---
 
@@ -14,7 +14,22 @@ description: 通过 Clash App 内置的 clash-cli，在 Mac 终端里实时监�
 
 - **Clash App 的隧道必须开着**，并且在 App 的 **更多 › 客户端设置 › 外部控制器** 里选了「仅本机」或「局域网」。
   选「使用配置」时用的是配置文件自己写的控制器。
-- **密钥总是必填**：在同一页复制密钥，设为环境变量 `CLASH_SECRET`。密钥错了报退出码 4。
+- **密钥总是必填**：在同一页复制密钥，用下面任一种方式交给 clash-cli。密钥错了报退出码 4。
+  - 环境变量 `CLASH_SECRET`。
+  - **环境变量用不了时**（有的代理宿主会清掉子进程里名字含 SECRET、TOKEN、KEY 的变量，也不读 shell 的 rc 文件）：
+    把密钥存进只有自己能读的文件，用 `--secret-stdin` 从标准输入读它的第一行。密钥不进进程列表、shell 历史和环境。
+    ```bash
+    # 在 App 里复制密钥后执行一次（install 每次都把文件重建成 0600，再写入剪贴板里的密钥）：
+    mkdir -p ~/.config/clash-cli && install -m 600 /dev/null ~/.config/clash-cli/secret && pbpaste > ~/.config/clash-cli/secret
+    clash-cli --secret-stdin status < ~/.config/clash-cli/secret
+    ```
+    - 文件是空的（复制前剪贴板为空）时报退出码 2（标准输入第一行为空），重新复制密钥再执行一次。
+    - 这类宿主也不读 rc 文件里的 `alias`：用 §6 的符号链接安装，或者写全路径
+      `/Applications/Clash.app/Contents/Helpers/clash-cli`。
+    - 标准输入被密钥占用，就不能回答指纹确认：连 iPhone / iPad / Apple TV 时在同一条命令里加
+      `--fingerprint sha256:…`（App「外部控制器」页上的指纹；这里环境变量 `CLASH_FINGERPRINT` 同样传不进来）。
+      也可以先由用户在终端里设好 `CLASH_SECRET` 连一次、回答 y 记住指纹，之后就不用再给。
+  - `--secret <密钥>` 也可以，但密钥会出现在进程列表和 shell 历史里。
 - 地址：
   - 控制本机 Mac：`http://127.0.0.1:9090`（默认，即 `CLASH_API`）。
   - 控制 iPhone / iPad / Apple TV：设备上选「局域网」档，地址写成 `https://<设备 IP>:<TLS 端口>`（页面上有完整命令可复制）。
@@ -28,6 +43,7 @@ export CLASH_SECRET=<在 App 里复制的密钥>
 clash-cli status
 # Clash 1.19.32  meta=true  （macos，控制器 API 1）
 # mode=rule  mixed-port=7890  tun=true stack=gVisor
+# 监听 127.0.0.1：mixed-port 7890（allow-lan=false：只有运行 Clash 的这台设备连得上，bind-address 不起作用。…）
 # 内存 31MB  inuse=0KB
 # 流量 ↑1.2 KB/s ↓36.0 KB/s  连接 42 个（总 ↓30.5 MB ↑1.2 MB）
 # 策略组 13 个：
@@ -38,12 +54,12 @@ clash-cli status
 
 | 命令 | 说明 |
 |---|---|
-| `clash-cli status` | 版本/模式/内存/流量/连接数 + 所有策略组当前选择 |
+| `clash-cli status` | 版本/模式/内存/流量/连接数 + 端口实际监听在哪 + 所有策略组当前选择 |
 | `clash-cli proxies` | 列全部策略组与节点 |
 | `clash-cli proxies <组>` | 查看某策略组当前选择、类型、成员列表 |
 | `clash-cli traffic [秒]` | 实时流量（瞬时速率 + 累计） |
 | `clash-cli connections [N]` | 活跃连接列表（host → 策略链 → 命中规则 → 上下行），默认前 20 |
-| `clash-cli configs` | 当前运行配置（端口/tun/dns 等） |
+| `clash-cli configs` | 当前运行配置（端口/tun/dns 等），只输出 JSON，可直接接 `jq`；`--json` 是控制器原样的回答。端口实际监听在哪看 `clash-cli status`：port、socks-port、mixed-port、redir-port、tproxy-port 先看 `allow-lan`，关着时只在 127.0.0.1 上，`bind-address` 写什么都不起作用；开着时才按 `bind-address`（没写就是 `*`），再由 `lan-allowed-ips`/`lan-disallowed-ips` 筛设备。App 里「允许局域网连接」关着时会把 `allow-lan` 改成 false。`listeners:` 里自己写的监听不归它管 |
 | `clash-cli rules [N]` | 规则列表（默认前 10，0 = 全部） |
 | `clash-cli rule match <域名\|IP\|URL>` | **规则命中分析**：这条连接会命中哪条规则、走哪条链 |
 | `clash-cli provider list` | 节点集与规则集 |
@@ -98,6 +114,8 @@ clash-cli status
   在 App 里「重新生成」后旧密钥立即失效，用旧密钥打开的流也会断开。
 - 局域网档只走 TLS，并只接受局域网来源；本机档只听 127.0.0.1。
 - 环境变量：`CLASH_API`（默认 `http://127.0.0.1:9090`）、`CLASH_SECRET`、`CLASH_FINGERPRINT`、`CLASH_TIMEOUT`（默认 8 秒）。
+- 全局选项（放在命令前后都行；与环境变量同时给出时用选项的值）：`-u` / `--url`、`--secret`、`--secret-stdin`、
+  `--fingerprint`、`--timeout`、`--json`。`CLASH_TIMEOUT` 写得不合法时无论给不给 `--timeout` 都报退出码 2。
 - 切换节点时节点名必须与策略组成员**精确匹配**（含空格/emoji/特殊字符，如「🇭🇰香港trojan1」）。
 - 退出码：0 成功；1 控制器报错；2 用法；3 连不上；4 密钥被拒；5 不是 Clash App 的控制器或不支持（含 `reload`、`check`）；
   6 证书指纹不符或未确认。
@@ -117,7 +135,14 @@ alias clash-cli=/Applications/Clash.app/Contents/Helpers/clash-cli
 App 的 更多 › 客户端设置 › 外部控制器 页面也给了这条命令。iPhone / iPad 上没有这个二进制：
 那里的 AI 代理直接打 `http://127.0.0.1:<端口>`（带 `Authorization: Bearer <密钥>`）。
 
-`clash-cli skill` 打印本文件，可以直接交给 AI 代理安装成技能。
+`clash-cli skill` 打印本文件，可以直接交给 AI 代理安装成技能。技能目录名必须是 `clash-cli`（与本文件的 name 一致），
+否则遵循 Agent Skills 规范的宿主会跳过它、不报错。例如：
+
+```sh
+mkdir -p ~/.agents/skills/clash-cli && clash-cli skill > ~/.agents/skills/clash-cli/SKILL.md
+```
+
+把 `~/.agents/skills` 换成你的代理宿主读取技能的目录。
 
 **验证安装**
 ```sh

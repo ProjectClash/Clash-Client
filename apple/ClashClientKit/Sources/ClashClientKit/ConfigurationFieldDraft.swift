@@ -65,6 +65,9 @@ public struct ConfigurationFieldDraft: Equatable, Sendable {
     public let path: String
      
     private let named: [String]
+     
+     
+    public let zeroMeansUnset: Bool
 
     private struct Start: Equatable, Sendable {
         let text: String
@@ -215,6 +218,7 @@ public struct ConfigurationFieldDraft: Equatable, Sendable {
         self.entriesAllBare = !entries.isEmpty && entries.allSatisfy(\.bare)
         self.path = field.path
         self.named = options
+        self.zeroMeansUnset = field.zeroMeansUnset
     }
 
      
@@ -419,7 +423,8 @@ public struct ConfigurationFieldDraft: Equatable, Sendable {
         switch control {
         case .number(let min, let max, _):
              
-            return ConfigurationFieldValidation.problem(number: text, min: min, max: max, whole: true)
+            return ConfigurationFieldValidation.problem(number: text, min: min, max: max, whole: true,
+                                                        zeroMeansUnset: zeroMeansUnset)
         case .text(let format):
             return ConfigurationFieldValidation.problem(text, format: format, path: path, allowed: named)
         case .suggest(let options):
@@ -433,6 +438,7 @@ public struct ConfigurationFieldDraft: Equatable, Sendable {
     public var isOutOfRange: Bool {
         let typed = text.trimmingCharacters(in: .whitespaces)
         guard case .number(let min, let max, _) = control, Self.isNumber(typed), let number = Double(typed) else { return false }
+        if zeroMeansUnset, number == 0 { return false }
         return (min.map { number < $0 } ?? false) || (max.map { number > $0 } ?? false)
     }
 

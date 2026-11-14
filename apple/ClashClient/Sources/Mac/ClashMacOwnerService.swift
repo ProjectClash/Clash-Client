@@ -15,6 +15,8 @@ import os
  
  
  
+ 
+ 
 final class ClashMacOwnerService: @unchecked Sendable {
     static let socketName = "owner.sock"
      
@@ -216,7 +218,9 @@ final class ClashMacOwnerService: @unchecked Sendable {
                 let line = String(decoding: pending[..<newline], as: UTF8.self)
                 pending.removeSubrange(...newline)
                 let started = DispatchTime.now().uptimeNanoseconds
-                let text = answer(line)
+                 
+                 
+                let text = autoreleasepool { answer(line) }
                 note(question: line, reply: text, took: DispatchTime.now().uptimeNanoseconds &- started)
                 let reply = Array((text + "\n").utf8)
                 guard reply.withUnsafeBytes({ write(client, $0.baseAddress, reply.count) }) == reply.count else { return }

@@ -7,6 +7,7 @@ struct ProfilePreviewView: View {
     let title: ClashDisplayText
     private let loader: () async throws -> String?
     @StateObject private var dismiss = ClashDismissHandle()
+    @Environment(\.locale) private var locale
     @State private var text = ""
     @State private var isAvailable = false
     @State private var isLoading = true
@@ -70,13 +71,26 @@ struct ProfilePreviewView: View {
                     isAvailable = loaded != nil
                 } catch {
                     guard !Task.isCancelled else { return }
-                    failure = error.localizedDescription
+                    failure = Self.failureMessage(for: error, locale: locale)
                 }
                 isLoading = false
             }
         }
         .clashStackNavigationViewStyle()
         .clashCapturesDismiss(dismiss)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func failureMessage(for error: Error, locale: Locale) -> String {
+        ClashErrorCopy.message(error, locale: locale)
     }
 }
 
@@ -797,7 +811,7 @@ struct ProfileFinalConfigurationView: View {
                     title: .copy("Opening Configuration")
                 )
             }
-            .clashProductModalRoot(title: previewKind.rawValue)
+            .clashProductModalRoot(title: .copy(previewKind.rawValue))
         }
 #endif
         .clashCapturesDismiss(dismiss)

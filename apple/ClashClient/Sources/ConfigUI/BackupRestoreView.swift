@@ -93,7 +93,7 @@ struct BackupRestoreView: View {
                             if wantsOn {
                                 showsAutoBackupConsent = true
                             } else {
-                                Task { await autoBackup.disable() }
+                                autoBackup.pressOff()
                             }
                         }
                     )
@@ -767,7 +767,8 @@ private struct BackupRestorePreviewSheet: View {
                             .foregroundStyle(changeTint(change.kind))
                             .frame(width: 22)
                             .accessibilityHidden(true)
-                        Text(clash: .copy(change.label))
+                         
+                        Text(clash: .verbatim(change.label))
                         Spacer(minLength: ClashTheme.Spacing.compact)
                         ClashStatusBadge(
                             title: change.kind.title,

@@ -88,6 +88,20 @@ public struct ConfigurationSourceRecord: Codable, Equatable, Identifiable, Senda
     }
 }
 
+public extension ConfigurationSourceRecord {
+     
+     
+     
+     
+     
+     
+    var hasBuiltinName: Bool { Self.isBuiltinName(label, origin: origin) }
+
+    static func isBuiltinName(_ label: String, origin: Origin) -> Bool {
+        origin == .customNodes && label == ConfigurationBuiltins.customNodesName
+    }
+}
+
 public struct ConfigurationSourceSettingsDraft: Equatable, Sendable {
     public var url: String
      
@@ -146,6 +160,24 @@ public struct ConfigurationRuleScheme: Codable, Equatable, Identifiable, Sendabl
      
      
     public var rulesCustomizedFromSchemeID: String? = nil
+     
+     
+     
+     
+    public var ownViewOfCustomScheme: Bool? = nil
+     
+     
+     
+     
+     
+     
+     
+     
+    public var namedNodes: [String]? = nil
+     
+     
+     
+    public var namedNodesSourceID: String? = nil
     public init(id: String = UUID().uuidString, label: String, kind: Kind, sourceID: String) {
         self.id = id; self.label = label; self.kind = kind; self.sourceID = sourceID
     }
@@ -432,6 +464,9 @@ public enum ConfigurationLibraryError: LocalizedError, Equatable {
     case readOnlyRuleScheme
     case missingRules
     case missingNodes
+     
+     
+    case missingNodeSource
     case referencedBy(String)
     case invalidFinalRule
     case unreadable
@@ -451,8 +486,9 @@ public enum ConfigurationLibraryError: LocalizedError, Equatable {
         case .invalidFinalRule: return "Keep exactly one MATCH rule at the end."
         case .referencedBy: return "Something still references this item. Change that reference before deleting it."
         case .missingNodes: return NSLocalizedString("No nodes were found. Try another link or file, or create a node manually.", comment: "First profile import")
+        case .missingNodeSource: return "Turn on a node source for this configuration first."
         case .missingRules: return "No routing rules were found in this source."
-        case .retainedSnapshot: return "This saved copy no longer receives source updates."
+        case .retainedSnapshot: return "Its link or file was deleted, so this kept copy can't be changed."
         case .readOnlySource: return "Built-in sources cannot be deleted."
         case .emptyName: return "Enter a name."
         case .emptyNodeNameservers: return "Add at least one node DNS server, or choose Inherit."
@@ -478,8 +514,9 @@ public enum ConfigurationLibraryError: LocalizedError, Equatable {
         case .invalidFinalRule: return "Keep exactly one MATCH rule at the end."
         case .referencedBy: return "Something still references this item. Change that reference before deleting it."
         case .missingNodes: return "No nodes were found. Try another link or file, or create a node manually."
+        case .missingNodeSource: return "Turn on a node source for this configuration first."
         case .missingRules: return "No routing rules were found in this source."
-        case .retainedSnapshot: return "This saved copy no longer receives source updates."
+        case .retainedSnapshot: return "Its link or file was deleted, so this kept copy can't be changed."
         case .readOnlySource: return "Built-in sources cannot be deleted."
         case .emptyName: return "Enter a name."
         case .emptyNodeNameservers: return "Add at least one node DNS server, or choose Inherit."
@@ -590,6 +627,7 @@ public final class ConfigurationLibraryStore: Sendable {
         for index in candidate.rules.indices
             where Self.followsSourceName(candidate.rules[index], sourceID: id, previous: previousName) {
             candidate.rules[index].label = name
+            candidate.namingOwnViews(of: candidate.rules[index].id)
         }
         return try commit(candidate, payloads: [], expectedGeneration: expectedGeneration)
     }
@@ -619,6 +657,7 @@ public final class ConfigurationLibraryStore: Sendable {
             for index in candidate.rules.indices
                 where Self.followsSourceName(candidate.rules[index], sourceID: id, previous: previous) {
                 candidate.rules[index].label = name
+                candidate.namingOwnViews(of: candidate.rules[index].id)
             }
         }
         return try commit(candidate, payloads: [], expectedGeneration: expectedGeneration)
@@ -1074,18 +1113,39 @@ extension ConfigurationLibraryStore {
         let hoppedThrough = Set(snapshot.sources.flatMap { ($0.nodeChain?.hops ?? []).map(\.source.id) })
          
          
+         
+         
+         
+         
+         
+         
+        let configurations = Set(snapshot.recipes.map(\.id))
+        let inUse = snapshot.schemeIDsInUse
+        let retained = Dictionary(snapshot.rules.map { ($0.id, $0.isRetainedSnapshot == true) }, uniquingKeysWith: { first, _ in first })
+        let ownViewsGone = Set(snapshot.rules.filter { view in
+            guard view.ownViewBaseID != nil else { return false }
+            if !configurations.contains(view.privateToConfigurationID ?? "") { return true }
+            guard let baseID = view.rulesFromSchemeID, !inUse.contains(view.id) else { return false }
+            let live = retained[baseID].map { !$0 } ?? ConfigurationBuiltins.schemes.contains { $0.id == baseID }
+            return !live
+        }.map(\.id))
+        let ownViewSources = Set(snapshot.rules.filter { $0.ownViewBaseID != nil && !ownViewsGone.contains($0.id) }.map(\.sourceID))
+         
+         
         let orphanSources = Set(snapshot.sources.filter {
             ($0.isRetainedSnapshot == true || $0.privateToConfigurationID != nil)
-                && !dependedOn.contains($0.id) && !hoppedThrough.contains($0.id)
+                && !dependedOn.contains($0.id) && !hoppedThrough.contains($0.id) && !ownViewSources.contains($0.id)
         }.map(\.id))
          
-        let runOn = Set(snapshot.recipes.map(\.ruleSchemeID)).union(snapshot.rules.compactMap(\.rulesFromSchemeID))
+        let runOn = Set(snapshot.recipes.map(\.ruleSchemeID))
+            .union(snapshot.rules.filter { !ownViewsGone.contains($0.id) }.compactMap(\.rulesFromSchemeID))
         var removed = 0
         result.sources.removeAll { orphanSources.contains($0.id) }
         removed += orphanSources.count
         result.rules.removeAll { rule in
             let goes = orphanSources.contains(rule.sourceID)
                 || (rule.isRetainedSnapshot == true && !runOn.contains(rule.id))
+                || ownViewsGone.contains(rule.id)
             if goes { removed += 1 }
             return goes
         }

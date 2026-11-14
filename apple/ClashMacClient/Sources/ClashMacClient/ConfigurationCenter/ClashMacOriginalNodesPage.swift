@@ -269,18 +269,20 @@ public struct ClashMacOriginalNodesPage: View {
                 Task { await add(picked) }
             }, close: { picking = false })
         }
-        .alert(Text(clash: .copy("Delete Node")), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+         
+         
+        .alert(Text(clash: .copy("Delete Node")), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+               presenting: deleting) { node in
             Button(role: .destructive) {
-                let node = deleting
                 deleting = nil
-                if let node { Task { await delete(node) } }
+                Task { await delete(node) }
             } label: {
                 Text(clash: .copy("Delete Node"))
             }
             .accessibilityIdentifier("configuration-center.original-nodes.delete.confirm")
             Button(role: .cancel) {} label: { Text(clash: .copy("Cancel")) }
-        } message: {
-            if let deleting { Text(verbatim: deleting.name) }
+        } message: { node in
+            Text(verbatim: node.name)
         }
     }
 

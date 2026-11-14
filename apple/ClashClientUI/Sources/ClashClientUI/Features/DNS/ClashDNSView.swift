@@ -954,7 +954,7 @@ public struct ClashDNSLocalMappingsView<Icon: View>: View {
                 )
             }
         }
-        .sheet(item: $editing) { request in
+        .clashSheet(item: $editing) { request in
             ClashDNSMappingEditor(
                 mapping: request.mapping
             ) { updated in
@@ -2885,7 +2885,7 @@ private struct ClashDNSPolicyEntrySheet<Icon: View>: View {
              
              
              
-            .clashProductModalChild(title: title, backAction: leaveWithoutSaving)
+            .clashProductModalChild(title: .copy(title), backAction: leaveWithoutSaving)
              
              
             .background {
@@ -2938,6 +2938,9 @@ private struct ClashDNSPolicyEntrySheet<Icon: View>: View {
              
             .clashRegistersDeparture(
                 isDirty: openedWith.map { $0 != draft } ?? false,
+                 
+                 
+                whySaveIsBlocked: { isUsable ? nil : ClashDepartureSaveAnswer.incomplete },
                 save: { completion in
                     completion(writeOnce())
                 },
@@ -3504,7 +3507,7 @@ private struct ClashDNSGeoPickerChrome: ViewModifier {
                 content
                     .clashModalListMargins()
                     .clashNativeSheetChild(
-                        title: title,
+                        title: .copy(title),
                         searchText: searchText,
                          
                          

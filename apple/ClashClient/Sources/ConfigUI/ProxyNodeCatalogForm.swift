@@ -60,16 +60,26 @@ enum ProxyNodeCatalog {
      
      
     static func newNodeRecord(type typeID: String) -> ProxyNodeRecord {
-        var template: [String: Any] = ["name": "", "type": typeID]
-        ProxyEditorNewNodeDefaults.applying(to: &template, typeID: typeID)
-        return ProxyNodeRecord(name: "", type: typeID, delay: nil, groupNames: [],
-                               protocolDetails: ProxyProtocolCatalog.details(for: template))
+        ProxyNodeRecord(name: "", type: typeID, delay: nil, groupNames: [],
+                        protocolDetails: ProxyProtocolCatalog.details(for: newNodeMapping(type: typeID)))
     }
 
      
      
+    static func newNodeMapping(type typeID: String) -> [String: Any] {
+        var template: [String: Any] = ["name": "", "type": typeID]
+        ProxyEditorNewNodeDefaults.applying(to: &template, typeID: typeID)
+        return template
+    }
+
+     
+     
+     
+     
+     
+     
     static func children(of path: String, in catalog: ConfigurationFieldCatalog) -> [ConfigurationField] {
-        let memoKey = "\(catalog.fields.count)|\(catalog.fields.first?.path ?? "")|\(path)"
+        let memoKey = "\(catalog.fields.count)|\(catalog.fields.first?.path ?? "")|\(catalog.platformKeys.count)|\(path)"
         memoLock.lock()
         if let remembered = childrenMemo[memoKey] {
             memoLock.unlock()
@@ -93,6 +103,21 @@ enum ProxyNodeCatalog {
 
     static func key(of field: ConfigurationField) -> String {
         field.path.split(separator: ".").last.map(String.init) ?? field.path
+    }
+
+     
+     
+     
+     
+     
+     
+    static func platformDecidedKeys(of mapping: [String: Any], typeID: String,
+                                    in catalog: ConfigurationFieldCatalog?) -> Set<String> {
+        guard let catalog else { return [] }
+        let decided = children(of: typePath(typeID), in: catalog).filter { $0.platformDecision?.overridesTheFile == true }
+        guard !decided.isEmpty else { return [] }
+        let node = json(mapping) ?? .object([])
+        return Set(decided.filter { $0.platformDecision?.applies(to: node) == true }.map(key(of:)))
     }
 
      
@@ -545,8 +570,11 @@ struct ProxyNodeCatalogSections: View {
     }
 
     var body: some View {
-        let layout = ProxyNodeCatalog.layout(of: draft.mapping, typeID: draft.typeID, in: catalog).splittingOffThePlatformsRows()
         let document = ProxyNodeCatalog.json(draft.mapping)
+         
+         
+        let layout = ProxyNodeCatalog.layout(of: draft.mapping, typeID: draft.typeID, in: catalog)
+            .splittingOffThePlatformsRows(in: document)
         ForEach(Self.sections(of: layout, typeID: draft.typeID, catalog: catalog, copy: fieldCopy, locale: locale)) { section in
             Section {
                 ForEach(section.rows) { row in

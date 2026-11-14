@@ -35,6 +35,10 @@ enum ProxyShareError: Error, Equatable {
      
      
     case invalidListenerPort
+     
+     
+     
+    case sameListenerPort
     case missingUsername
     case malformedUsername
     case usernameTooLong
@@ -84,6 +88,8 @@ extension ProxyShareError: LocalizedError {
             return "Choose a port from 1024 through 65535."
         case .invalidListenerPort:
             return "Choose a port from 0 through 65535; 0 turns it off."
+        case .sameListenerPort:
+            return "Another port on this page already has that number, and the core opens only one of them. Choose a different port, or leave one empty."
         case .missingUsername:
             return "Enter a username for the shared proxy."
         case .malformedUsername:
@@ -468,7 +474,7 @@ struct ProxySharePreferences {
      
      
      
-    init(defaults: UserDefaults = UserDefaults(suiteName: ClashAppIdentifiers.appGroup) ?? .standard) {
+    init(defaults: UserDefaults = UserDefaults(suiteName: ClashAppIdentifiers.defaultsSuite) ?? .standard) {
         self.defaults = defaults
     }
 
@@ -507,6 +513,73 @@ protocol ProxyShareCommanding: AnyObject {
     func fetchProxyShareStatus() async throws -> ProxyShareStatus
     func startProxyShare(_ configuration: ProxyShareConfiguration) async throws -> ProxyShareStatus
     func stopProxyShare() async throws -> ProxyShareStatus
+     
+     
+    var runningListenerPorts: RunningListenerPorts? { get }
+     
+    var runningListenerPortsChanges: AnyPublisher<RunningListenerPorts?, Never> { get }
+     
+    func refreshRunningListenerPorts() async
+}
+
+extension ProxyShareCommanding {
+     
+     
+    var runningListenerPorts: RunningListenerPorts? { nil }
+    var runningListenerPortsChanges: AnyPublisher<RunningListenerPorts?, Never> {
+        Empty().eraseToAnyPublisher()
+    }
+    func refreshRunningListenerPorts() async {}
+}
+
+ 
+enum KernelSharePortStatus: Equatable {
+     
+    case closed
+     
+     
+     
+    case notListening
+     
+     
+     
+    case numberTakenByAnother
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+struct RunningListenerPorts: Equatable, Sendable {
+    let mixedPort: Int32
+    let httpPort: Int32
+    let socksPort: Int32
+     
+     
+     
+    var allowsLAN: Bool? = nil
+
+     
+     
+    static func read(configs object: [String: Any]) -> RunningListenerPorts? {
+        func port(_ key: String) -> Int32? {
+            guard let number = object[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            return Int32(exactly: number.doubleValue)
+        }
+        guard let mixed = port("mixed-port"), let http = port("port"), let socks = port("socks-port") else { return nil }
+        let allowsLAN = (object["allow-lan"] as? NSNumber).flatMap { CFGetTypeID($0) == CFBooleanGetTypeID() ? $0.boolValue : nil }
+        return RunningListenerPorts(mixedPort: mixed, httpPort: http, socksPort: socks, allowsLAN: allowsLAN)
+    }
+
+    func value(_ port: KernelLANSharePort) -> Int32 {
+        switch port {
+        case .mixed: mixedPort
+        case .http: httpPort
+        case .socks: socksPort
+        }
+    }
 }
 
 enum ProxySharePhase: Equatable {
@@ -688,6 +761,21 @@ enum KernelLANSharePort: CaseIterable {
         case .socks: override.socksPort = port
         }
     }
+
+     
+     
+     
+     
+     
+    static func numberTakenTwice(by port: KernelLANSharePort, in override: KernelLANShareOverride,
+                                 over listener: ProfileListenerPorts?) -> Bool {
+        func running(_ kind: KernelLANSharePort) -> Int32 {
+            kind.value(in: override) ?? kind.value(in: listener) ?? 0
+        }
+        let number = running(port)
+        guard number > 0 else { return false }
+        return allCases.contains { $0 != port && running($0) == number }
+    }
 }
 
  
@@ -734,7 +822,8 @@ private struct KernelShareAsk {
     }
 
     static func port(_ port: KernelLANSharePort, _ typed: Int32) -> KernelShareAsk {
-        KernelShareAsk(isShown: { (port.value(in: $0) ?? port.value(in: $1)) == typed },
+         
+        KernelShareAsk(isShown: { ((port.value(in: $0) ?? port.value(in: $1)) ?? 0) == typed },
                        overrideIsSilent: { port.value(in: $0) == nil },
                        write: { port.set(typed, in: &$0) })
     }
@@ -783,6 +872,9 @@ final class ProxyShareModel: ObservableObject {
     @Published private(set) var localInterfaces: [String: String] = [:]
 
     private weak var command: ProxyShareCommanding?
+    private var runningListenerSubscription: AnyCancellable?
+    private var runningPortsAwaited = false
+    private var runningPortsGeneration: UInt64 = 0
     private var profileListener: () -> ProfileListenerPorts? = { nil }
     private var profileYAML: (() -> String?)?
      
@@ -907,11 +999,32 @@ final class ProxyShareModel: ObservableObject {
      
      
     func setKernelShare(on: Bool) async {
-        await writeKernelShare(showing: on, asking: .allowLAN(on)) { current, profile, filePortless in
+        await setKernelShare(on: on, begun: beginKernelShareWrite(showing: on))
+    }
+
+    private func setKernelShare(on: Bool, begun: KernelShareWrite?) async {
+        await writeKernelShare(begun, asking: .allowLAN(on)) { current, profile, filePortless in
             KernelLANShareSwitch.override(on: on, current: current, profile: profile, filePortless: filePortless)
         }
     }
 
+     
+     
+     
+     
+     
+     
+    func pressKernelShare(on: Bool) {
+        let begun = beginKernelShareWrite(showing: on)
+        Task { await setKernelShare(on: on, begun: begun) }
+    }
+
+     
+     
+     
+     
+     
+     
      
      
      
@@ -924,7 +1037,7 @@ final class ProxyShareModel: ObservableObject {
      
     func setKernelSharePort(_ port: KernelLANSharePort = .mixed, text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
-        var typed: Int32?
+        var typed: Int32 = 0
         if !trimmed.isEmpty {
             guard trimmed.unicodeScalars.allSatisfy(CharacterSet.decimalDigits.contains),
                   let value = Int32(trimmed),
@@ -936,10 +1049,14 @@ final class ProxyShareModel: ObservableObject {
             }
             typed = value
         }
-         
-        await writeKernelShare(asking: typed.map { .port(port, $0) }) { current, profile, _ in
+        await writeKernelShare(beginKernelShareWrite(), asking: .port(port, typed), refusing: { override, listener in
+            KernelLANSharePort.numberTakenTwice(by: port, in: override, over: listener) ? .sameListenerPort : nil
+        }) { current, profile, _ in
             var override = current
-            port.set(typed == port.value(in: profile.listener) ? nil : typed, in: &override)
+            let profiles = port.value(in: profile.listener)
+             
+             
+            port.set(typed == (profiles ?? 0) ? nil : typed, in: &override)
             return override
         }
     }
@@ -947,9 +1064,10 @@ final class ProxyShareModel: ObservableObject {
      
      
      
+     
     func kernelSharePortText(_ port: KernelLANSharePort) -> String {
-        (kernelShareBinding.flatMap { port.value(in: $0.override()) } ?? port.value(in: kernelShare.listener))
-            .map(String.init) ?? ""
+        let shown = kernelShareBinding.flatMap { port.value(in: $0.override()) } ?? port.value(in: kernelShare.listener)
+        return shown.flatMap { $0 > 0 ? String($0) : nil } ?? ""
     }
 
      
@@ -960,19 +1078,33 @@ final class ProxyShareModel: ObservableObject {
      
      
      
-    private func writeKernelShare(
-        showing pressed: Bool? = nil,
-        asking ask: KernelShareAsk?,
-        _ decide: (KernelLANShareOverride, (listener: ProfileListenerPorts?, allowLAN: Bool), _ filePortless: Bool)
-            -> KernelLANShareOverride
-    ) async {
-        guard let binding = kernelShareBinding else { return }
+     
+     
+     
+    private struct KernelShareWrite {
+        let token: UInt64
+        let binding: KernelLANShareBinding
+    }
+
+    private func beginKernelShareWrite(showing pressed: Bool? = nil) -> KernelShareWrite? {
+        guard let binding = kernelShareBinding else { return nil }
         kernelShareGeneration &+= 1
-        let token = kernelShareGeneration
         if let pressed {
             kernelShareInFlight = pressed
             kernelShareInFlightProfile = binding.profileID()
         }
+        return KernelShareWrite(token: kernelShareGeneration, binding: binding)
+    }
+
+    private func writeKernelShare(
+        _ begun: KernelShareWrite?,
+        asking ask: KernelShareAsk?,
+        refusing refusal: ((KernelLANShareOverride, ProfileListenerPorts?) -> ProxyShareError?)? = nil,
+        _ decide: (KernelLANShareOverride, (listener: ProfileListenerPorts?, allowLAN: Bool), _ filePortless: Bool)
+            -> KernelLANShareOverride
+    ) async {
+        guard let begun else { return }
+        let token = begun.token, binding = begun.binding
         defer {
             if token == kernelShareGeneration { kernelShareInFlight = nil }
         }
@@ -1014,8 +1146,20 @@ final class ProxyShareModel: ObservableObject {
            case .settled(let listener?) = readKernelShareListener(), !ask.isShown(current, listener) {
             ask.write(&override)
         }
+         
+         
+         
+        if override != current, let refused = refusal?(override, profile.listener) {
+            errorMessage = refused.localizedDescription
+            objectWillChange.send()
+            terminalListenerDidChange.send()
+            return
+        }
         do {
-            if override != current { try write(override, binding: binding) }
+            if override != current {
+                try write(override, binding: binding)
+                awaitRunningPorts(after: binding)
+            }
             errorMessage = ""
         } catch {
             errorMessage = error.localizedDescription
@@ -1213,6 +1357,71 @@ final class ProxyShareModel: ObservableObject {
     func bind(command: ProxyShareCommanding) {
         self.command = command
         updateAPIAvailability(command.proxyShareAPIReady)
+         
+         
+        runningListenerSubscription = command.runningListenerPortsChanges
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func kernelSharePortStatus(_ port: KernelLANSharePort, typed: String, running isRunning: Bool = true) -> KernelSharePortStatus? {
+        let text = typed.trimmingCharacters(in: .whitespaces)
+        if KernelLANSharePort.closes(text) { return .closed }
+        guard isRunning, !runningPortsAwaited, command?.proxyShareAPIReady == true, let running = command?.runningListenerPorts,
+              let asked = Int32(text), asked > 0, text == kernelSharePortText(port),
+              running.value(port) != asked else { return nil }
+        return KernelLANSharePort.allCases.contains { $0 != port && running.value($0) == asked }
+            ? .numberTakenByAnother : .notListening
+    }
+
+     
+     
+     
+     
+     
+     
+    func kernelShareReach(running isRunning: Bool) -> (allowsLAN: Bool, ports: [Int32]) {
+        let ports: [Int32?]
+        var allowsLAN = kernelShare.isOn
+        if isRunning, !runningPortsAwaited, command?.proxyShareAPIReady == true, let running = command?.runningListenerPorts {
+            ports = KernelLANSharePort.allCases.map { running.value($0) }
+            allowsLAN = running.allowsLAN ?? allowsLAN
+        } else {
+            ports = KernelLANSharePort.allCases.map { Int32(kernelSharePortText($0)) }
+        }
+        var seen = Set<Int32>()
+        return (allowsLAN, ports.compactMap { $0 }.filter { $0 > 0 && seen.insert($0).inserted })
+    }
+
+     
+    func refreshRunningListenerPorts() {
+        Task { [weak self] in await self?.command?.refreshRunningListenerPorts() }
+    }
+
+     
+     
+     
+    private func awaitRunningPorts(after binding: KernelLANShareBinding) {
+        runningPortsGeneration &+= 1
+        let mine = runningPortsGeneration
+        runningPortsAwaited = true
+        Task { [weak self] in
+            await binding.settled()
+            await self?.command?.refreshRunningListenerPorts()
+            guard let self, self.runningPortsGeneration == mine else { return }
+            self.runningPortsAwaited = false
+            self.objectWillChange.send()
+        }
     }
 
     func updateAPIAvailability(_ ready: Bool) {

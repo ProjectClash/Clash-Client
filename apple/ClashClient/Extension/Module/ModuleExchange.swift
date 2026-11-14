@@ -457,6 +457,25 @@ final class ModuleExchange {
             handle(head)
         case .needMore:
             guard !client.ended else { return close() }
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            if served > 0, !ModuleHTTPParser.mayBeginWithAMethod(client.buffer, scan: scan) {
+                 
+                 
+                 
+                assert(current == nil && collection == nil && call == nil)
+                say("unreadable request from \(context.host): \(ModuleHTTPError.malformedStartLine), "
+                    + "\(client.buffer.count) bytes after a request that cannot begin one")
+                return answer(status: ModuleHTTPError.malformedStartLine.status)
+            }
             arm(client.buffer.isEmpty ? .request : .head)
             fillClient { [self] ok in ok ? readRequest() : close() }
         }

@@ -13,7 +13,9 @@ enum ClashMacFieldControl: Equatable {
      
     case chooseSome([String], ordered: Bool, caseInsensitive: Bool, separator: String? = nil)
     case toggle
-    case number(min: Double?, max: Double?, unit: String?)
+     
+     
+    case number(min: Double?, max: Double?, unit: String?, zeroMeansUnset: Bool = false)
      
     case text(format: ConfigurationFieldFormat?, suggestions: [String])
      
@@ -54,7 +56,7 @@ enum ClashMacFieldControl: Equatable {
         case .multiSelect:
             return .chooseSome(values, ordered: field.ordered == true, caseInsensitive: caseInsensitive, separator: field.separator)
         case .toggle: return .toggle
-        case .number: return .number(min: field.min, max: field.max, unit: field.unit)
+        case .number: return .number(min: field.min, max: field.max, unit: field.unit, zeroMeansUnset: field.zeroMeansUnset)
         case .reference:
             let pool = field.refers.map(names) ?? []
             var isList = field.ordered == true
@@ -231,10 +233,11 @@ struct ClashMacFieldDraft: Equatable {
     var problem: ConfigurationFieldProblem? {
         if let partsProblem { return partsProblem }
         switch control {
-        case .number(let min, let max, _):
+        case .number(let min, let max, _, let zeroMeansUnset):
              
              
-            return ConfigurationFieldValidation.problem(number: text, min: min, max: max, whole: true)
+            return ConfigurationFieldValidation.problem(number: text, min: min, max: max, whole: true,
+                                                        zeroMeansUnset: zeroMeansUnset)
         case .text(let format, let suggestions):
             return ConfigurationFieldValidation.problem(text, format: format, path: path, allowed: suggestions)
         default:
@@ -372,7 +375,7 @@ struct ClashMacFieldEditor: View {
                 Toggle(isOn: $draft.flag) { label.map { Text(verbatim: $0) } ?? Text(clash: .copy("On")) }
                     .toggleStyle(.switch)
                     .accessibilityIdentifier("configuration-center.section.field.toggle")
-            case .number(let min, let max, let unit):
+            case .number(let min, let max, let unit, _):
                 if let unit, ConfigurationDurationEntry(stored: draft.text, fieldUnit: unit) != nil {
                      
                     ClashMacDurationEditor(draft: $draft, min: min, max: max, fieldUnit: unit, title: title)

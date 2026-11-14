@@ -49,11 +49,17 @@ struct ConfigurationPushedAlertHost: ViewModifier {
         content
             .modifier(ConfigurationAlertHost(session: session, hosts: session.alertHosts, editSource: { editingSource = true },
                                              covered: editingSource))
-            .sheet(isPresented: $editingSource, onDismiss: { Task { await session.reload() } }) {
+            .clashSheet(isPresented: $editingSource, onDismiss: { Task { await session.reload() } }) {
                 if let profile = session.model.profiles.first(where: { $0.id == session.profileID }) {
                     ProfileSourceEditorLoader(profile: profile, model: session.model,
                                               savesIndependentSource: session.isComposed)
                         .configurationEditorOwnsItsScreen()
+                        .clashModalPresentation(.page)
+                } else {
+                     
+                     
+                     
+                    ClashOpeningCancelButton()
                         .clashModalPresentation(.page)
                 }
             }
@@ -112,7 +118,6 @@ final class ConfigurationPageState: ObservableObject {
     var compileAnswer: ConfigurationCompileResult? {
         willSet { if newValue?.id != compileAnswer?.id { objectWillChange.send() } }
     }
-    @Published var schemes: [ConfigurationRuleScheme] = []
     @Published var choosing = false
      
      
@@ -148,10 +153,6 @@ final class ConfigurationPageState: ObservableObject {
         session = ConfigurationEditorSession(profileID: profileID, model: model, selections: selections)
     }
 
-    func loadSchemes() async {
-        schemes = (try? await model.availableRuleSchemes(for: profileID)) ?? []
-    }
-
     func compile() {
         compiling = true
         Task {
@@ -162,7 +163,11 @@ final class ConfigurationPageState: ObservableObject {
 
      
      
-    func choose(_ choice: ConfigurationSchemeChooser.Choice, setUsesOriginal: ((Bool) async throws -> Void)?) {
+     
+     
+     
+    func choose(_ choice: ConfigurationSchemeChooser.Choice, setUsesOriginal: ((Bool) async throws -> Void)?,
+                libraryChanged: ((ConfigurationLibrarySnapshot) -> Void)? = nil) {
         guard let setUsesOriginal else { return }
         let chooser = ConfigurationSchemeChooser(
             form: { [model, profileID] in try await model.loadConfigurationEditorPage(profileID: profileID).form },
@@ -177,8 +182,43 @@ final class ConfigurationPageState: ObservableObject {
             } catch {
                 session.failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
+             
+             
+             
+             
+            await ConfigurationPageLibrary.hand(model, to: noting(libraryChanged))
             await session.reload()
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ConfigurationPageLibrary {
+     
+     
+    @MainActor
+    static func hand(_ model: ProfilesViewModel, to changed: ((ConfigurationLibrarySnapshot) -> Void)?) async {
+        guard let changed, let store = model.configurationLibraryStore,
+              let now = try? await Task.detached(priority: .userInitiated, operation: { try store.snapshot() }).value
+        else { return }
+        changed(now)
+    }
+
+     
+     
+     
+    @MainActor
+    static func saveAsScheme(named name: String, session: ConfigurationEditorSession, model: ProfilesViewModel,
+                             libraryChanged: ((ConfigurationLibrarySnapshot) -> Void)?) async {
+        await session.saveAsScheme(named: name)
+        await hand(model, to: libraryChanged)
     }
 }
 
@@ -196,6 +236,8 @@ struct ConfigurationPageHost: View {
     var libraryChanged: ((ConfigurationLibrarySnapshot) -> Void)?
     let content: AnyView
     @StateObject private var state: ConfigurationPageState
+     
+    @State private var published: UInt64
 
     init(model: ProfilesViewModel, profileID: String, libraryChanged: ((ConfigurationLibrarySnapshot) -> Void)? = nil,
          selections: GroupSelectionCarrying? = nil, content: AnyView) {
@@ -204,6 +246,7 @@ struct ConfigurationPageHost: View {
         self.libraryChanged = libraryChanged
         self.content = content
         _state = StateObject(wrappedValue: ConfigurationPageState(model: model, profileID: profileID, selections: selections))
+        _published = State(initialValue: model.publishedGeneration(of: profileID))
     }
 
     private var profile: Profile? { model.profiles.first { $0.id == profileID } }
@@ -225,28 +268,42 @@ struct ConfigurationPageHost: View {
              
              
              
-            .task(id: profile?.activeRevision ?? "") {
+             
+             
+             
+             
+             
+            .onReceive(model.$savedConfigurationGeneration) { _ in
+                let now = model.publishedGeneration(of: profileID)
+                if now != published { published = now }
+            }
+            .task(id: "\(profile?.activeRevision ?? "")|\(published)") {
                 state.loadScripts()
                 await state.session.reload()
             }
-            .task { await state.loadSchemes() }
             .modifier(ConfigurationAlertHost(session: state.session, hosts: state.alertHosts,
                                              editSource: { state.editingSource = true },
                                              covered: state.sheet != nil || state.compileAnswer != nil || state.editingSource))
-            .sheet(item: $state.sheet, onDismiss: { Task { await state.session.reload() } }) { which in
+            .clashSheet(item: $state.sheet, onDismiss: { Task { await state.session.reload() } }) { which in
                 ConfigurationEditorSheetContent(model: model, profileID: profileID, session: state.session, which: which,
-                                                libraryChanged: libraryChanged, close: { state.sheet = nil })
+                                                libraryChanged: state.noting(libraryChanged), close: { state.sheet = nil })
                     .clashModalPresentation(which == .saveAsScheme ? .form : .page)
                     .environment(\.clashProductModalDismiss, nil)
             }
-            .sheet(item: $state.compileAnswer) { result in
+            .clashSheet(item: $state.compileAnswer) { result in
                 ConfigurationCompileResultView(answer: result.answer).clashModalPresentation(.page)
                     .environment(\.clashProductModalDismiss, nil)
             }
-            .sheet(isPresented: $state.editingSource, onDismiss: { Task { await state.session.reload() } }) {
+            .clashSheet(isPresented: $state.editingSource, onDismiss: { Task { await state.session.reload() } }) {
                 if let profile {
                     ProfileSourceEditorLoader(profile: profile, model: model, savesIndependentSource: state.session.isComposed)
                         .configurationEditorOwnsItsScreen()
+                        .clashModalPresentation(.page)
+                } else {
+                     
+                     
+                     
+                    ClashOpeningCancelButton()
                         .clashModalPresentation(.page)
                 }
             }
@@ -401,14 +458,6 @@ struct ConfigurationPageSections: View {
         }
     }
 
-     
-     
-    private func choices(_ page: ProfilesViewModel.ConfigurationEditorPage) -> [ConfigurationRuleScheme] {
-        guard case .composed(let scheme, _) = page.form, !state.schemes.contains(where: { $0.id == scheme.id }) else {
-            return state.schemes
-        }
-        return [scheme] + state.schemes
-    }
 
      
      
@@ -422,17 +471,15 @@ struct ConfigurationPageSections: View {
          
          
          
-        let all = choices(page)
-        let builtinIDs = Set(ConfigurationBuiltins.schemes.map(\.id))
-        let builtins = all.filter { builtinIDs.contains($0.id) }
+        let groups = Self.menuGroups(page.schemeChoices)
         return Picker(selection: Self.schemeSelection(current: current, choose: choose)) {
-            ForEach(builtins) { scheme in
+            ForEach(groups.builtins) { scheme in
                 Text(verbatim: scheme.displayLabel).tag(ConfigurationSchemeChooser.Choice.scheme(scheme.id))
             }
             if canUseOriginal, setUsesOriginal != nil {
                 Text(clash: .copy("Original")).tag(ConfigurationSchemeChooser.Choice.original)
             }
-            ForEach(all.filter { !builtinIDs.contains($0.id) }) { scheme in
+            ForEach(groups.others) { scheme in
                 Text(verbatim: scheme.displayLabel).tag(ConfigurationSchemeChooser.Choice.scheme(scheme.id))
             }
         } label: {
@@ -449,8 +496,21 @@ struct ConfigurationPageSections: View {
         .accessibilityIdentifier("configuration-editor.rule-scheme")
     }
 
+     
+     
+     
+     
+     
+     
+     
+    static func menuGroups(_ all: [ConfigurationRuleScheme]) -> (builtins: [ConfigurationRuleScheme], others: [ConfigurationRuleScheme]) {
+        let builtinIDs = Set(ConfigurationBuiltins.schemes.map(\.id))
+        let builtin = { (scheme: ConfigurationRuleScheme) in builtinIDs.contains(scheme.plainViewBaseID ?? scheme.id) }
+        return (all.filter(builtin), all.filter { !builtin($0) })
+    }
+
     private func choose(_ choice: ConfigurationSchemeChooser.Choice) {
-        state.choose(choice, setUsesOriginal: setUsesOriginal)
+        state.choose(choice, setUsesOriginal: setUsesOriginal, libraryChanged: libraryChanged)
     }
 
      
@@ -481,7 +541,7 @@ struct ConfigurationPageSections: View {
      
 
     private func sectionRow(_ row: ConfigurationOutlineRow, form: ProfilesViewModel.ConfigurationEditorPage.Form) -> some View {
-        NavigationLink {
+        ClashNativeNavigationLink {
             ConfigurationSectionDestination(model: state.model, profileID: state.profileID, session: session,
                                             section: row.section, form: form, alertHosts: state.alertHosts,
                                             libraryChanged: state.noting(libraryChanged))
@@ -804,7 +864,7 @@ struct ConfigurationPageActions: View {
                 if keepsRules {
                      
                      
-                    NavigationLink {
+                    ClashNativeNavigationLink {
                         if let url = sourceToView {
                             ConfigurationSourceViewerPage(url: url, title: session.page?.label ?? "")
                                 .environment(\.clashProductModalDismiss, nil)
@@ -906,7 +966,7 @@ struct ConfigurationPageSearchResults: View {
     }
 
     private func row(_ hit: ConfigurationPageSearch.Hit, value: ClashDisplayText?) -> some View {
-        NavigationLink {
+        ClashNativeNavigationLink {
             ConfigurationSectionDestination(model: state.model, profileID: state.profileID, session: session,
                                             section: hit.section, form: page.form, alertHosts: state.alertHosts,
                                             libraryChanged: libraryChanged, object: hit.object)
@@ -1067,10 +1127,16 @@ struct ConfigurationSectionDestination: View, Equatable {
              
              
              
-            .sheet(isPresented: $editingSource, onDismiss: { Task { await session.reload() } }) {
+            .clashSheet(isPresented: $editingSource, onDismiss: { Task { await session.reload() } }) {
                 if let profile {
                     ProfileSourceEditorLoader(profile: profile, model: model, savesIndependentSource: session.isComposed)
                         .configurationEditorOwnsItsScreen()
+                        .clashModalPresentation(.page)
+                } else {
+                     
+                     
+                     
+                    ClashOpeningCancelButton()
                         .clashModalPresentation(.page)
                 }
             }
@@ -1359,7 +1425,10 @@ struct ConfigurationEditorSheetContent: View {
         switch which {
         case .saveAsScheme:
             ConfigurationSchemeNameSheet(initial: session.page?.label ?? "") { name in
-                Task { await session.saveAsScheme(named: name) }
+                Task {
+                    await ConfigurationPageLibrary.saveAsScheme(named: name, session: session, model: model,
+                                                                libraryChanged: libraryChanged)
+                }
             }
         }
     }

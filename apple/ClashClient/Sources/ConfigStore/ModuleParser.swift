@@ -105,6 +105,11 @@ enum ModuleParser {
         let manifest = ModuleManifest(
             name: nil, desc: nil, author: nil, icon: nil, system: [], arguments: [], format: .surge,
             sourceURL: sourceURL, fetchedAt: fetchedAt, contentSHA256: ModuleJSON.sha256(data))
+         
+        if let commented = ModuleQuantumultXParser.commentedResource(text, sourceURL: sourceURL) {
+            return try ModuleQuantumultXParser.parse(commented, manifest: manifest, sourceURL: sourceURL, platform: platform,
+                                                     check: check, commented: true).map(bounded)
+        }
         if isQuantumultX(text, sourceURL: sourceURL) {
             return try ModuleQuantumultXParser.parse(text, manifest: manifest, sourceURL: sourceURL, platform: platform, check: check)
                 .map(bounded)
@@ -181,14 +186,6 @@ enum ModuleParser {
      
     static func isQuantumultX(_ text: String, sourceURL: String?) -> Bool {
         let sections = quantumultXSections
-         
-        let actions: Set<String> = [
-            "reject", "reject-200", "reject-img", "reject-dict", "reject-array", "302", "307",
-            "request-header", "request-body", "response-header", "response-body", "echo-response",
-            "jsonjq-request-body", "jsonjq-response-body", "simple-response",
-            "script-request-header", "script-request-body", "script-response-header", "script-response-body",
-            "script-echo-response", "script-analyze-echo-response",
-        ]
         var sawSection = false
         var sawQuantumultXSection = false
         var sawFamilySection = false
@@ -209,14 +206,28 @@ enum ModuleParser {
                 }
                 continue
             }
-            let words = line.split(separator: " ")
-            if words.count >= 3, words[1] == "url", actions.contains(words[2].lowercased()) { sawLine = true }
-             
-            if words.count >= 4, words.dropFirst(2).contains(where: { $0.lowercased() == "url-and-header" }) { sawLine = true }
+            if isQuantumultXRewriteLine(line) { sawLine = true }
         }
         if sawQuantumultXSection || sawLine { return !sawFamilySection }
         let address = path(of: sourceURL)
         return !sawFamilySection && (address.hasSuffix(".conf") || address.hasSuffix(".snippet"))
+    }
+
+     
+    static let quantumultXActions: Set<String> = [
+        "reject", "reject-200", "reject-img", "reject-dict", "reject-array", "302", "307",
+        "request-header", "request-body", "response-header", "response-body", "echo-response",
+        "jsonjq-request-body", "jsonjq-response-body", "simple-response",
+        "script-request-header", "script-request-body", "script-response-header", "script-response-body",
+        "script-echo-response", "script-analyze-echo-response",
+    ]
+
+     
+     
+    static func isQuantumultXRewriteLine(_ line: String) -> Bool {
+        let words = line.split(separator: " ")
+        if words.count >= 3, words[1] == "url", quantumultXActions.contains(words[2].lowercased()) { return true }
+        return words.count >= 4 && words.dropFirst(2).contains(where: { $0.lowercased() == "url-and-header" })
     }
 
      
@@ -958,8 +969,39 @@ enum ModuleParser {
             let line = raw.trimmingCharacters(in: .whitespaces)
             return ModuleLoonRewriteSyntax.isRule(line) || ModuleLoonRewriteSyntax.isAppScriptRule(line)
         }
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
         let address = path(of: sourceURL)
+        let addressNamesAFamily = [".sgmodule", ".module", ".srmodule", ".stoverride", ".yaml", ".yml"]
+            .contains { address.hasSuffix($0) }
+        var inScript = false
+        let olderLoonScriptLines = !addressNamesAFamily && lines.contains { raw in
+            let line = strippingComment(raw.trimmingCharacters(in: .whitespaces)).replacingOccurrences(of: "\t", with: " ")
+            if line.hasPrefix("["), line.hasSuffix("]") {
+                inScript = key(of: String(line.dropFirst().dropLast())) == "script"
+                return false
+            }
+            guard inScript, ModuleLineSyntax.isLoonScriptLine(line), line.contains("script-path=") else { return false }
+            let name = line.prefix { $0 != "=" }
+            guard name.contains("://") || name.contains(#":\/\/"#)
+                    || line.range(of: #"^[^=]*=\s*type\s*=\s*(http-request|http-response|cron|event|dns|rule|generic)\s*(,|$)"#,
+                                  options: [.regularExpression, .caseInsensitive]) == nil else { return false }
+            let rest = line.drop { $0 != " " }.drop { $0 == " " }
+            return !rest.isEmpty && !rest.hasPrefix("=")
+        }
         var loon = address.hasSuffix(".plugin") || address.hasSuffix(".lpx") || loonSections || newerLoonLines
+            || olderLoonScriptLines
         var headerNotes: [ModuleIgnoredEntry] = []
         for (index, raw) in lines.enumerated() {
             let line = raw.trimmingCharacters(in: .whitespaces)

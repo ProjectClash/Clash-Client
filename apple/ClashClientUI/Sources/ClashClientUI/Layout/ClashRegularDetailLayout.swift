@@ -141,6 +141,11 @@ public struct ClashSetterRoutedBack: ViewModifier {
      
      
      
+     
+    @Environment(\.clashDeparturePage) private var departurePage
+     
+     
+     
     @Environment(\.clashRootDepartureGuard) private var departureGuard
 
     public init() {}
@@ -187,7 +192,13 @@ public struct ClashSetterRoutedBack: ViewModifier {
                              
                              
                              
-                            ClashDeparture.request(departureGuard, leave: leave)
+                             
+                             
+                            ClashDeparture.requestBack(
+                                departureGuard,
+                                from: departurePage,
+                                leave: leave
+                            )
                         } label: {
                             Image(systemName: "chevron.backward")
                         }

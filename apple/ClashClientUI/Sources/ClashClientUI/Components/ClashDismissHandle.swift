@@ -80,14 +80,36 @@ public final class ClashDismissHandle: ObservableObject {
     private var productModal: (@MainActor () -> Void)?
 
      
+     
+     
+     
+     
+     
+     
+     
     @MainActor
     public func closeModalOrDismiss() {
+        if placement.isPushedPage {
+#if os(macOS)
+            if let popRoute {
+                popRoute(ClashPopToken())
+                return
+            }
+#endif
+            return self()
+        }
         if let productModal { productModal() } else { self() }
     }
 
     func bindProductModal(_ closer: (@MainActor () -> Void)?) {
         productModal = closer
     }
+
+    func bindPopRoute(_ pop: ClashRoutePusher?) {
+        popRoute = pop
+    }
+     
+    private var popRoute: ClashRoutePusher?
     private var placement = ClashDismissPlacement(
         depth: nil, isPushedPage: false, hostContext: .standalone, insideModal: false
     )
@@ -133,12 +155,14 @@ private struct ClashDismissCapture: View {
     @Environment(\.clashNavigationHostContext) private var hostContext
     @Environment(\.clashInsideModalPresentation) private var insideModal
     @Environment(\.clashProductModalDismiss) private var productModalDismiss
+    @Environment(\.clashPopRoute) private var popRoute
 
     var body: some View {
          
          
          
         let _ = handle.bindProductModal(productModalDismiss)
+        let _ = handle.bindPopRoute(popRoute)
         let _ = handle.bind(
             { dismiss() },
             placement: ClashDismissPlacement(

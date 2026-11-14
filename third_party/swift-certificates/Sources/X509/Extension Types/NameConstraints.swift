@@ -1,0 +1,878 @@
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+import SwiftASN1
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+public struct NameConstraints {
+    public struct DNSNames: Hashable, Sendable, Collection, ExpressibleByArrayLiteral, CustomStringConvertible {
+        public typealias Element = String
+
+        @inlinable
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.elementsEqual(rhs)
+        }
+
+        @usableFromInline
+        var subtrees: [GeneralName]
+
+        @inlinable
+        public var description: String {
+            "[\(self.joined(separator: ", "))]"
+        }
+
+        @inlinable
+        init(subtrees: [GeneralName]) {
+            self.subtrees = subtrees
+        }
+
+        @inlinable
+        public init(_ elements: some Sequence<String>) {
+            self.subtrees = elements.map { .dnsName($0) }
+        }
+
+        @inlinable
+        public init(arrayLiteral elements: String...) {
+            self.init(elements)
+        }
+
+        @inlinable
+        public func hash(into hasher: inout Hasher) {
+            hasher.combine(contentsOf: self)
+        }
+
+        public struct Index: Comparable {
+            @inlinable
+            public static func < (lhs: Self, rhs: Self) -> Bool {
+                lhs.wrapped < rhs.wrapped
+            }
+            @usableFromInline
+            var wrapped: Int
+
+            @inlinable
+            init(_ wrapped: Int) {
+                self.wrapped = wrapped
+            }
+        }
+
+        @inlinable
+        public var startIndex: Index {
+            Index(
+                self.subtrees.firstIndex(where: {
+                    guard case .dnsName = $0 else {
+                        return false
+                    }
+                    return true
+                }) ?? self.subtrees.endIndex
+            )
+        }
+
+        @inlinable
+        public var endIndex: Index {
+            Index(self.subtrees.endIndex)
+        }
+
+        @inlinable
+        public func index(after i: Index) -> Index {
+            Index(
+                self.subtrees[i.wrapped...].dropFirst().firstIndex(where: {
+                    guard case .dnsName = $0 else {
+                        return false
+                    }
+                    return true
+                }) ?? self.subtrees.endIndex
+            )
+        }
+
+        @inlinable
+        public subscript(position: Index) -> String {
+            guard case .dnsName(let name) = self.subtrees[position.wrapped] else {
+                fatalError("index \(position) is not a valid index for \(Self.self)")
+            }
+            return name
+        }
+
+        @inlinable
+        var filtered: some Sequence<GeneralName> {
+            self.subtrees.lazy.filter {
+                guard case .dnsName = $0 else {
+                    return false
+                }
+                return true
+            }
+        }
+    }
+
+    public struct IPRanges: Hashable, Sendable, Collection, ExpressibleByArrayLiteral, CustomStringConvertible {
+        @inlinable
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.elementsEqual(rhs)
+        }
+
+        @usableFromInline
+        var subtrees: [GeneralName]
+
+        @inlinable
+        public var description: String {
+            "[\(self.lazy.map { String(describing: $0.bytes) }.joined(separator: ", "))]"
+        }
+
+        @inlinable
+        init(subtrees: [GeneralName]) {
+            self.subtrees = subtrees
+        }
+
+        @inlinable
+        public init(_ elements: some Sequence<ASN1OctetString>) {
+            self.subtrees = elements.map { .ipAddress($0) }
+        }
+
+        @inlinable
+        public init(arrayLiteral elements: ASN1OctetString...) {
+            self.init(elements)
+        }
+
+        @inlinable
+        public func hash(into hasher: inout Hasher) {
+            hasher.combine(contentsOf: self)
+        }
+
+        public struct Index: Comparable {
+            @inlinable
+            public static func < (lhs: Self, rhs: Self) -> Bool {
+                lhs.wrapped < rhs.wrapped
+            }
+            @usableFromInline
+            var wrapped: Int
+
+            @inlinable
+            init(_ wrapped: Int) {
+                self.wrapped = wrapped
+            }
+        }
+
+        @inlinable
+        public var startIndex: Index {
+            Index(
+                self.subtrees.firstIndex(where: {
+                    guard case .ipAddress = $0 else {
+                        return false
+                    }
+                    return true
+                }) ?? self.subtrees.endIndex
+            )
+        }
+
+        @inlinable
+        public var endIndex: Index {
+            Index(self.subtrees.endIndex)
+        }
+
+        @inlinable
+        public func index(after i: Index) -> Index {
+            Index(
+                self.subtrees[i.wrapped...].dropFirst().firstIndex(where: {
+                    guard case .ipAddress = $0 else {
+                        return false
+                    }
+                    return true
+                }) ?? self.subtrees.endIndex
+            )
+        }
+
+        @inlinable
+        public subscript(position: Index) -> ASN1OctetString {
+            guard case .ipAddress(let ipAddress) = self.subtrees[position.wrapped] else {
+                fatalError("index \(position) is not a valid index for \(Self.self)")
+            }
+            return ipAddress
+        }
+
+        @inlinable
+        var filtered: some Sequence<GeneralName> {
+            self.subtrees.lazy.filter {
+                guard case .ipAddress = $0 else {
+                    return false
+                }
+                return true
+            }
+        }
+    }
+
+    public struct EmailAddresses: Hashable, Sendable, Collection, ExpressibleByArrayLiteral, CustomStringConvertible {
+        @inlinable
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.elementsEqual(rhs)
+        }
+
+        @usableFromInline
+        var subtrees: [GeneralName]
+
+        @inlinable
+        public var description: String {
+            "[\(self.joined(separator: ", "))]"
+        }
+
+        @inlinable
+        init(subtrees: [GeneralName]) {
+            self.subtrees = subtrees
+        }
+
+        @inlinable
+        public init(_ elements: some Sequence<String>) {
+            self.subtrees = elements.map { .rfc822Name($0) }
+        }
+
+        @inlinable
+        public init(arrayLiteral elements: String...) {
+            self.init(elements)
+        }
+
+        @inlinable
+        public func hash(into hasher: inout Hasher) {
+            hasher.combine(contentsOf: self)
+        }
+
+        public struct Index: Comparable {
+            @inlinable
+            public static func < (lhs: Self, rhs: Self) -> Bool {
+                lhs.wrapped < rhs.wrapped
+            }
+            @usableFromInline
+            var wrapped: Int
+
+            @inlinable
+            init(_ wrapped: Int) {
+                self.wrapped = wrapped
+            }
+        }
+
+        @inlinable
+        public var startIndex: Index {
+            Index(
+                self.subtrees.firstIndex(where: {
+                    guard case .rfc822Name = $0 else {
+                        return false
+                    }
+                    return true
+                }) ?? self.subtrees.endIndex
+            )
+        }
+
+        @inlinable
+        public var endIndex: Index {
+            Index(self.subtrees.endIndex)
+        }
+
+        @inlinable
+        public func index(after i: Index) -> Index {
+            Index(
+                self.subtrees[i.wrapped...].dropFirst().firstIndex(where: {
+                    guard case .rfc822Name = $0 else {
+                        return false
+                    }
+                    return true
+                }) ?? self.subtrees.endIndex
+            )
+        }
+
+        @inlinable
+        public subscript(position: Index) -> String {
+            guard case .rfc822Name(let emailAddress) = self.subtrees[position.wrapped] else {
+                fatalError("index \(position) is not a valid index for \(Self.self)")
+            }
+            return emailAddress
+        }
+
+        @inlinable
+        var filtered: some Sequence<GeneralName> {
+            self.subtrees.lazy.filter {
+                guard case .rfc822Name = $0 else {
+                    return false
+                }
+                return true
+            }
+        }
+    }
+
+    public struct URIDomains: Hashable, Sendable, Collection, ExpressibleByArrayLiteral, CustomStringConvertible {
+        @inlinable
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.elementsEqual(rhs)
+        }
+
+        @usableFromInline
+        var subtrees: [GeneralName]
+
+        @inlinable
+        public var description: String {
+            "[\(self.joined(separator: ", "))]"
+        }
+
+        @inlinable
+        init(subtrees: [GeneralName]) {
+            self.subtrees = subtrees
+        }
+
+        @inlinable
+        public init(_ elements: some Sequence<String>) {
+            self.subtrees = elements.map { .uniformResourceIdentifier($0) }
+        }
+
+        @inlinable
+        public init(arrayLiteral elements: String...) {
+            self.init(elements)
+        }
+
+        @inlinable
+        public func hash(into hasher: inout Hasher) {
+            hasher.combine(contentsOf: self)
+        }
+
+        public struct Index: Comparable {
+            @inlinable
+            public static func < (lhs: Self, rhs: Self) -> Bool {
+                lhs.wrapped < rhs.wrapped
+            }
+            @usableFromInline
+            var wrapped: Int
+
+            @inlinable
+            init(_ wrapped: Int) {
+                self.wrapped = wrapped
+            }
+        }
+
+        @inlinable
+        public var startIndex: Index {
+            Index(
+                self.subtrees.firstIndex(where: {
+                    guard case .uniformResourceIdentifier = $0 else {
+                        return false
+                    }
+                    return true
+                }) ?? self.subtrees.endIndex
+            )
+        }
+
+        @inlinable
+        public var endIndex: Index {
+            Index(self.subtrees.endIndex)
+        }
+
+        @inlinable
+        public func index(after i: Index) -> Index {
+            Index(
+                self.subtrees[i.wrapped...].dropFirst().firstIndex(where: {
+                    guard case .uniformResourceIdentifier = $0 else {
+                        return false
+                    }
+                    return true
+                }) ?? self.subtrees.endIndex
+            )
+        }
+
+        @inlinable
+        public subscript(position: Index) -> String {
+            guard case .uniformResourceIdentifier(let uri) = self.subtrees[position.wrapped] else {
+                fatalError("index \(position) is not a valid index for \(Self.self)")
+            }
+            return uri
+        }
+
+        @inlinable
+        var filtered: some Sequence<GeneralName> {
+            self.subtrees.lazy.filter {
+                guard case .uniformResourceIdentifier = $0 else {
+                    return false
+                }
+                return true
+            }
+        }
+    }
+
+     
+     
+     
+     
+    public internal(set) var permittedDNSDomains: DNSNames {
+        get {
+            DNSNames(subtrees: permittedSubtrees)
+        }
+        set {
+            permittedSubtrees.removeAll {
+                guard case .dnsName = $0 else {
+                    return false
+                }
+                return true
+            }
+            permittedSubtrees.append(contentsOf: newValue.filtered)
+        }
+    }
+
+     
+     
+     
+     
+    public internal(set) var excludedDNSDomains: DNSNames {
+        get {
+            DNSNames(subtrees: excludedSubtrees)
+        }
+        set {
+            excludedSubtrees.removeAll {
+                guard case .dnsName = $0 else {
+                    return false
+                }
+                return true
+            }
+            excludedSubtrees.append(contentsOf: newValue.filtered)
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public internal(set) var permittedIPRanges: IPRanges {
+        get {
+            IPRanges(subtrees: permittedSubtrees)
+        }
+        set {
+            permittedSubtrees.removeAll {
+                guard case .ipAddress = $0 else {
+                    return false
+                }
+                return true
+            }
+            permittedSubtrees.append(contentsOf: newValue.filtered)
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public internal(set) var excludedIPRanges: IPRanges {
+        get {
+            IPRanges(subtrees: excludedSubtrees)
+        }
+        set {
+            excludedSubtrees.removeAll {
+                guard case .ipAddress = $0 else {
+                    return false
+                }
+                return true
+            }
+            excludedSubtrees.append(contentsOf: newValue.filtered)
+        }
+    }
+
+     
+     
+     
+     
+     
+    public internal(set) var permittedEmailAddresses: EmailAddresses {
+        get {
+            EmailAddresses(subtrees: permittedSubtrees)
+        }
+        set {
+            permittedSubtrees.removeAll {
+                guard case .rfc822Name = $0 else {
+                    return false
+                }
+                return true
+            }
+            permittedSubtrees.append(contentsOf: newValue.filtered)
+        }
+    }
+
+     
+     
+     
+     
+     
+    public internal(set) var excludedEmailAddresses: EmailAddresses {
+        get {
+            EmailAddresses(subtrees: excludedSubtrees)
+        }
+        set {
+            excludedSubtrees.removeAll {
+                guard case .rfc822Name = $0 else {
+                    return false
+                }
+                return true
+            }
+            excludedSubtrees.append(contentsOf: newValue.filtered)
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    public internal(set) var permittedURIDomains: URIDomains {
+        get {
+            URIDomains(subtrees: permittedSubtrees)
+        }
+        set {
+            permittedSubtrees.removeAll {
+                guard case .uniformResourceIdentifier = $0 else {
+                    return false
+                }
+                return true
+            }
+            permittedSubtrees.append(contentsOf: newValue.filtered)
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    public internal(set) var forbiddenURIDomains: URIDomains {
+        get {
+            URIDomains(subtrees: excludedSubtrees)
+        }
+        set {
+            excludedSubtrees.removeAll {
+                guard case .uniformResourceIdentifier = $0 else {
+                    return false
+                }
+                return true
+            }
+            excludedSubtrees.append(contentsOf: newValue.filtered)
+        }
+    }
+
+     
+     
+     
+     
+     
+    public var permittedSubtrees: [GeneralName]
+
+     
+     
+     
+     
+     
+    public var excludedSubtrees: [GeneralName]
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @inlinable
+    public init(
+        permittedDNSDomains: some Sequence<String> = [],
+        excludedDNSDomains: some Sequence<String> = [],
+        permittedIPRanges: some Sequence<ASN1OctetString> = [],
+        excludedIPRanges: some Sequence<ASN1OctetString> = [],
+        permittedEmailAddresses: some Sequence<String> = [],
+        excludedEmailAddresses: some Sequence<String> = [],
+        permittedURIDomains: some Sequence<String> = [],
+        forbiddenURIDomains: some Sequence<String> = []
+    ) {
+        self.permittedSubtrees = []
+        self.permittedSubtrees.reserveCapacity(
+            permittedDNSDomains.underestimatedCount + permittedIPRanges.underestimatedCount
+                + permittedEmailAddresses.underestimatedCount + permittedURIDomains.underestimatedCount
+        )
+        self.permittedSubtrees.append(contentsOf: permittedDNSDomains.lazy.map { .dnsName($0) })
+        self.permittedSubtrees.append(contentsOf: permittedIPRanges.lazy.map { .ipAddress($0) })
+        self.permittedSubtrees.append(contentsOf: permittedEmailAddresses.lazy.map { .rfc822Name($0) })
+        self.permittedSubtrees.append(contentsOf: permittedURIDomains.lazy.map { .uniformResourceIdentifier($0) })
+
+        self.excludedSubtrees = []
+        self.excludedSubtrees.reserveCapacity(
+            excludedDNSDomains.underestimatedCount + excludedIPRanges.underestimatedCount
+                + excludedEmailAddresses.underestimatedCount + forbiddenURIDomains.underestimatedCount
+        )
+        self.excludedSubtrees.append(contentsOf: excludedDNSDomains.lazy.map { .dnsName($0) })
+        self.excludedSubtrees.append(contentsOf: excludedIPRanges.lazy.map { .ipAddress($0) })
+        self.excludedSubtrees.append(contentsOf: excludedEmailAddresses.lazy.map { .rfc822Name($0) })
+        self.excludedSubtrees.append(contentsOf: forbiddenURIDomains.lazy.map { .uniformResourceIdentifier($0) })
+    }
+
+     
+     
+     
+     
+     
+    @inlinable
+    public init(
+        permittedSubtrees: [GeneralName] = [],
+        excludedSubtrees: [GeneralName] = []
+    ) {
+        self.permittedSubtrees = permittedSubtrees
+        self.excludedSubtrees = excludedSubtrees
+    }
+
+     
+     
+     
+     
+     
+     
+    @inlinable
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+    public init(_ ext: Certificate.Extension) throws {
+        guard ext.oid == .X509ExtensionID.nameConstraints else {
+            throw CertificateError.incorrectOIDForExtension(
+                reason: "Expected \(ASN1ObjectIdentifier.X509ExtensionID.nameConstraints), got \(ext.oid)"
+            )
+        }
+
+        let nameConstraintsValue = try NameConstraintsValue(derEncoded: ext.value)
+        guard nameConstraintsValue.permittedSubtrees != nil || nameConstraintsValue.excludedSubtrees != nil else {
+            throw ASN1Error.invalidASN1Object(reason: "Name Constraints has no permitted or excluded subtrees")
+        }
+
+        self.permittedSubtrees = nameConstraintsValue.permittedSubtrees ?? []
+        self.excludedSubtrees = nameConstraintsValue.excludedSubtrees ?? []
+    }
+}
+
+extension Hasher {
+    @inlinable
+    mutating func combine(contentsOf elements: some Sequence<some Hashable>) {
+        for element in elements {
+            self.combine(element)
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension NameConstraints: Hashable {}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension NameConstraints: Sendable {}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension NameConstraints: CustomStringConvertible {
+    public var description: String {
+        var elements: [String] = []
+
+        if self.permittedSubtrees.count > 0 {
+            elements.append(
+                "permittedSubtrees: [\(self.permittedSubtrees.map { String(reflecting: $0) }.joined(separator: ", "))]"
+            )
+        }
+        if self.excludedSubtrees.count > 0 {
+            elements.append(
+                "excludedSubtrees: [\(self.excludedSubtrees.map { String(reflecting: $0) }.joined(separator: ", "))]"
+            )
+        }
+
+        return elements.joined(separator: ", ")
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension NameConstraints: CustomDebugStringConvertible {
+    public var debugDescription: String {
+        return "NameConstraints(\(String(describing: self)))"
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension Certificate.Extension {
+     
+     
+     
+     
+     
+    @inlinable
+    public init(_ nameConstraints: NameConstraints, critical: Bool) throws {
+        let asn1Representation = NameConstraintsValue(nameConstraints)
+        var serializer = DER.Serializer()
+        try serializer.serialize(asn1Representation)
+        self.init(oid: .X509ExtensionID.nameConstraints, critical: critical, value: serializer.serializedBytes[...])
+    }
+}
+
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+extension NameConstraints: CertificateExtensionConvertible {
+    public func makeCertificateExtension() throws -> Certificate.Extension {
+        return try .init(self, critical: false)
+    }
+}
+
+ 
+@usableFromInline
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, macCatalyst 13, visionOS 1.0, *)
+struct NameConstraintsValue: DERImplicitlyTaggable {
+    @inlinable
+    static var defaultIdentifier: ASN1Identifier {
+        .sequence
+    }
+
+    @usableFromInline
+    var permittedSubtrees: [GeneralName]?
+
+    @usableFromInline
+    var excludedSubtrees: [GeneralName]?
+
+    @inlinable
+    init(permittedSubtrees: [GeneralName]?, excludedSubtrees: [GeneralName]?) {
+        self.permittedSubtrees = permittedSubtrees
+        self.excludedSubtrees = excludedSubtrees
+    }
+
+    @inlinable
+    init(_ ext: NameConstraints) {
+        if !ext.permittedSubtrees.isEmpty {
+            self.permittedSubtrees = ext.permittedSubtrees
+        }
+        if !ext.excludedSubtrees.isEmpty {
+            self.excludedSubtrees = ext.excludedSubtrees
+        }
+    }
+
+    @inlinable
+    init(derEncoded rootNode: ASN1Node, withIdentifier identifier: ASN1Identifier) throws {
+        self = try DER.sequence(rootNode, identifier: identifier) { nodes in
+            let permittedSubtrees: GeneralSubtrees? = try DER.optionalImplicitlyTagged(
+                &nodes,
+                tag: .init(tagWithNumber: 0, tagClass: .contextSpecific)
+            )
+            let excludedSubtrees: GeneralSubtrees? = try DER.optionalImplicitlyTagged(
+                &nodes,
+                tag: .init(tagWithNumber: 1, tagClass: .contextSpecific)
+            )
+
+            return NameConstraintsValue(
+                permittedSubtrees: permittedSubtrees.map { $0.base },
+                excludedSubtrees: excludedSubtrees.map { $0.base }
+            )
+        }
+    }
+
+    @inlinable
+    func serialize(into coder: inout DER.Serializer, withIdentifier identifier: ASN1Identifier) throws {
+        try coder.appendConstructedNode(identifier: identifier) { coder in
+            try coder.serializeOptionalImplicitlyTagged(
+                self.permittedSubtrees.map { GeneralSubtrees($0) },
+                withIdentifier: .init(tagWithNumber: 0, tagClass: .contextSpecific)
+            )
+
+            try coder.serializeOptionalImplicitlyTagged(
+                self.excludedSubtrees.map { GeneralSubtrees($0) },
+                withIdentifier: .init(tagWithNumber: 1, tagClass: .contextSpecific)
+            )
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@usableFromInline
+struct GeneralSubtrees: DERImplicitlyTaggable {
+    @inlinable
+    static var defaultIdentifier: ASN1Identifier {
+        .sequence
+    }
+
+    @usableFromInline
+    var base: [GeneralName]
+
+    @inlinable
+    init(_ base: [GeneralName]) {
+        self.base = base
+    }
+
+    @inlinable
+    init(derEncoded rootNode: ASN1Node, withIdentifier identifier: ASN1Identifier) throws {
+        self.base = try DER.sequence(rootNode, identifier: identifier) { nodes in
+            var names: [GeneralName] = []
+            while let node = nodes.next() {
+                let name = try DER.sequence(node, identifier: .sequence) { nodes in
+                    try GeneralName(derEncoded: &nodes)
+                }
+                names.append(name)
+            }
+            return names
+        }
+    }
+
+    @inlinable
+    func serialize(into coder: inout DER.Serializer, withIdentifier identifier: ASN1Identifier) throws {
+        try coder.appendConstructedNode(identifier: identifier) { coder in
+            for name in self.base {
+                try coder.appendConstructedNode(identifier: .sequence) { coder in
+                    try coder.serialize(name)
+                }
+            }
+        }
+    }
+}

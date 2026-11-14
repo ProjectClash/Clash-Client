@@ -60,7 +60,7 @@ private struct ClashGroupRefusalDetailOpening: ViewModifier {
             ClashGroupRefusalDetailCard(group: group, title: refusal.result, detail: detail)
         }
 #else
-        content.sheet(isPresented: $isPresented) {
+        content.clashSheet(isPresented: $isPresented) {
             ClashGroupRefusalDetailView(detail: ClashGroupRefusalDetail(group: group, refusal: refusal))
                 .clashModalPresentation(.form)
         }
