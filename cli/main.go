@@ -61,6 +61,7 @@ type globalOptions struct {
 	secret      string
 	secretStdin bool
 	fingerprint string
+	socket      string
 	json        bool
 	timeout     time.Duration
 }
@@ -70,6 +71,7 @@ func run(env environment) int {
 		url:         firstNonEmpty(env.getenv("CLASH_API"), "http://127.0.0.1:9090"),
 		secret:      env.getenv("CLASH_SECRET"),
 		fingerprint: env.getenv("CLASH_FINGERPRINT"),
+		socket:      env.getenv("CLASH_SOCKET"),
 		timeout:     8 * time.Second,
 	}
 	var timeoutErr error
@@ -225,6 +227,7 @@ const usageText = `clash-cli —— Clash App 内置的命令行工具
   --secret 密钥           控制器密钥（$CLASH_SECRET；在 App 的 更多 › 客户端设置 › 外部控制器 里复制）
   --secret-stdin         从标准输入第一行读密钥
   --fingerprint 指纹      期望的证书指纹 sha256:AB:CD:...（$CLASH_FINGERPRINT）；不给时首次连接会问一次并记住
+  --socket 路径          直连本机 App Group socket（$CLASH_SOCKET）；配置库的写入只在这个 socket 上被接受
   --json                 每条命令在 stdout 输出一个 JSON：{"cli":1,"ok":...}
   --timeout 时长          单次请求超时（$CLASH_TIMEOUT，默认 8 秒；不作用于流）
 
@@ -260,8 +263,19 @@ const usageText = `clash-cli —— Clash App 内置的命令行工具
   conn close <id|all>            关闭一条或全部连接（all 会打断下载与 SSH）
   flush fakeip|dns               清空 fake-ip 池或 DNS 缓存
 
+配置库（改 App 里存的那份配置，不动现在的连接，下次连接生效）:
+  profiles                       App 里的配置列表（* 当前）
+  rules append <规则>...         往这份配置里追加规则（--profile <id|名称>，缺省当前配置）
+  rules remove <规则>...         从这份配置里删掉这些规则
+  dns policy                     这份配置的 DNS 策略
+  dns policy set '+.域名=地址[,地址]'...
+                                 合并写入 nameserver-policy
+  dns policy clear [--fake-ip-filter]
+                                 清空 nameserver-policy（或 fake-ip-filter）
+  改的是 App 的配置库（store/profiles.json），不重建派生产物；内核还不支持时退出码 5。
+
 不提供: reload、check（配置由 Clash App 管理和检查，退出码 5）。
 
-退出码: 0 成功；1 控制器报错；2 用法；3 连不上；4 密钥被拒；5 不是 Clash App 的控制器或不支持；
-6 证书指纹不符或未确认。
+退出码: 0 成功；1 控制器报错；2 用法；3 连不上；4 密钥被拒；
+5 不是 Clash App 的控制器或不支持（含配置库不支持）；6 证书指纹不符或未确认。
 `
