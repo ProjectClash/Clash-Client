@@ -81,6 +81,11 @@ final class ClashTVTunnelController: ObservableObject {
     private let container: URL?
     private let session: URLSession
      
+     
+    private let startRecord: @MainActor () -> ClashStartupOutcomeRecord?
+     
+    private let publishedPointer: @MainActor () -> ActiveConfigurationPointer?
+     
     private let autoConnect: ClashTVAutoConnect.Store
      
      
@@ -117,6 +122,7 @@ final class ClashTVTunnelController: ObservableObject {
         if presentation.active, !self.presentation.active {
             pendingCompileDue = clock()
             Task { @MainActor [weak self] in await self?.repairNodeLibrary() }
+            Task { @MainActor [weak self] in await self?.reviewTheRefusalPause(after: "foreground") }
         }
         self.presentation = presentation
         presentationEpoch &+= 1
@@ -204,6 +210,8 @@ final class ClashTVTunnelController: ObservableObject {
         container: URL? = ClashTVTunnelController.defaultContainer,
         session: URLSession = ClashTVNetwork.session,
         autoConnect: ClashTVAutoConnect.Store = ClashTVAutoConnect.Store(),
+        startRecord: (@MainActor () -> ClashStartupOutcomeRecord?)? = nil,
+        publishedPointer: (@MainActor () -> ActiveConfigurationPointer?)? = nil,
         loadProfiles: @escaping ProfileLoader = { try await NETunnelProviderManager.loadAllFromPreferences() },
         makeProfile: @escaping ProfileMaker = { NETunnelProviderManager() },
         preferencesTimeout: TimeInterval = 15,
@@ -227,6 +235,13 @@ final class ClashTVTunnelController: ObservableObject {
         self.pollSleep = pollSleep
         self.session = session
         self.autoConnect = autoConnect
+        self.startRecord = startRecord ?? { [container] in container.flatMap { ClashStartupOutcomeRecord.read(in: $0) } }
+        self.publishedPointer = publishedPointer ?? { [container] in
+             
+             
+            guard let container, let store = try? ConfigResourceStore(containerURL: container) else { return nil }
+            return store.activeIdentityWithoutLock()
+        }
         self.coordinator = ClashTVProfileCoordinator(
             intent: autoConnect.isEnabled,
             persistIntent: { autoConnect.set($0) },
@@ -270,9 +285,12 @@ final class ClashTVTunnelController: ObservableObject {
             report(issue: error.localizedDescription)
         }
         state.autoConnect = autoConnect.isEnabled
+        refusalPause = ClashTVRefusalPause.load(from: ipStackDefaults)
+        state.onDemandPausedForRefusal = refusalPause != nil
         showConfiguration(for: subscription)
         statusChanged()
         preparedSubscription = subscription
+        await reviewTheRefusalPause(after: "launch")
         await repairNodeLibrary()
     }
 
@@ -1045,6 +1063,7 @@ final class ClashTVTunnelController: ObservableObject {
                 }
             )
             state.vpnAuthorization = nil
+            retireTheRefusalPause(why: "reinstalled")
              
              
             startFailureTracker.forgetInstantFailures()
@@ -1154,6 +1173,8 @@ final class ClashTVTunnelController: ObservableObject {
                 break
             }
         }
+         
+        if refusalPause != nil, manager?.isOnDemandEnabled == true { retireTheRefusalPause(why: "on-demand-on") }
     }
 
      
@@ -2410,6 +2431,8 @@ final class ClashTVTunnelController: ObservableObject {
      
 
     private func start(settings: IPStackSettings? = nil, userInitiated: Bool = false) async throws {
+        appStartsInFlight += 1
+        defer { appStartsInFlight -= 1 }
          
          
          
@@ -2432,6 +2455,9 @@ final class ClashTVTunnelController: ObservableObject {
                 self.state.vpnAuthorization = .waiting
             }
         )
+         
+         
+        retireTheRefusalPause(why: "retry")
          
          
          
@@ -2563,6 +2589,7 @@ final class ClashTVTunnelController: ObservableObject {
                 let now = clock()
                 state.connectedSince = min(manager?.connectedDate ?? now, now)
                 state.issue = nil
+                retireTheRefusalPause(why: "connected")
                  
                  
                 state.settle(.connect)
@@ -2613,12 +2640,21 @@ final class ClashTVTunnelController: ObservableObject {
              
              
              
+            if previous != status, previous == .connecting || previous == .disconnecting {
+                ClashLogStore.shared.append(
+                    "tv vpn down  from=\(previous.rawValue) wasUp=\(wasUp) appStart=\(startRequested) stopAsked=\(stopRequested)",
+                    stream: .app)
+            }
             let startNeverCameUp = startRequested && !wasUp
                 && (previous == .connecting || previous == .disconnected || previous == .invalid)
             let droppedWhileUp = wasUp && !stopRequested
             if startNeverCameUp || droppedWhileUp {
                 startRequested = false
                 explainDrop(unexpectedWhileUp: droppedWhileUp)
+            } else if !startRequested, !wasUp, !stopRequested, previous == .connecting {
+                 
+                 
+                Task { @MainActor [weak self] in await self?.systemStartWentDown() }
             }
             stopRequested = false
         @unknown default:
@@ -2656,13 +2692,146 @@ final class ClashTVTunnelController: ObservableObject {
                 await self.connect(subscription: subscription, republishing: true)
                 return
             }
-            if let error {
+            if let error, Self.isCoreRefusal(error) {
+                 
+                 
+                 
+                self.sayDrop(self.refusalSentence(for: error)
+                             ?? Self.dropMessage(for: error as NSError, providerLooksUnlaunched: providerLooksUnlaunched),
+                             unexpectedWhileUp: unexpectedWhileUp)
+                await self.pauseIfTheCoreRefuses(after: "disconnect", notOlderThan: nil)
+            } else if let error {
                 self.sayDrop(Self.dropMessage(for: error as NSError, providerLooksUnlaunched: providerLooksUnlaunched),
                              unexpectedWhileUp: unexpectedWhileUp)
             } else {
                 self.sayDrop(fallback, unexpectedWhileUp: unexpectedWhileUp)
             }
         }
+    }
+
+     
+     
+     
+    private func refusalSentence(for error: Error) -> String? {
+        let error = error as NSError
+        guard error.domain == ClashTunnelStart.startErrorDomain,
+              error.code == ClashTunnelStart.StartErrorCode.coreRefused.rawValue else { return nil }
+        return ClashTVRefusalPause.homeSentence(for: startRecord())
+    }
+
+     
+
+     
+    private var refusalPause: ClashTVRefusalPause?
+     
+     
+    private var appStartsInFlight = 0
+
+     
+    private static func isCoreRefusal(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == ClashTunnelStart.startErrorDomain
+            && error.code == ClashTunnelStart.StartErrorCode.coreRefused.rawValue
+    }
+
+     
+     
+    private var pauseMayWrite: Bool {
+        guard connectTask == nil, appStartsInFlight == 0, !startRequested, !isApplyingIPStack, !stopRequested,
+              let status = manager?.status else { return false }
+        return status == .disconnected || status == .invalid
+    }
+
+     
+     
+     
+     
+     
+     
+    @discardableResult
+    private func pauseIfTheCoreRefuses(after trigger: String, notOlderThan: TimeInterval?) async -> Bool {
+        let asked = coordinator.commandSeq
+        guard pauseMayWrite, let profile = manager, profile.isOnDemandEnabled,
+              let pause = ClashTVRefusalPause.pause(
+                  for: startRecord(), published: publishedPointer(), onDemandEnabled: profile.isOnDemandEnabled,
+                  tunnelUp: state.isConnected, readerIsStopping: stopRequested,
+                  notOlderThan: notOlderThan, now: clock())
+        else { return false }
+        switch await coordinator.pauseOnDemand(askedAt: asked) {
+        case .saved, .indeterminate:
+             
+             
+             
+            refusalPause = pause
+            pause.save(to: ipStackDefaults)
+            state.onDemandPausedForRefusal = true
+            ClashLogStore.shared.append(pause.logLine(after: trigger), stream: .app, level: .warning)
+            return true
+        case .refused(let error):
+            ClashLogStore.shared.append("vpn on-demand pause not saved  after=\(trigger) error=\(error.localizedDescription)",
+                                       stream: .app, level: .warning)
+            return false
+        case .overtaken:
+             
+            ClashLogStore.shared.append("vpn on-demand pause yielded to a newer request  after=\(trigger)", stream: .app)
+            return false
+        case .skipped:
+            return false
+        }
+    }
+
+     
+     
+    private func systemStartWentDown() async {
+         
+         
+        guard let error = await manager?.lastDisconnectError(), Self.isCoreRefusal(error) else { return }
+        let record = startRecord()
+        if let published = publishedPointer(),
+           record?.requested == ClashStartupOutcomeRecord.Revision(profileID: published.profileID, revision: published.revision),
+           let sentence = ClashTVRefusalPause.homeSentence(for: record) {
+            report(issue: sentence)
+        }
+        await pauseIfTheCoreRefuses(after: "status", notOlderThan: nil)
+    }
+
+     
+     
+     
+    private func reviewTheRefusalPause(after trigger: String) async {
+        if await pauseIfTheCoreRefuses(after: trigger, notOlderThan: ClashTVRefusalPause.loopRecordFreshness) {
+            return sayThePausedRefusal()
+        }
+        guard let pause = refusalPause else { return }
+        await coordinator.reloadIfDisarmUnconfirmed()
+        guard let profile = manager else { return }
+        if profile.status == .connected || profile.status == .reasserting { return retireTheRefusalPause(why: "connected") }
+        if profile.isOnDemandEnabled { return retireTheRefusalPause(why: "on-demand-on") }
+         
+        guard let published = publishedPointer() else { return }
+        guard pause.isAbout(.init(profileID: published.profileID, revision: published.revision)) else {
+            return retireTheRefusalPause(why: "published-changed")
+        }
+        sayThePausedRefusal()
+    }
+
+     
+     
+    private func sayThePausedRefusal() {
+        guard let pause = refusalPause, state.issue == nil, !state.isConnected else { return }
+        let record = startRecord()
+        guard pause.stands(given: record), let sentence = ClashTVRefusalPause.homeSentence(for: record) else { return }
+        report(issue: sentence)
+    }
+
+     
+     
+    private func retireTheRefusalPause(why: String) {
+        guard refusalPause != nil || state.onDemandPausedForRefusal else { return }
+        refusalPause = nil
+        ClashTVRefusalPause.clear(in: ipStackDefaults)
+        state.onDemandPausedForRefusal = false
+        ClashLogStore.shared.append("vpn on-demand pause over  reason=\(why)", stream: .app)
     }
 
      

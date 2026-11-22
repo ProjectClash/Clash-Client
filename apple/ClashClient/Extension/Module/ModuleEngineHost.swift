@@ -43,8 +43,9 @@ enum ModuleReinjectCheck {
     }
 
     static func run(port: UInt16, queue: DispatchQueue, timeout: TimeInterval = 2,
-                    authorization: ModuleReinjectAuthorization? = nil, completion: @escaping (Outcome) -> Void) {
-        ModuleReinject.open(port: port, queue: queue, timeout: timeout) { opened in
+                    authorization: ModuleReinjectAuthorization? = nil, log: ModuleEngineLog = .silent,
+                    completion: @escaping (Outcome) -> Void) {
+        ModuleReinject.open(port: port, queue: queue, timeout: timeout, log: log) { opened in
             let stream: ModuleStream
             switch opened {
             case .success(let connected): stream = connected
@@ -1245,7 +1246,7 @@ final class ModuleEngineHost: ModuleTunnelHooks {
         guard checkGeneration == generation, activeOnQueue === current.engine else { return }
         let port = current.entry.assignment.ports.reinject
         ModuleReinjectCheck.run(port: port, queue: queue, timeout: checkTimeout,
-                                 authorization: current.engine.settings.reinjectCredentials) { [weak self] outcome in
+                                 authorization: current.engine.settings.reinjectCredentials, log: log) { [weak self] outcome in
             guard let self, self.checkGeneration == generation, self.activeOnQueue === current.engine else { return }
             switch outcome {
             case .answers:

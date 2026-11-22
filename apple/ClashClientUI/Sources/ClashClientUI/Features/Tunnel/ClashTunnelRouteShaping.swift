@@ -17,6 +17,7 @@ import Foundation
  
  
  
+ 
 public enum ClashTunnelRouteShaping {
     public static let hideVPNIconKey = "vpn.tunnel.hideVPNIcon"
     public static let homeKitCompatibilityKey = "vpn.tunnel.homeKitCompatibility"
@@ -37,6 +38,11 @@ public enum ClashTunnelRouteShaping {
         public var hideVPNIcon: Bool
         public var homeKitCompatibility: Bool
         public var excludeAPNsRoute: Bool
+         
+         
+         
+         
+        public var hideVPNIconHeldOff = false
 
         public init(hideVPNIcon: Bool = false, homeKitCompatibility: Bool = false, excludeAPNsRoute: Bool = false) {
             self.hideVPNIcon = hideVPNIcon
@@ -73,6 +79,37 @@ public enum ClashTunnelRouteShaping {
             if let on = flag("homeKitCompatibility") { switches.homeKitCompatibility = on }
             return switches
         }
+
+         
+         
+         
+         
+         
+         
+         
+        public static func read(from defaults: UserDefaults?, moduleOverlay: URL?, includeAllNetworks: Bool) -> Switches {
+            var switches = read(from: defaults, moduleOverlay: moduleOverlay)
+            if switches.hideVPNIcon, !appliesHideVPNIcon(includeAllNetworks: includeAllNetworks) {
+                switches.hideVPNIcon = false
+                switches.hideVPNIconHeldOff = true
+            }
+            return switches
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func appliesHideVPNIcon(includeAllNetworks: Bool) -> Bool {
+        !includeAllNetworks
     }
 
     public struct V4: Equatable, Sendable {
@@ -232,6 +269,8 @@ public enum ClashTunnelRouteShaping {
         }
     }
 
+     
+     
      
      
      

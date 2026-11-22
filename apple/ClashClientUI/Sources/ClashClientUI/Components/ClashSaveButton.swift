@@ -58,7 +58,9 @@ public struct ClashSaveButton: View {
         .modifier(ClashOptionalIdentifier(identifier: identifier))
          
          
-        .accessibilityValue(isSaving ? Text("Saving") : Text(""))
+         
+         
+        .accessibilityValue(isSaving ? Text(clash: .copy("Saving…")) : Text(""))
     }
 }
 
@@ -86,7 +88,7 @@ public struct ClashActionProgressLabel: View {
                 }
             }
             .accessibilityLabel(Text(clash: title))
-            .accessibilityValue(isBusy ? Text("Saving") : Text(""))
+            .accessibilityValue(isBusy ? Text(clash: .copy("Saving…")) : Text(""))
     }
 }
 

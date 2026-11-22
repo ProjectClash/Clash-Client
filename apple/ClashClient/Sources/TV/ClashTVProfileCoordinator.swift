@@ -36,6 +36,14 @@ final class ClashTVProfileCoordinator {
      
      
      
+    private(set) var commandSeq = 0
+     
+     
+     
+    private(set) var disarmUnconfirmed = false
+     
+     
+     
     private(set) var armedWanted = false
     private var profileStamp = 0
     private var queue: Task<Void, Never>?
@@ -170,6 +178,7 @@ final class ClashTVProfileCoordinator {
      
      
     func setWanted(_ wanted: Bool, apply: @escaping @MainActor (SaveOutcome, Bool) -> Void) async {
+        commandSeq += 1
         intentSeq += 1
         let seq = intentSeq
         intent = wanted
@@ -242,6 +251,7 @@ final class ClashTVProfileCoordinator {
         shouldAbort: @escaping @MainActor () -> Bool,
         onWaiting: @escaping @MainActor () -> Void = {}
     ) async throws {
+        commandSeq += 1
         var failure: Error?
         await serialized { [weak self] in
             guard let self else { return }
@@ -263,6 +273,7 @@ final class ClashTVProfileCoordinator {
                 self.profileStamp += 1
                 try configure(profile)
                 self.arm(profile, wanted: self.intent)
+                self.disarmUnconfirmed = false
                 try await VPNStartAuthorization.perform(
                     save: {
                         do { try await self.enqueueSave(profile).value }
@@ -331,6 +342,7 @@ final class ClashTVProfileCoordinator {
      
      
     func requestStop(performStop: @escaping @MainActor (any ClashTVSystemProfile) -> Void) -> Task<Void, Never> {
+        commandSeq += 1
         let stopped = profile
         let stoppedAtArmedRevision = armedSaveRevision
         if let stopped { performStop(stopped) }
@@ -338,12 +350,12 @@ final class ClashTVProfileCoordinator {
              
              
             _ = try? await systemSaveTail?.value
-            let needsDisarm = armedWanted || profile?.isOnDemandEnabled == true
+            let needsDisarm = armedWanted || profile?.isOnDemandEnabled == true || disarmUnconfirmed
             armedWanted = false
             guard let profile else { return }
             if needsDisarm {
                 arm(profile, wanted: false)
-                try? await enqueueSave(profile).value
+                if (try? await enqueueSave(profile).value) != nil { disarmUnconfirmed = false }
             }
             let armedAfterStop = armedSaveRevision != stoppedAtArmedRevision
             if stopped !== profile || (armedAfterStop &&
@@ -355,5 +367,72 @@ final class ClashTVProfileCoordinator {
 
     func stop(performStop: @escaping @MainActor (any ClashTVSystemProfile) -> Void) async {
         await requestStop(performStop: performStop).value
+    }
+
+     
+     
+    func reloadIfDisarmUnconfirmed() async {
+        guard disarmUnconfirmed else { return }
+        await serialized { [weak self] in
+            guard let self, self.disarmUnconfirmed, let profile = self.profile else { return }
+             
+            _ = try? await self.systemSaveTail?.value
+            guard (try? await ClashTVTunnelController.bounded(self.timeout) { try await profile.loadFromPreferences() }) != nil
+            else { return }
+            if !profile.isOnDemandEnabled { self.disarmUnconfirmed = false }
+            self.armedWanted = profile.isOnDemandEnabled
+        }
+    }
+
+     
+    enum PauseOutcome {
+        case saved
+         
+        case indeterminate
+         
+         
+        case overtaken
+        case refused(Error)
+         
+         
+        case skipped
+    }
+
+     
+     
+     
+     
+     
+    func pauseOnDemand(askedAt seq: Int) async -> PauseOutcome {
+        var outcome = PauseOutcome.skipped
+        await serialized { [weak self] in
+            guard let self, seq == self.commandSeq, let profile = self.profile else { return }
+             
+             
+            do {
+                try await ClashTVTunnelController.bounded(self.timeout) { try await profile.loadFromPreferences() }
+            } catch {
+                outcome = .refused(error)
+                return
+            }
+            guard seq == self.commandSeq, profile.isOnDemandEnabled else { return }
+            self.arm(profile, wanted: false)
+            do {
+                try await self.save(profile)
+                outcome = seq == self.commandSeq ? .saved : .overtaken
+            } catch {
+                if self.isIndeterminate(error) {
+                    self.disarmUnconfirmed = true
+                    outcome = seq == self.commandSeq ? .indeterminate : .overtaken
+                    return
+                }
+                 
+                 
+                 
+                self.arm(profile, wanted: true)
+                outcome = .refused(error)
+            }
+        }
+        return outcome
     }
 }

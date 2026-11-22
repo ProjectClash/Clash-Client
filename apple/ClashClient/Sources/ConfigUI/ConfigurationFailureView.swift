@@ -19,7 +19,8 @@ struct ConfigurationFailureView: View {
         VStack(alignment: .leading, spacing: ClashTheme.Spacing.row) {
              
              
-            ClashStatusMessage(text: .copy(failure.title), kind: .error)
+             
+            ClashStatusMessage(text: failure.putBackTitle ?? .copy(failure.title), kind: .error)
             Text(clash: failure.displayMessage)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)

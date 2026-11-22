@@ -12,6 +12,7 @@ import SwiftUI
  
  
  
+ 
 @MainActor
 final class ConfigurationNodeSourcesModel: ObservableObject {
      
@@ -41,38 +42,38 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
     struct SourceRow: Identifiable, Equatable {
         let id: String
         let label: String
-        var detail: String?
+         
+         
+        var detail: ClashDisplayText?
         var isOn: Bool
         var kind: Kind
-    }
-
-     
-    struct Node: Hashable {
-        let name: String
-        let type: String
-    }
-
-     
-    struct NodeGroup: Identifiable, Equatable {
-        let id: String
-        let label: String
-        let nodes: [Node]
-        let providers: [Node]
+         
+         
+        var switchable = true
+         
+         
+        var hasPage = true
     }
 
     @Published private(set) var rows: [SourceRow] = []
-    @Published private(set) var groups: [NodeGroup] = []
     @Published private(set) var busy = false
     @Published var failure: String?
      
-    @Published private(set) var pressed = ClashPressedSwitches<String>()
+    @Published private(set) var isOriginal = false
      
+     
+     
+     
+     
+     
+    @Published private(set) var picks: [ConfigurationLibraryPicks.Source]?
+     
+    @Published private(set) var pressed = ClashPressedSwitches<String>()
      
     private(set) var library = ConfigurationLibrarySnapshot()
      
      
     private var legacy: [String: ConfigurationSourcePayload] = [:]
-    private var scopes: [String: ConfigurationNodeScope] = [:]
     let model: ProfilesViewModel
     let profileID: String
     var libraryChanged: ((ConfigurationLibrarySnapshot) -> Void)?
@@ -83,47 +84,66 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
         self.libraryChanged = libraryChanged
     }
 
+     
+     
+     
+     
     func load() async {
+        let before = loading
+        let read = Task { @MainActor in
+            await before?.value
+            await self.read()
+        }
+        loading = read
+        await read.value
+    }
+    private var loading: Task<Void, Never>?
+
+    private func read() async {
         do {
             guard let store = model.configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
-            let snapshot = try await Task.detached(priority: .userInitiated) { try store.snapshot() }.value
-            library = snapshot
-            guard let recipe = snapshot.recipes.first(where: { $0.id == profileID }) else {
-                rows = []; groups = []; return
-            }
-            let selected = recipe.sources.map(\.id)
-            scopes = recipe.nodeScopes ?? [:]
-            let records = snapshot.sources.filter {
-                $0.suppliesNodes && ($0.isListedInLibrary || selected.contains($0.id))
-            }
             let locale = AppPreferences.language().locale
-            var rows = records.map { record in
-                SourceRow(id: record.id, label: record.displayLabel(locale: locale),
-                          detail: Self.summary(nodes: record.nodeCount, providers: record.providerCount),
-                          isOn: selected.contains(record.id), kind: Kind.of(record))
+            let profileID = profileID
+            let found = try await Task.detached(priority: .userInitiated) {
+                () throws -> (ConfigurationLibrarySnapshot, [SourceRow], Bool, [ConfigurationLibraryPicks.Source]?)? in
+                let snapshot = try store.snapshot()
+                guard let recipe = snapshot.recipes.first(where: { $0.id == profileID }) else { return nil }
+                let original = recipe.preservesOriginal == true
+                let rows = try Self.rows(of: recipe, in: snapshot, store: store, locale: locale, now: Date())
+                let picks = original ? (try? ConfigurationLibraryPicks.sources(in: store, excludingThoseOf: profileID)) : nil
+                return (snapshot, rows, original, picks)
+            }.value
+            guard let found else {
+                rows = []
+                picks = nil
+                return
             }
+            let (snapshot, listed, original, picked) = found
+            library = snapshot
+            isOriginal = original
+            picks = picked
+            var rows = listed
              
              
-            let known = Set(snapshot.sources.map(\.id))
-            let older = (try? await model.configurationLegacyNodeSources(in: snapshot)) ?? [:]
+             
             legacy = [:]
-            for (owner, payload) in older where owner != profileID {
-                let id = "legacy-" + owner
-                guard !known.contains(id), payload.record.nodeCount > 0 || payload.record.providerCount > 0 else { continue }
-                legacy[id] = payload
-                let label = model.profiles.first { $0.id == owner }?.label ?? payload.record.label
-                rows.append(SourceRow(id: id, label: label,
-                                      detail: Self.summary(nodes: payload.record.nodeCount, providers: payload.record.providerCount),
-                                      isOn: false, kind: .existingProfile))
+            if !original {
+                let known = Set(snapshot.sources.map(\.id))
+                let older = (try? await model.configurationLegacyNodeSources(in: snapshot)) ?? [:]
+                for (owner, payload) in older where owner != profileID {
+                    let id = "legacy-" + owner
+                    guard !known.contains(id), payload.record.nodeCount > 0 || payload.record.providerCount > 0 else { continue }
+                    legacy[id] = payload
+                    let label = model.profiles.first { $0.id == owner }?.label ?? payload.record.label
+                    rows.append(SourceRow(id: id, label: label,
+                                          detail: .verbatim(Self.summary(nodes: payload.record.nodeCount,
+                                                                         providers: payload.record.providerCount)),
+                                          isOn: false, kind: .existingProfile, hasPage: false))
+                }
             }
             self.rows = rows.sorted { lhs, rhs in
                 lhs.kind == rhs.kind ? false : Kind.allCases.firstIndex(of: lhs.kind)! < Kind.allCases.firstIndex(of: rhs.kind)!
             }
-            let scopes = self.scopes
-            let ordered = selected.compactMap { id in snapshot.sources.first { $0.id == id } }
-            groups = try await Task.detached(priority: .userInitiated) {
-                try ordered.map { record in try Self.group(of: record, scope: scopes[record.id], in: store) }
-            }.value
         } catch {
             failure = error.localizedDescription
         }
@@ -132,12 +152,62 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
      
      
      
-    func isOn(_ id: String) -> Bool { pressed.shown(id, else: rows.first { $0.id == id }?.isOn ?? false) }
+    nonisolated static func rows(of recipe: ConfigurationRecipe, in snapshot: ConfigurationLibrarySnapshot,
+                                 store: ConfigurationLibraryStore, locale: Locale, now: Date) throws -> [SourceRow] {
+        let selected = recipe.sources.map(\.id)
+        let original = recipe.preservesOriginal == true
+        let records = snapshot.sources.filter {
+            $0.suppliesNodes && ($0.isListedInLibrary || selected.contains($0.id) || (original && $0.id == recipe.ruleSource.id))
+        }
+        return try records.map { record in
+            let kind = Kind.of(record)
+            if original {
+                let own = record.id == recipe.ruleSource.id
+                let detail: ClashDisplayText = own
+                    ? .format(record.nodeCount == 1 ? "Original Configuration · %@ node" : "Original Configuration · %@ nodes",
+                              [String(record.nodeCount)])
+                    : .verbatim(ClashConfigurationSourceCopy.summary(record, locale: locale))
+                let isLink: Bool = {
+                    guard record.nodeChain == nil, record.isRetainedSnapshot != true, case .subscription = record.origin else { return false }
+                    return true
+                }()
+                return SourceRow(id: record.id, label: record.displayLabel(locale: locale), detail: detail,
+                                 isOn: own, kind: kind, switchable: !own && isLink)
+            }
+            var detail: ClashDisplayText = .verbatim(ClashConfigurationSourceCopy.summary(record, locale: locale))
+            if let reference = recipe.sources.first(where: { $0.id == record.id }), let scope = recipe.nodeScopes?[record.id] {
+                 
+                let names = nodeNames(in: try OrderedJSON.parse(try store.payload(reference).documentJSON))
+                let picked = ClashCopy.string(for: NodeSourceDetailCopy.selected(names.filter { scope.choosesNode(named: $0) }.count,
+                                                                                 of: names.count), locale: locale)
+                detail = .verbatim(picked + " · " + ProxyNodeLibraryCopy.lastUpdated(record, locale: locale, now: now))
+            }
+            return SourceRow(id: record.id, label: record.displayLabel(locale: locale), detail: detail,
+                             isOn: selected.contains(record.id), kind: kind)
+        }
+    }
 
      
-    func scope(of id: String) -> ConfigurationNodeScope? { scopes[id] }
+    nonisolated static func nodeNames(in document: OrderedJSON) -> [String] {
+        guard case .array(let nodes)? = document.topLevelValue("proxies") else { return [] }
+        return nodes.compactMap { node in
+            if case .string(let name)? = node.topLevelValue("name") { return name }
+            return nil
+        }
+    }
+
+     
+     
+     
+    func isOn(_ id: String) -> Bool { pressed.shown(id, else: rows.first { $0.id == id }?.isOn ?? false) }
 
     func record(of id: String) -> ConfigurationSourceRecord? { library.sources.first { $0.id == id } }
+
+     
+    var configurationName: String {
+        model.profiles.first { $0.id == profileID }.map { ProfileRowPresentation.label(for: $0, locale: AppPreferences.language().locale) }
+            ?? library.recipes.first { $0.id == profileID }?.label ?? ""
+    }
 
      
      
@@ -165,18 +235,6 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
         await edit { draft in
             if on { if !draft.selectedSourceIDs.contains(id) { draft.selectedSourceIDs.append(id) } }
             else { draft.selectedSourceIDs.removeAll { $0 == id } }
-        }
-    }
-
-     
-     
-    func setScope(_ id: String, _ scope: ConfigurationNodeScope?) async {
-        await edit { draft in
-            var scopes = draft.nodeScopes ?? [:]
-            scopes[id] = scope?.isEmpty == true ? nil : scope
-            draft.nodeScopes = scopes.isEmpty ? nil : scopes
-            if scope?.isEmpty == true { draft.selectedSourceIDs.removeAll { $0 == id } }
-            else if !draft.selectedSourceIDs.contains(id) { draft.selectedSourceIDs.append(id) }
         }
     }
 
@@ -290,16 +348,17 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
             ? .init(id: "rules-" + payload.record.id, label: payload.record.label, kind: .supplied, sourceID: payload.record.id) : nil
         draft.add(payload, rule: rule)
     }
+}
 
+ 
+enum ConfigurationNodeSourcesCopy {
      
+    static func title(_ configuration: String) -> ClashDisplayText { .format("Node Sources of “%@”", [configuration]) }
      
+    static func onlyHere(_ configuration: String) -> ClashDisplayText { .format("Changes here apply only to “%@”.", [configuration]) }
      
-    nonisolated static func group(of record: ConfigurationSourceRecord, scope: ConfigurationNodeScope?,
-                                  in store: ConfigurationLibraryStore) throws -> NodeGroup {
-        let group = try ConfigurationSourceContents.group(of: record, scope: scope, in: store)
-        return NodeGroup(id: group.id, label: record.displayLabel(locale: AppPreferences.language().locale),
-                         nodes: group.nodes.map { Node(name: $0.name, type: $0.type) },
-                         providers: group.providers.map { Node(name: $0.name, type: $0.type) })
+    static func turningOnStopsFollowing(_ configuration: String) -> ClashDisplayText {
+        .format("Once turned on, “%@” no longer follows its link.", [configuration])
     }
 }
 
@@ -309,22 +368,22 @@ final class ConfigurationNodeSourcesModel: ObservableObject {
  
  
  
+ 
 struct ConfigurationNodeSourcesPage: View {
     @ObservedObject var model: ProfilesViewModel
+     
     let section: ConfigurationOutlineSection
     @StateObject private var sources: ConfigurationNodeSourcesModel
-    @State private var adding = false
-    @State private var managing = false
-    @State private var scoping: ScopeTarget?
-    @Environment(\.configurationFieldCopy) private var fieldCopy
-    @Environment(\.locale) private var locale
-
+    @StateObject private var quickAdd: ProfileQuickAddController
      
-    private struct ScopeTarget: Identifiable {
-        let record: ConfigurationSourceRecord
-        let scope: ConfigurationNodeScope?
-        var id: String { record.id }
-    }
+     
+    @StateObject private var original: ConfigurationEditorSession
+    @State private var inspected: String?
+     
+    @State private var originalDoor: OriginalAddNodesDoor?
+    @State private var showsNewNode = false
+    @State private var showsNewChain = false
+    @Environment(\.locale) private var locale
 
     init(model: ProfilesViewModel, profileID: String, section: ConfigurationOutlineSection = .proxies,
          libraryChanged: ((ConfigurationLibrarySnapshot) -> Void)? = nil) {
@@ -332,95 +391,140 @@ struct ConfigurationNodeSourcesPage: View {
         self.section = section
         _sources = StateObject(wrappedValue: ConfigurationNodeSourcesModel(model: model, profileID: profileID,
                                                                            libraryChanged: libraryChanged))
+        _quickAdd = StateObject(wrappedValue: ProfileQuickAddController(model: model, target: .source))
+        _original = StateObject(wrappedValue: ConfigurationEditorSession(profileID: profileID, model: model))
     }
 
     var body: some View {
-         
-        let nodeTypes = ConfigurationTypeWords.names(.proxies, copy: fieldCopy, locale: locale)
-        let providerTypes = ConfigurationTypeWords.names(.proxyProviders, copy: fieldCopy, locale: locale)
         List {
             if let failure = sources.failure {
                 Section { Text(verbatim: failure).foregroundStyle(.red) }
             }
-            ForEach(ConfigurationNodeSourcesModel.Kind.allCases, id: \.self) { kind in
-                let items = sources.rows.filter { $0.kind == kind }
-                if !items.isEmpty {
-                    Section {
-                        ForEach(items) { row in sourceToggle(row) }
-                    } header: {
-                        Text(clash: .copy(kind.title))
-                    }
-                }
+            if sources.isOriginal {
+                OriginalNodeSourcesSections(session: original, configurationName: sources.configurationName,
+                                            rows: sources.rows, picks: sources.picks, door: $originalDoor,
+                                            inspect: { inspected = $0 })
+            } else {
+                composedRows
+                addCard
             }
             Section {
-                Button { managing = true } label: { Text(clash: .copy("Manage Node Sources")) }
-                     
-                     
-                    .disabled(sources.busy)
-                    .accessibilityIdentifier("configuration-editor.sources.manage")
-            }
-            ForEach(sources.groups) { group in
-                Section {
-                    if section != .proxyProviders {
-                        ForEach(group.nodes, id: \.self) { node in
-                            ConfigurationRowLabel(title: .verbatim(node.name),
-                                                  value: .verbatim(ConfigurationTypeWords.word(node.type, in: nodeTypes)))
-                                .accessibilityIdentifier("configuration-editor.sources.node.\(node.name)")
-                        }
-                    }
-                    ForEach(group.providers, id: \.self) { provider in
-                        ConfigurationRowLabel(title: .verbatim(provider.name),
-                                              value: .verbatim(ConfigurationTypeWords.word(provider.type, in: providerTypes)))
-                            .accessibilityIdentifier("configuration-editor.sources.provider.\(provider.name)")
-                    }
-                    if let record = sources.record(of: group.id) {
-                        Button { scoping = ScopeTarget(record: record, scope: sources.scope(of: group.id)) } label: {
-                            Text(clash: .copy("Select Nodes"))
-                        }
+                ClashNativeNavigationLink {
+                    ConfigurationSourceLibraryAdapter(model: model, library: sources.library, changed: { _ in }, close: {},
+                                                      embedded: true, showsClose: false)
+                        .clashPageTitle(.copy("Node Library"))
+                        .environment(\.clashProductModalDismiss, nil)
                          
-                        .disabled(sources.busy)
-                        .accessibilityIdentifier("configuration-editor.sources.scope.\(group.id)")
-                    }
-                } header: {
-                    Text(verbatim: group.label)
+                         
+                         
+                         
+                        .clashOnScreen { onScreen in if !onScreen { Task { await sources.load() } } }
+                } label: {
+                    Text(clash: .copy("Manage Node Sources"))
                 }
+                 
+                 
+                .disabled(sources.busy)
+                .accessibilityIdentifier("configuration-editor.sources.manage")
             }
         }
          
          
-        .navigationTitle(Text(clash: .copy(ConfigurationEditorCopy.title(of: section))))
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                ControlGroup {
-                    Button { adding = true } label: { Image(systemName: ClashSymbol.plus.name) }
-                        .disabled(sources.busy)
-                        .accessibilityLabel(Text(clash: .copy("Add Source")))
-                        .accessibilityIdentifier("configuration-editor.sources.add")
-                }
-                .clashReaderControlGroupStyle()
-            }
-        }
+        .clashPageTitle(ConfigurationNodeSourcesCopy.title(sources.configurationName))
         .task { await sources.load() }
-        .clashSheet(isPresented: $adding, onDismiss: { Task { await sources.load() } }) {
-            ConfigurationSourceImportAdapter(model: model, kind: .subscription, choosesKind: true,
-                                             finishImport: { adding = false }) { payload in
-                try await sources.add(payload)
+         
+         
+        .task(id: originalRevision) { if sources.isOriginal { await original.reload() } }
+        .configurationPushedAlertHost(original)
+         
+        .originalAddNodesPages($originalDoor, session: original)
+         
+         
+         
+         
+         
+        .onChange(of: model.libraryContentEpoch) { _ in Task { await sources.load() } }
+        .onReceive(model.$savedConfigurationGeneration.dropFirst()) { _ in Task { await sources.load() } }
+        .profileQuickAddPresenters(quickAdd)
+        .onAppear { quickAdd.onNodeSourceAdded = { switchOn($0.id) } }
+        .clashProductModal(isPresented: $showsNewNode, role: .page) {
+            ConfigurationNewNodeAdapter(model: model, library: nil, changed: { _ in }, close: { showsNewNode = false },
+                                        added: { switchOn($0.id) })
+        }
+        .clashProductModal(isPresented: $showsNewChain, role: .page) {
+            ConfigurationChainEditor(model: model, existing: nil, accept: { payload in
+                guard let store = model.configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
+                let generation = try await Task.detached { try store.snapshot().generation }.value
+                _ = try await model.addConfigurationSource(payload, generation: generation)
+                switchOn(payload.record.id)
+            }, close: { showsNewChain = false })
+        }
+        .background(ClashRoutedViewDestination(isPresented: Binding(get: { inspected != nil },
+                                                                    set: { if !$0 { inspected = nil } })) {
+            if let id = inspected {
+                NodeSourceDetailPage(model: model, sourceID: id,
+                                     configuration: .init(id: sources.profileID, name: sources.configurationName),
+                                     changed: { _ in Task { await sources.load() } },
+                                     close: { inspected = nil })
             }
-            .clashModalPresentation(.page)
+        })
+    }
+
+    private var originalRevision: String {
+        guard sources.isOriginal else { return "" }
+        return "original|" + (model.profiles.first { $0.id == sources.profileID }?.activeRevision ?? "")
+    }
+
+     
+     
+    @ViewBuilder
+    private var composedRows: some View {
+        let kinds = ConfigurationNodeSourcesModel.Kind.allCases.filter { kind in sources.rows.contains { $0.kind == kind } }
+        ForEach(kinds, id: \.self) { kind in
+            Section {
+                ForEach(sources.rows.filter { $0.kind == kind }) { row in sourceRow(row) }
+            } header: {
+                Text(clash: .copy(kind.title))
+            } footer: {
+                if kind == kinds.last {
+                    Text(clash: ConfigurationNodeSourcesCopy.onlyHere(sources.configurationName))
+                        .accessibilityIdentifier("configuration-editor.sources.only-here")
+                }
+            }
         }
-        .clashSheet(isPresented: $managing, onDismiss: { Task { await sources.load() } }) {
-            ConfigurationSourceLibraryAdapter(model: model, library: sources.library,
-                                              changed: { _ in }, close: { managing = false })
-                .clashModalPresentation(.page)
+    }
+
+     
+     
+    private var addCard: some View {
+        ProfileQuickAddCard(
+            controller: quickAdd,
+            identifiers: .init(linkIdentifier: "configuration-editor.sources.add.link",
+                               scanIdentifier: "configuration-editor.sources.add.scan",
+                               fileIdentifier: "configuration-editor.sources.add.file",
+                               manualIdentifier: "configuration-editor.sources.add.manual",
+                               statusIdentifier: "configuration-editor.sources.add.status"),
+            manual: { showsNewNode = true },
+            footer: .format("Node sources you add are used for “%@”.", [sources.configurationName]),
+            moreRows: AnyView(
+                Button { showsNewChain = true } label: {
+                    Label(ClashCopy.key("New Proxy Chain"), systemImage: ClashSymbol.link.name)
+                }
+                .disabled(sources.busy)
+                .accessibilityIdentifier("configuration-editor.sources.add.chain")
+            )
+        )
+         
+        .disabled(sources.busy)
+    }
+
+    private func sourceRow(_ row: ConfigurationNodeSourcesModel.SourceRow) -> some View {
+        HStack(spacing: ClashClientUI.ClashTheme.Spacing.row) {
+            sourceToggle(row)
+            if row.hasPage { NodeSourceInfoButton(id: row.id) { inspected = row.id } }
         }
-        .clashSheet(item: $scoping) { target in
-            ConfigurationNodeScopeAdapter(model: model, source: target.record, staged: nil, initial: target.scope,
-                                          save: { scope in
-                                              scoping = nil
-                                              Task { await sources.setScope(target.record.id, scope) }
-                                          }, close: { scoping = nil })
-                .clashModalPresentation(.page)
-        }
+         
+        .accessibilityElement(children: .contain)
     }
 
     private func sourceToggle(_ row: ConfigurationNodeSourcesModel.SourceRow) -> some View {
@@ -428,14 +532,52 @@ struct ConfigurationNodeSourcesPage: View {
          
          
         Toggle(isOn: Binding(get: { sources.isOn(row.id) }, set: { sources.pressSource(row.id, on: $0) })) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: row.label)
-                if let detail = row.detail {
-                    Text(verbatim: detail).font(.footnote).foregroundStyle(.secondary)
-                }
-            }
+            NodeSourceRowLabel(row: row)
         }
         .accessibilityIdentifier("configuration-editor.sources.source.\(row.id)")
+    }
+
+     
+     
+    private func switchOn(_ id: String) {
+        Task { @MainActor in
+            await sources.load()
+            sources.pressSource(id, on: true)
+        }
+    }
+}
+
+ 
+struct NodeSourceRowLabel: View {
+    let row: ConfigurationNodeSourcesModel.SourceRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: row.label)
+            if let detail = row.detail {
+                Text(clash: detail).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+ 
+struct NodeSourceInfoButton: View {
+    let id: String
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            Image(systemName: ClashSymbol.infoCircle.name)
+                .font(.title3)
+                .foregroundStyle(.tint)
+                .frame(width: ClashClientUI.ClashTheme.Control.minimumHitTarget,
+                       height: ClashClientUI.ClashTheme.Control.minimumHitTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(Text(clash: .copy("Details")))
+        .accessibilityIdentifier("configuration-editor.sources.info.\(id)")
     }
 }
 
@@ -451,7 +593,6 @@ struct ConfigurationNodeSourcesSheet: View {
     var body: some View {
         ClashFeatureNavigationContainer {
             ConfigurationNodeSourcesPage(model: model, profileID: profileID, section: .proxies, libraryChanged: libraryChanged)
-                .navigationTitle(Text(clash: .copy("Node Sources")))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {

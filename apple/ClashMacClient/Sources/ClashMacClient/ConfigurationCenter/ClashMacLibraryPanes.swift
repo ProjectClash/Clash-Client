@@ -207,12 +207,17 @@ public struct ClashMacSchemePane: View {
         .sheet(isPresented: $renaming) {
             ClashMacNamePrompt(
                 title: .copy("Rename…"),
-                initial: scheme.displayLabel,
+                 
+                 
+                 
+                 
+                 
+                initial: scheme.labelAsRead(locale: locale),
                 nameIdentifier: "configuration-center.scheme.rename.name",
                 cancelIdentifier: "configuration-center.scheme.rename.cancel",
                 saveIdentifier: "configuration-center.scheme.rename.save",
-                commit: { name in
-                    try await actions.rename?(name.trimmingCharacters(in: .whitespacesAndNewlines))
+                commit: { typed in
+                    if let name = scheme.newName(typed: typed, locale: locale) { try await actions.rename?(name) }
                     renaming = false
                 },
                 close: { renaming = false }
@@ -509,6 +514,16 @@ public enum ClashMacCollectionUpdateStep: Equatable, Sendable {
 
  
  
+public struct ClashMacCollectionInUse: Equatable, Sendable {
+    public var count: Int
+     
+     
+    public var ofThisCopy: Bool
+    public init(count: Int, ofThisCopy: Bool = false) { self.count = count; self.ofThisCopy = ofThisCopy }
+}
+
+ 
+ 
  
  
 public struct ClashMacCollectionPageActions {
@@ -520,7 +535,10 @@ public struct ClashMacCollectionPageActions {
     public var update: (@MainActor (_ step: @escaping @MainActor (ClashMacCollectionUpdateStep) -> Void) async throws -> String?)?
      
      
-    public var runningCount: (@MainActor () async -> Int?)?
+     
+     
+     
+    public var runningCount: (@MainActor () async -> ClashMacCollectionInUse?)?
      
      
     public var runningCountChanges: AnyPublisher<Void, Never>?
@@ -528,6 +546,11 @@ public struct ClashMacCollectionPageActions {
      
      
     public var inSharedRun: AnyPublisher<Bool, Never>?
+     
+     
+     
+     
+    public var copyChanges: AnyPublisher<Void, Never>?
     public var createScheme: (@MainActor () async throws -> Void)?
     public var editSource: (@MainActor () -> Void)?
     public var delete: (@MainActor () async throws -> Void)?
@@ -592,7 +615,10 @@ public struct ClashMacCollectionPane: View {
      
     @State private var updateWord: String?
      
-    @State private var runningCount: Int?
+     
+    @State private var updateWordSaidAt: Date?
+     
+    @State private var runningCount: ClashMacCollectionInUse?
      
      
     @State private var countTicket = 0
@@ -609,6 +635,7 @@ public struct ClashMacCollectionPane: View {
         self.actions = actions
         _countChanges = State(initialValue: actions.runningCountChanges ?? Empty().eraseToAnyPublisher())
         _sharedRun = State(initialValue: actions.inSharedRun ?? Empty().eraseToAnyPublisher())
+        _copyChanges = State(initialValue: actions.copyChanges ?? Empty().eraseToAnyPublisher())
     }
 
      
@@ -617,26 +644,22 @@ public struct ClashMacCollectionPane: View {
      
     @State private var countChanges: AnyPublisher<Void, Never>
     @State private var sharedRun: AnyPublisher<Bool, Never>
+    @State private var copyChanges: AnyPublisher<Void, Never>
 
     private static let dateFormatters = ClashMacDateFormatterCache(dateStyle: .medium, timeStyle: .short)
 
     private var status: String {
         var parts: [String] = []
         if let sourceLabel { parts.append(sourceLabel) }
-        if let count = page?.count {
-            let text: ClashDisplayText = collection.id.kind == .nodes
-                ? .count(count, one: "%@ node", other: "%@ nodes") : .count(count, one: "%@ rule", other: "%@ rules")
-            parts.append(ClashCopy.string(for: text, locale: locale))
-        }
          
          
          
          
-        if let runningCount, runningCount != page?.count {
-            parts.append(ClashCopy.format(
-                collection.id.kind == .nodes ? "%@ nodes in the configuration in use" : "%@ rules in the configuration in use",
-                locale: locale, String(runningCount)))
-        }
+         
+        parts += ClashConfigurationCollectionCopy.members(
+            of: collection, count: page?.count, inUse: runningCount?.count,
+            inUseIsThisCopy: runningCount?.ofThisCopy ?? false
+        ).map { ClashCopy.string(for: $0, locale: locale) }
         if let date = page?.updatedAt { parts.append(Self.dateFormatters.formatter(for: locale).string(from: date)) }
         if let message = page?.message { parts.append(message) }
         return parts.joined(separator: " · ")
@@ -667,6 +690,12 @@ public struct ClashMacCollectionPane: View {
             let was = sharedRunHasThis
             sharedRunHasThis = inFlight
             if was && !inFlight { Task { await refreshIfChanged(); await loadRunningCount() } }
+        }
+         
+         
+         
+        .onReceive(copyChanges) { _ in
+            Task { await refreshIfChanged(); await loadRunningCount() }
         }
         .alert(Text(clash: .copy("Delete Collection")), isPresented: $confirmsDeletion) {
             Button(role: .destructive) {
@@ -817,6 +846,7 @@ public struct ClashMacCollectionPane: View {
             if offset == 0 {
                 page = loaded
                 shownTicket = ticket
+                retireUpdateWordIfPassed()
             } else {
                 var merged = loaded
                 merged.rows = (page?.rows ?? []) + loaded.rows
@@ -844,6 +874,7 @@ public struct ClashMacCollectionPane: View {
         updating = true
         updateFailure = nil
         updateWord = nil
+        updateWordSaidAt = nil
         defer { updating = false; updatePhase = nil }
         var shownCopy = false
         do {
@@ -870,8 +901,20 @@ public struct ClashMacCollectionPane: View {
         } catch {
             updateFailure = ClashErrorCopy.message(error, locale: locale)
         }
+        if updateWord != nil { updateWordSaidAt = Date() }
         if !shownCopy { await load() }
         await loadRunningCount()
+    }
+
+     
+     
+     
+     
+    private func retireUpdateWordIfPassed() {
+        guard updateWord != nil, let saidAt = updateWordSaidAt,
+              !ClashConfigurationCollectionCopy.updateWordStands(saidAt: saidAt, lineUpdatedAt: page?.updatedAt) else { return }
+        updateWord = nil
+        updateWordSaidAt = nil
     }
 
      
@@ -887,6 +930,7 @@ public struct ClashMacCollectionPane: View {
         shownTicket = readTicket
         page = fresh
         error = nil
+        retireUpdateWordIfPassed()
     }
 
     private func loadRunningCount() async {

@@ -178,39 +178,28 @@ struct ClashMacSecretField: View {
     @Binding var draft: ClashMacFieldDraft
     let title: Text
     let prompt: String?
+     
+     
+     
+     
     let secure: Bool
-    @State private var revealed = false
 
     private var generates: Bool { !draft.path.hasPrefix("proxies") }
 
     var body: some View {
         LabeledContent {
             HStack(spacing: 6) {
-                field
-                if secure {
-                    Button { revealed.toggle() } label: { Text(clash: .copy(revealed ? "Hide" : "Show")) }
-                        .accessibilityIdentifier("configuration-center.section.field.reveal")
-                }
+                TextField(text: $draft.text, prompt: prompt.map { Text(verbatim: $0) }) { title }
+                    .labelsHidden()
+                    .font(.body.monospaced())
+                    .disableAutocorrection(true)
+                    .accessibilityIdentifier("configuration-center.section.field.text")
                 if generates {
                     Button(action: generate) { Text(clash: .copy("Generate")) }
                         .accessibilityIdentifier("configuration-center.section.field.generate")
                 }
             }
         } label: { title }
-    }
-
-    @ViewBuilder
-    private var field: some View {
-        if secure && !revealed {
-            SecureField(text: $draft.text, prompt: prompt.map { Text(verbatim: $0) }) { title }
-                .labelsHidden()
-                .accessibilityIdentifier("configuration-center.section.field.secret")
-        } else {
-            TextField(text: $draft.text, prompt: prompt.map { Text(verbatim: $0) }) { title }
-                .labelsHidden()
-                .disableAutocorrection(true)
-                .accessibilityIdentifier("configuration-center.section.field.text")
-        }
     }
 
     private func generate() {

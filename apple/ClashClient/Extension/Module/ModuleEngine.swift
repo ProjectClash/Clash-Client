@@ -1049,7 +1049,8 @@ final class ModuleEngine {
     func reinject(_ authority: String, outbound: String? = nil,
                   _ completion: @escaping (Result<ModuleStream, ModuleUpstreamFailure>) -> Void) {
         ModuleReinject.connect(authority: authority, port: settings.reinjectPort, queue: queue,
-                                authorization: settings.reinjectCredentials, outbound: outbound, completion: completion)
+                                authorization: settings.reinjectCredentials, outbound: outbound, log: log,
+                                completion: completion)
     }
 
      
@@ -1409,7 +1410,7 @@ final class ModuleEngineSession {
         }
         engine.metrics.update { $0.passThroughSessionsTotal += 1 }
         count(target.authority)
-        ModuleReinject.open(port: engine.settings.reinjectPort, queue: engine.queue) { [self] result in
+        ModuleReinject.open(port: engine.settings.reinjectPort, queue: engine.queue, log: engine.log) { [self] result in
             guard !ended else { if case .success(let upstream) = result { upstream.cancel() }; return }
             switch result {
             case .success(let upstream): relay(to: upstream, first: request)

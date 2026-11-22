@@ -134,6 +134,10 @@ public struct ConfigurationRuleDraft: Equatable, Sendable {
     public private(set) var schemeID: String
     public private(set) var version: ConfigurationSourceVersion
     public var label: String
+     
+     
+     
+    public private(set) var builtinsName: String? = nil
     public private(set) var rows: [Row]
     public private(set) var originalDocument: OrderedJSON
     public private(set) var generatedRuleGroups: [String: String]
@@ -167,6 +171,7 @@ public struct ConfigurationRuleDraft: Equatable, Sendable {
 
     public init(scheme: ConfigurationRuleScheme, payload: ConfigurationSourcePayload) throws {
         schemeID = scheme.id; version = .init(payload.record); label = scheme.label
+        builtinsName = scheme.builtinNamedAfter == nil ? nil : scheme.label
         generatedRuleGroups = scheme.generatedRuleGroups ?? [:]
         disabledRules = Set(scheme.disabledRules ?? [])
         notes = scheme.ruleNotes ?? [:]
@@ -289,6 +294,7 @@ public struct ConfigurationRuleDraft: Equatable, Sendable {
         var result = self
         result.schemeID = saved.schemeID
         result.label = saved.label
+        result.builtinsName = saved.builtinsName
         result.version = saved.version
         result.originalDocument = saved.originalDocument
         return result
@@ -940,22 +946,139 @@ public extension ConfigurationRuleDraft {
     }
 
     mutating func deleteRoutingGroup(_ id: UUID) throws {
-        guard let group = groups.first(where: { $0.id == id }) else { return }
+        try deleteRoutingGroupRestorably(id)
+    }
+
+     
+     
+     
+     
+    @discardableResult
+    mutating func deleteRoutingGroupRestorably(_ id: UUID) throws -> ConfigurationRuleGroupDeletion? {
+        guard let index = groups.firstIndex(where: { $0.id == id }) else { return nil }
+        let group = groups[index]
         var candidate = self
          
          
-        candidate.rows.removeAll { row in
-            guard !row.isFinal else { return false }
-             
-             
-             
-             
-            let fields = row.raw.components(separatedBy: ",")
-            return Self.groupTargetIndex(fields).map { fields[$0].trimmingCharacters(in: .whitespaces) == group.name } ?? false
+        var taken: [ConfigurationRuleGroupDeletion.Rule] = []
+        var takenIDs = Set<UUID>()
+        for (place, row) in rows.enumerated() where !row.isFinal && Self.routes(row.raw, to: group.name) {
+            taken.append(.init(index: place, raw: row.raw, isEnabled: isEnabled(row.raw), note: note(for: row.raw)))
+            takenIDs.insert(row.id)
         }
+        candidate.rows.removeAll { takenIDs.contains($0.id) }
         try candidate.removeGroups([id])
         self = candidate
+        return ConfigurationRuleGroupDeletion(group: group.document, index: index, rules: taken)
     }
+
+     
+     
+     
+     
+     
+     
+    mutating func restoreGroupDeletion(_ deletion: ConfigurationRuleGroupDeletion) throws {
+        guard !groups.contains(where: { $0.name == deletion.name }) else {
+            throw ConfigurationRuleGroupError.duplicate(deletion.name)
+        }
+        var candidate = self
+        candidate.groups.insert(.init(document: deletion.group), at: min(max(deletion.index, 0), candidate.groups.count))
+        for rule in deletion.rules.sorted(by: { $0.index < $1.index }) {
+            candidate.rows.insert(.init(raw: rule.raw), at: min(max(rule.index, 0), Self.pinnedFinalIndex(candidate.rows)))
+            if rule.isEnabled { candidate.disabledRules.remove(rule.raw) } else { candidate.disabledRules.insert(rule.raw) }
+            if rule.note.isEmpty { candidate.notes.removeValue(forKey: rule.raw) } else { candidate.notes[rule.raw] = rule.note }
+        }
+        try candidate.validateGroupNamesAndCycles()
+        self = candidate
+    }
+
+     
+     
+     
+     
+     
+     
+    func groupUsers(_ id: UUID) -> ConfigurationRuleGroupUsers {
+        guard let group = groups.first(where: { $0.id == id }) else { return .init() }
+        let name = group.name
+        let naming = groups.filter { $0.id != id && Self.names(name, in: $0.document) }
+        let finalRule = rows.contains { $0.isFinal && Self.routes($0.raw, to: name) }
+         
+         
+        var probe = self
+        let counted = Set(naming.map(\.id) + [id])
+        probe.rows.removeAll { Self.routes($0.raw, to: name) }
+        probe.groups.removeAll { counted.contains($0.id) }
+        let before = probe.currentDocument()
+        probe.rewriteReferences(from: name, to: UUID().uuidString)
+        return .init(groups: naming.map(\.name), finalRule: finalRule, elsewhere: probe.currentDocument() != before)
+    }
+
+     
+     
+     
+     
+    private static func routes(_ raw: String, to group: String) -> Bool {
+        let fields = raw.components(separatedBy: ",")
+        return groupTargetIndex(fields).map { fields[$0].trimmingCharacters(in: .whitespaces) == group } ?? false
+    }
+
+     
+     
+    private static func names(_ name: String, in document: OrderedJSON) -> Bool {
+        if case .array(let members)? = document.topLevelValue("proxies"), members.contains(.string(name)) { return true }
+        return ["default-selected", "dialer-proxy"].contains { document.topLevelValue($0) == .string(name) }
+    }
+}
+
+ 
+ 
+ 
+public struct ConfigurationRuleGroupDeletion: Equatable, Sendable {
+    public struct Rule: Equatable, Sendable {
+         
+        public let index: Int
+        public let raw: String
+        public let isEnabled: Bool
+        public let note: String
+        public init(index: Int, raw: String, isEnabled: Bool, note: String) {
+            self.index = index; self.raw = raw; self.isEnabled = isEnabled; self.note = note
+        }
+    }
+
+     
+    public let group: OrderedJSON
+     
+    public let index: Int
+     
+    public let rules: [Rule]
+
+    public init(group: OrderedJSON, index: Int, rules: [Rule]) {
+        self.group = group; self.index = index; self.rules = rules
+    }
+
+    public var name: String {
+        if case .string(let value)? = group.topLevelValue("name") { return value }
+        return ""
+    }
+}
+
+ 
+public struct ConfigurationRuleGroupUsers: Equatable, Sendable {
+     
+    public var groups: [String]
+     
+    public var finalRule: Bool
+     
+     
+    public var elsewhere: Bool
+
+    public init(groups: [String] = [], finalRule: Bool = false, elsewhere: Bool = false) {
+        self.groups = groups; self.finalRule = finalRule; self.elsewhere = elsewhere
+    }
+
+    public var isEmpty: Bool { groups.isEmpty && !finalRule && !elsewhere }
 }
 
  
@@ -1104,6 +1227,23 @@ public extension ConfigurationRuleDraft {
             throw ConfigurationSubRuleError.inUse(subRule.name)
         }
         subRules.removeAll { $0.id == id }
+    }
+
+     
+     
+     
+     
+     
+    mutating func insertSubRule(_ subRule: SubRule, at index: Int) throws {
+        guard subRulesEditable else { throw ConfigurationSubRuleError.notEditable }
+        var placed = subRule
+        placed.name = try validSubRuleName(subRule.name, besides: nil)
+         
+        guard !subRules.contains(where: { $0.id == subRule.id }) else { throw ConfigurationLibraryError.staleGeneration }
+        var candidate = self
+        candidate.subRules.insert(placed, at: min(max(index, 0), subRules.count))
+        try candidate.validateSubRuleCycles()
+        self = candidate
     }
 
     mutating func moveSubRules(fromOffsets offsets: IndexSet, toOffset destination: Int) {

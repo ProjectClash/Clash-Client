@@ -153,6 +153,14 @@ final class ConfigurationPageState: ObservableObject {
         session = ConfigurationEditorSession(profileID: profileID, model: model, selections: selections)
     }
 
+     
+     
+    init(model: ProfilesViewModel, session: ConfigurationEditorSession) {
+        self.model = model
+        profileID = session.profileID
+        self.session = session
+    }
+
     func compile() {
         compiling = true
         Task {
@@ -259,6 +267,7 @@ struct ConfigurationPageHost: View {
              
             .environment(\.clashConfigurationSearching, state.isSearching)
             .searchable(text: $state.query, prompt: Text(clash: .copy("Search")))
+            .clashBottomSearchClearance()
             .environmentObject(state)
             .environmentObject(state.session)
              
@@ -362,8 +371,8 @@ struct ConfigurationPageSections: View {
                         }
                         .accessibilityIdentifier("configuration-editor.saving")
                     }
-                    if let current {
-                        schemeRow(page, current: current)
+                    if current != nil {
+                        schemeRow(page)
                     }
                     ForEach(own, id: \.section) { row in
                         sectionRow(row, form: page.form)
@@ -464,63 +473,38 @@ struct ConfigurationPageSections: View {
      
      
      
-    private func schemeRow(_ page: ProfilesViewModel.ConfigurationEditorPage,
-                           current: ConfigurationSchemeChooser.Choice) -> some View {
+     
+    private func schemeRow(_ page: ProfilesViewModel.ConfigurationEditorPage) -> some View {
         var shared: ClashDisplayText?
-        if case .composed(_, let ownership) = page.form { shared = Self.sharedBy(ownership) }
-         
-         
-         
-        let groups = Self.menuGroups(page.schemeChoices)
-        return Picker(selection: Self.schemeSelection(current: current, choose: choose)) {
-            ForEach(groups.builtins) { scheme in
-                Text(verbatim: scheme.displayLabel).tag(ConfigurationSchemeChooser.Choice.scheme(scheme.id))
-            }
-            if canUseOriginal, setUsesOriginal != nil {
-                Text(clash: .copy("Original")).tag(ConfigurationSchemeChooser.Choice.original)
-            }
-            ForEach(groups.others) { scheme in
-                Text(verbatim: scheme.displayLabel).tag(ConfigurationSchemeChooser.Choice.scheme(scheme.id))
-            }
+        var running: ClashDisplayText = .copy(ConfigurationSchemePickerSnapshot.originalTitle)
+        if case .composed(let scheme, let ownership) = page.form {
+            shared = Self.sharedBy(ownership)
+            running = .verbatim(scheme.displayLabel)
+        }
+        return ClashNativeNavigationLink {
+            ConfigurationSchemePickerPage(state: state, session: session, setUsesOriginal: setUsesOriginal,
+                                          libraryChanged: libraryChanged)
+                 
+                .environment(\.clashProductModalDismiss, nil)
+                 
+                .configurationPushedAlertHost(session)
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(clash: .copy("Rule Scheme"))
-                if let shared { Text(clash: shared).font(.caption).foregroundStyle(.secondary) }
-                if let follows = Self.followsLine(page.followedLink) {
-                    Text(clash: follows).font(.caption).foregroundStyle(.secondary)
+             
+             
+            HStack(alignment: .center, spacing: ClashTheme.Spacing.row) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(clash: .copy("Rule Scheme"))
+                    if let shared { Text(clash: shared).font(.caption).foregroundStyle(.secondary) }
+                    if let follows = Self.followsLine(page.followedLink) {
+                        Text(clash: follows).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
+                Spacer(minLength: ClashTheme.Spacing.row)
+                Text(clash: running).foregroundStyle(.secondary).lineLimit(1)
             }
         }
-        .pickerStyle(.menu)
         .disabled(session.isSaving || state.choosing)
         .accessibilityIdentifier("configuration-editor.rule-scheme")
-    }
-
-     
-     
-     
-     
-     
-     
-     
-    static func menuGroups(_ all: [ConfigurationRuleScheme]) -> (builtins: [ConfigurationRuleScheme], others: [ConfigurationRuleScheme]) {
-        let builtinIDs = Set(ConfigurationBuiltins.schemes.map(\.id))
-        let builtin = { (scheme: ConfigurationRuleScheme) in builtinIDs.contains(scheme.plainViewBaseID ?? scheme.id) }
-        return (all.filter(builtin), all.filter { !builtin($0) })
-    }
-
-    private func choose(_ choice: ConfigurationSchemeChooser.Choice) {
-        state.choose(choice, setUsesOriginal: setUsesOriginal, libraryChanged: libraryChanged)
-    }
-
-     
-     
-    static func schemeSelection(current: ConfigurationSchemeChooser.Choice,
-                                choose: @escaping (ConfigurationSchemeChooser.Choice) -> Void) -> Binding<ConfigurationSchemeChooser.Choice> {
-        Binding(get: { current }, set: { choice in
-            guard choice != current else { return }
-            choose(choice)
-        })
     }
 
      
@@ -1015,8 +999,8 @@ struct ConfigurationPageSearchResults: View {
 enum ConfigurationSectionRoute: Equatable {
      
      
-    case schemeRules
-    case customRules
+     
+    case rulesPage
     case overrideScript
      
      
@@ -1024,14 +1008,25 @@ enum ConfigurationSectionRoute: Equatable {
      
     case objectList([String])
      
+     
     case originalEntries
-    case originalRules
-    case originalSubRules
+     
+     
+    case ruleSets
+     
+     
+    case subRules
     case originalProxies
     case originalProxyProviders
      
      
     case sourcedNodes
+     
+     
+     
+     
+     
+    case proxiesPage
      
     case readOnly
 
@@ -1043,8 +1038,10 @@ enum ConfigurationSectionRoute: Equatable {
      
      
      
+     
+     
     static func of(_ section: ConfigurationOutlineSection, form: ProfilesViewModel.ConfigurationEditorPage.Form,
-                   followsSubscription: Bool) -> ConfigurationSectionRoute {
+                   followsSubscription: Bool, hasRecipe: Bool) -> ConfigurationSectionRoute {
         let original = form == .original
         switch section {
          
@@ -1053,22 +1050,30 @@ enum ConfigurationSectionRoute: Equatable {
          
         case .general, .dns, .sniffer, .inbound, .ntp, .experimental: return .settings([])
         case .tunnels: return .objectList(["tunnels"])
-        case .customRules: return .customRules
+         
+         
+         
+        case .customRules, .rules: return .rulesPage
         case .overrideScript: return .overrideScript
         case .unknown: return .readOnly
          
          
          
         case .proxies, .proxyProviders:
-            guard original else { return .sourcedNodes }
+            guard original else { return section == .proxies ? .proxiesPage : .sourcedNodes }
             return section == .proxies ? .originalProxies : .originalProxyProviders
-        case .proxyGroups, .rules, .subRules, .ruleProviders:
-            guard original else { return .schemeRules }
-            switch section {
-            case .rules: return .originalRules
-            case .subRules: return .originalSubRules
-            default: return .originalEntries
-            }
+         
+         
+         
+         
+         
+         
+        case .proxyGroups:
+            return original && !hasRecipe ? .originalEntries : .proxiesPage
+        case .subRules:
+            return .subRules
+        case .ruleProviders:
+            return .ruleSets
         }
     }
 }
@@ -1193,24 +1198,17 @@ struct ConfigurationSectionDestination: View, Equatable {
 
     @ViewBuilder
     private var chapter: some View {
-        switch ConfigurationSectionRoute.of(section, form: form, followsSubscription: session.page?.followsSubscription == true) {
+        switch ConfigurationSectionRoute.of(section, form: form, followsSubscription: session.page?.followsSubscription == true,
+                                            hasRecipe: session.page?.hasRecipe == true) {
          
          
+        case .ruleSets:
+            ConfigurationRuleSetsPage(model: model, profileID: profileID, editor: session, form: form,
+                                      libraryChanged: libraryChanged)
          
-        case .schemeRules:
-            if case .composed(let scheme, _) = form {
-                ConfigurationSchemeRulesPushed(model: model, profileID: profileID, schemeID: scheme.id,
-                                               focus: ConfigurationSchemeRulesPushed.focus(of: section),
-                                               changed: { libraryChanged?($0) })
-            }
-        case .customRules:
-            if let profile {
-                ProfileProjectionLoader(profile: profile, model: model) { projected in
-                    ProfileRulesAdapter(profile: profile, sourceYAML: projected, ownsNavigationContainer: false) { draft in
-                        try model.updateRules(draft)
-                    }
-                }
-            }
+         
+        case .rulesPage:
+            ConfigurationRulesPage(model: model, profileID: profileID, session: session, libraryChanged: libraryChanged)
         case .overrideScript:
             if let profile {
                 ProfileOverrideView(profile: profile, rawYAML: model.cachedUIProjectedYAML(for: profile),
@@ -1218,6 +1216,9 @@ struct ConfigurationSectionDestination: View, Equatable {
                                     loadRawYAML: { await model.loadUIProjectedYAML(for: profile) }) {
                     try model.updateOverrideSettings(from: $0)
                 }
+                 
+                 
+                .overrideLibrary(model)
             }
          
          
@@ -1230,18 +1231,14 @@ struct ConfigurationSectionDestination: View, Equatable {
             ConfigurationObjectListView(session: session, location: .key(path),
                                         title: ClashCopy.string(ConfigurationEditorCopy.title(of: section), locale: locale))
          
+         
         case .originalEntries:
             ConfigurationOriginalEntriesView(session: session, section: section)
-        case .originalRules:
-             
-             
-            if let kept = session.page?.keptRules {
-                ConfigurationKeptRulesView(kept: kept, title: .copy(ConfigurationEditorCopy.title(of: .rules)))
-            } else {
-                ConfigurationOriginalRulesView(session: session, base: ["rules"], title: .copy(ConfigurationEditorCopy.title(of: .rules)))
-            }
-        case .originalSubRules:
-            ConfigurationOriginalSubRulesView(session: session)
+         
+         
+        case .subRules:
+            ConfigurationSubRulesPage(model: model, profileID: profileID, editor: session, form: form,
+                                      libraryChanged: libraryChanged)
         case .originalProxies:
             ConfigurationOriginalProxiesView(session: session)
         case .originalProxyProviders:
@@ -1251,6 +1248,26 @@ struct ConfigurationSectionDestination: View, Equatable {
          
         case .sourcedNodes:
             ConfigurationNodeSourcesPage(model: model, profileID: profileID, section: section, libraryChanged: libraryChanged)
+         
+         
+         
+         
+         
+         
+        case .proxiesPage:
+            if let page = shellPage?.open(.proxies(profileID: profileID)) {
+                page
+            } else if section == .proxyGroups {
+                if case .composed(let scheme, _) = form {
+                    ConfigurationSchemeRulesPushed(model: model, profileID: profileID, schemeID: scheme.id,
+                                                   focus: ConfigurationSchemeRulesPushed.focus(of: section),
+                                                   changed: { libraryChanged?($0) })
+                } else {
+                    ConfigurationOriginalEntriesView(session: session, section: section)
+                }
+            } else {
+                ConfigurationNodeSourcesPage(model: model, profileID: profileID, section: section, libraryChanged: libraryChanged)
+            }
          
         case .readOnly:
             ConfigurationReadOnlySectionView(session: session, section: section, editSource: { editingSource = true })
@@ -1314,7 +1331,7 @@ private struct ConfigurationTrustPage: View {
 
  
  
-private struct ConfigurationSchemeRulesPushed: View {
+struct ConfigurationSchemeRulesPushed: View {
     @ObservedObject var model: ProfilesViewModel
     let profileID: String
     let schemeID: String
@@ -1328,12 +1345,39 @@ private struct ConfigurationSchemeRulesPushed: View {
     let changed: (ConfigurationLibrarySnapshot) -> Void
 
      
+     
+     
+    struct Prepared {
+        let library: ConfigurationLibrarySnapshot
+        let scheme: ConfigurationRuleScheme
+        let editor: ConfigurationTowerRuleCustomizationAdapter.Prepared
+    }
+
+     
+    static func prepare(model: ProfilesViewModel, schemeID: String,
+                        catalog: ProfilesViewModel.SyntaxCatalog?) async throws -> Prepared {
+        let read = try await Self.read(model: model, schemeID: schemeID)
+        let editor = try await ConfigurationTowerRuleCustomizationAdapter.prepare(model: model, scheme: read.scheme, catalog: catalog)
+        return Prepared(library: read.library, scheme: read.scheme, editor: editor)
+    }
+
+     
+     
+    private static func read(model: ProfilesViewModel, schemeID: String) async throws -> ConfigurationSchemeRulesLoader.Loaded {
+        guard let store = model.configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
+        let library = try await Task.detached(priority: .userInitiated) { try store.snapshot() }.value
+        guard let scheme = library.rules.first(where: { $0.id == schemeID })
+                ?? ConfigurationBuiltins.schemes.first(where: { $0.id == schemeID }) else {
+            throw ConfigurationLibraryError.missingDependency(schemeID)
+        }
+        return ConfigurationSchemeRulesLoader.Loaded(library: library, scheme: scheme)
+    }
+
+     
     static func focus(of section: ConfigurationOutlineSection) -> ClashTowerRuleFocus {
         switch section {
         case .rules: .rules
         case .proxyGroups: .groups
-        case .ruleProviders: .ruleSets
-        case .subRules: .subRules
         default: .all
         }
     }
@@ -1343,8 +1387,8 @@ private struct ConfigurationSchemeRulesPushed: View {
 
     var body: some View {
         Group {
-            if let loaded {
-                ConfigurationTowerRuleCustomizationAdapter(model: model, scheme: loaded.scheme, library: loaded.library,
+            if let shown = loaded {
+                ConfigurationTowerRuleCustomizationAdapter(model: model, scheme: shown.scheme, library: shown.library,
                                                            pushed: true, profileID: profileID, changed: changed,
                                                            close: { dismiss() }, focus: focus, savesEachChange: true,
                                                            single: single, opening: opening)
@@ -1357,15 +1401,7 @@ private struct ConfigurationSchemeRulesPushed: View {
         .clashCapturesDismiss(dismiss)
         .task {
             do {
-                guard let store = model.configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
-                let library = try await Task.detached(priority: .userInitiated) { try store.snapshot() }.value
-                 
-                 
-                guard let scheme = library.rules.first(where: { $0.id == schemeID })
-                        ?? ConfigurationBuiltins.schemes.first(where: { $0.id == schemeID }) else {
-                    throw ConfigurationLibraryError.missingDependency(schemeID)
-                }
-                loaded = ConfigurationSchemeRulesLoader.Loaded(library: library, scheme: scheme)
+                loaded = try await Self.read(model: model, schemeID: schemeID)
             } catch {
                 failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
@@ -1373,6 +1409,9 @@ private struct ConfigurationSchemeRulesPushed: View {
     }
 }
 
+#endif
+
+ 
  
  
  
@@ -1407,6 +1446,7 @@ struct ConfigurationSchemeChooser {
     }
 }
 
+#if os(iOS)
  
  
  
@@ -1434,49 +1474,4 @@ struct ConfigurationEditorSheetContent: View {
     }
 }
 
- 
- 
- 
- 
- 
- 
- 
-struct ConfigurationRulesChapterHost: View {
-    let model: ProfilesViewModel
-    let profileID: String
-    @StateObject private var state: ConfigurationPageState
-
-    init(model: ProfilesViewModel, profileID: String) {
-        self.model = model
-        self.profileID = profileID
-        _state = StateObject(wrappedValue: ConfigurationPageState(model: model, profileID: profileID, selections: nil))
-    }
-
-    var body: some View {
-        ConfigurationRulesChapterPage(state: state, session: state.session)
-            .environmentObject(state)
-            .environmentObject(state.session)
-            .task { await state.session.reload() }
-    }
-}
-
- 
- 
-private struct ConfigurationRulesChapterPage: View {
-    let state: ConfigurationPageState
-    @ObservedObject var session: ConfigurationEditorSession
-
-    var body: some View {
-        if let page = session.page {
-            ConfigurationSectionDestination(model: state.model, profileID: state.profileID, session: session,
-                                            section: .rules, form: page.form, alertHosts: state.alertHosts)
-                .equatable()
-                 
-                .environment(\.clashProductModalDismiss, nil)
-        } else {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-}
 #endif

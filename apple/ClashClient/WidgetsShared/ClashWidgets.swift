@@ -65,6 +65,15 @@ enum ClashWidgetSlotFactory {
         default: return .medium
         }
     }
+
+     
+     
+     
+     
+     
+    static func drawnStyle(_ style: ClashWidgetStyle, in family: WidgetFamily) -> ClashWidgetStyle {
+        size(for: family) == .large ? .status : style
+    }
 }
 
 struct ClashWidgetView: View {
@@ -77,9 +86,7 @@ struct ClashWidgetView: View {
         let slots = ClashWidgetSlotFactory.slots(for: entry)
         Group {
              
-             
-             
-            switch size == .large ? .status : entry.style {
+            switch ClashWidgetSlotFactory.drawnStyle(entry.style, in: family) {
             case .status:
                 ClashWidgetMainView(
                     snapshot: entry.snapshot, facts: entry.facts, now: entry.date, locale: locale,

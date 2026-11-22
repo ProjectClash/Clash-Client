@@ -149,10 +149,19 @@ struct ClashTVMoreHub: View {
      
      
      
-    private var autoConnectLine: ClashFeedbackPresentation? {
+    private var autoConnectLine: ClashFeedbackPresentation? { Self.autoConnectLine(state: state) }
+
+     
+     
+     
+     
+    static func autoConnectLine(state: ClashTVProductState) -> ClashFeedbackPresentation? {
         if let feedback = state.feedback(for: [.autoConnect]) { return feedback }
-        guard let issue = state.autoConnectIssue else { return nil }
-        return .warning(title: .verbatim(issue), accessibilityIdentifier: "tvos.more.autoConnect.issue")
+        if let issue = state.autoConnectIssue {
+            return .warning(title: .verbatim(issue), accessibilityIdentifier: "tvos.more.autoConnect.issue")
+        }
+        guard state.autoConnect, state.onDemandPausedForRefusal else { return nil }
+        return .warning(title: .verbatim(ClashTVRefusalPause.pausedNote), accessibilityIdentifier: "tvos.more.autoConnect.paused")
     }
 
     var body: some View {

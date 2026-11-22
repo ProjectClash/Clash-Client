@@ -115,7 +115,10 @@ struct ClashMacConfigurationOutlineCard: View {
      
      
     var original: ClashMacOriginalChoice? = nil
-    let schemes: [ConfigurationRuleScheme]
+     
+     
+     
+    var schemePage: (@MainActor () -> AnyView)? = nil
      
     let usage: [String: Int]
      
@@ -132,7 +135,6 @@ struct ClashMacConfigurationOutlineCard: View {
     let destination: @MainActor (ConfigurationOutlineSection) -> ClashMacOutlineDestination?
      
     let onReturn: @MainActor () -> Void
-    let chooseScheme: @MainActor (String) -> Void
     @Environment(\.locale) private var locale
 
      
@@ -230,8 +232,6 @@ struct ClashMacConfigurationOutlineCard: View {
      
 
      
-    private static let originalTag = "\u{0}original"
-
      
      
      
@@ -244,36 +244,18 @@ struct ClashMacConfigurationOutlineCard: View {
         let runsOriginal = original?.isChosen == true
         let line: ClashDisplayText = runsOriginal ? original?.sourceName.map(ClashDisplayText.verbatim) ?? .copy("Original")
             : scheme.map { chosen in followedLinks[chosen.id].map { .format("Follows the “%@” link", [$0]) } ?? Self.kindLine(chosen.kind) } ?? .verbatim("")
-        let selection = Binding<String>(
-            get: { runsOriginal ? Self.originalTag : scheme?.id ?? "" },
-            set: { id in
-                if id == Self.originalTag {
-                    if let original, !original.isChosen { original.choose() }
-                } else {
-                    chooseScheme(id)
-                }
-            }
-        )
+        let value: ClashDisplayText = runsOriginal ? .copy("Original Configuration (Rule Scheme)") : .verbatim(scheme?.label ?? "")
          
          
          
-        let split = Self.builtInFirst(schemes)
-        return Picker(selection: selection) {
-            ForEach(split.builtIn, id: \.id) { choice in
-                Text(verbatim: menuLine(choice)).tag(choice.id)
+        return ClashMacOutlinePushRow(destination: schemePage.map(ClashMacOutlineDestination.page), onReturn: onReturn, value: value) {
+            LabeledContent {
+                Text(clash: value)
+            } label: {
+                Text(clash: .copy("Rule Scheme"))
+                Text(clash: line)
             }
-            if original != nil {
-                Text(clash: .copy("Original")).tag(Self.originalTag)
-                    .accessibilityIdentifier("configuration-center.configuration.original")
-            }
-            ForEach(split.others, id: \.id) { choice in
-                Text(verbatim: menuLine(choice)).tag(choice.id)
-            }
-        } label: {
-            Text(clash: .copy("Rule Scheme"))
-            Text(clash: line)
         }
-        .pickerStyle(.menu)
         .disabled(busy)
         .accessibilityIdentifier("configuration-center.configuration.schemes.all")
     }
@@ -285,11 +267,6 @@ struct ClashMacConfigurationOutlineCard: View {
         let ids = Set(ConfigurationBuiltins.schemes.map(\.id))
         let isBuiltIn = { (scheme: ConfigurationRuleScheme) in ids.contains(scheme.plainViewBaseID ?? scheme.id) }
         return (schemes.filter(isBuiltIn), schemes.filter { !isBuiltIn($0) })
-    }
-
-     
-    private func menuLine(_ scheme: ConfigurationRuleScheme) -> String {
-        Self.menuLine(scheme, usage: usage, followedLink: followedLinks[scheme.id], locale: locale)
     }
 
      
@@ -573,4 +550,29 @@ struct ClashMacCompileResultSheet: View {
 struct ClashMacCompilePresentation: Identifiable {
     let id = UUID()
     let result: ClashMacCompileResult
+}
+
+ 
+ 
+ 
+struct ClashMacOutlinePushRow<Label: View>: View {
+    let destination: ClashMacOutlineDestination?
+    let onReturn: @MainActor () -> Void
+    let value: ClashDisplayText
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        switch destination {
+        case .page(let page)?:
+            ClashRoutedViewLink(onReturn: onReturn) { page() } label: { label() }
+                .accessibilityValue(Text(clash: value))
+        case .open(let open)?:
+            Button(action: open) { label() }
+                .buttonStyle(.plain)
+                .accessibilityValue(Text(clash: value))
+        case nil:
+            label()
+                .accessibilityElement(children: .combine)
+        }
+    }
 }

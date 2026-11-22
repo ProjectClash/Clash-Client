@@ -139,6 +139,9 @@ final class HomeTallyCache {
         let subscriptionNodeTally: Int?
         var notDownloadedProxyProviders = 0
         let resourceCounts: HomeResourceCounts?
+         
+         
+        var ruleScheme: ClashHomeRuleScheme? = nil
     }
 
     static let shared = HomeTallyCache()
@@ -242,6 +245,15 @@ struct HomeConnectionIssueView: View {
     var onDemandNote: String?
      
     var openOnDemand: () -> Void = {}
+     
+     
+     
+     
+    var onDemandPausedNote: ClashDisplayText?
+     
+     
+     
+    var unrequestedStop: UnrequestedStopAccount? = nil
 
     @Environment(\.locale) private var locale
 
@@ -367,6 +379,101 @@ struct HomeConnectionIssueView: View {
      
     private var content: some View {
         List {
+            if issue.kind == .stoppedForMemory {
+                stoppedForMemorySections
+            } else if issue.coreWords != nil {
+                refusalSections
+            } else {
+                accountSections
+            }
+        }
+         
+         
+         
+         
+         
+        .navigationTitle(
+            issue.kind == .runningPreviousRevision
+                ? Text("Not Applied")
+                : issue.kind == .stoppedForMemory ? Text("VPN disconnected") : Text("Can’t Connect")
+        )
+        .clashToolbarUnlessInPanel {
+            ToolbarItem(placement: .cancellationAction) {
+                ClashSheetCloseButton { dismiss() }
+            }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @ViewBuilder
+    private var refusalSections: some View {
+        ClashCoreRefusalAccount(issue: issue)
+         
+         
+         
+        onDemandPausedNoteSection
+        Section {
+            Button {
+                wantsLogsOnDismiss = true
+                dismiss()
+            } label: {
+                Label(
+                    "Open Full Log",
+                    systemImage: ClashSymbol.docText.name
+                )
+                .font(.subheadline)
+            }
+            .accessibilityIdentifier("connection.issue.logs")
+        }
+    }
+
+     
+     
+     
+     
+     
+    @ViewBuilder
+    private var stoppedForMemorySections: some View {
+        Section {
+            Text(clash: UnrequestedStopAccount.memoryReason)
+                .font(.subheadline)
+                .accessibilityIdentifier("connection.issue.reason")
+            if let used = unrequestedStop?.footprintSentence {
+                Text(clash: used)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("connection.issue.footprint")
+            }
+        }
+         
+         
+        onDemandPausedNoteSection
+    }
+
+     
+     
+     
+    @ViewBuilder
+    private var onDemandPausedNoteSection: some View {
+        if let onDemandPausedNote {
+            Section {
+                Text(clash: onDemandPausedNote)
+                    .font(.subheadline)
+                    .accessibilityIdentifier("connection.issue.on-demand-paused")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var accountSections: some View {
              
              
             Section {
@@ -407,6 +514,12 @@ struct HomeConnectionIssueView: View {
                         .font(.subheadline)
                         .accessibilityIdentifier("connection.issue.way-out")
                 }
+            }
+
+             
+             
+            if startupExplanation?.memoryWasTheStory == true {
+                onDemandPausedNoteSection
             }
 
              
@@ -541,20 +654,6 @@ struct HomeConnectionIssueView: View {
                     .accessibilityIdentifier("connection.issue.reset")
                 }
             }
-        }
-         
-         
-         
-        .navigationTitle(
-            issue.kind == .runningPreviousRevision
-                ? Text("Not Applied")
-                : Text("Can’t Connect")
-        )
-        .clashToolbarUnlessInPanel {
-            ToolbarItem(placement: .cancellationAction) {
-                ClashSheetCloseButton { dismiss() }
-            }
-        }
     }
 
     private func resetVPNProfile() {

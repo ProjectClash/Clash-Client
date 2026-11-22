@@ -589,6 +589,104 @@ public struct ClashProxyProviderSnapshot:
     }
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashProxiesConfigurationPage: Codable, Equatable, Sendable {
+     
+    public let configurationName: String
+     
+     
+    public let nodeSourceNames: [String]?
+     
+     
+     
+    public let isCurrentConfiguration: Bool
+     
+    public var offersAddNodes: Bool
+     
+    public var offersNodeSourcesUpdate: Bool
+     
+     
+    public var groupsAwaitingDownload: [String]
+     
+    public var offersGroupDetails: Bool
+     
+    public var offersNewGroup: Bool
+     
+    public var offersGroupReorder: Bool
+     
+     
+     
+     
+    public var quotesConfigurationName: Bool = true
+     
+     
+    public var offersGroupDeletion: Bool = false
+     
+     
+    public var offersNodeRemoval: Bool = false
+     
+     
+    public var selfBuiltNodes: [String] = []
+     
+     
+     
+    public var removableNodes: [String] = []
+
+    public init(
+        configurationName: String,
+        nodeSourceNames: [String]?,
+        isCurrentConfiguration: Bool,
+        offersAddNodes: Bool = false,
+        offersNodeSourcesUpdate: Bool = false,
+        groupsAwaitingDownload: [String] = [],
+        offersGroupDetails: Bool = false,
+        offersNewGroup: Bool = false,
+        offersGroupReorder: Bool = false
+    ) {
+        self.configurationName = configurationName
+        self.nodeSourceNames = nodeSourceNames
+        self.isCurrentConfiguration = isCurrentConfiguration
+        self.offersAddNodes = offersAddNodes
+        self.offersNodeSourcesUpdate = offersNodeSourcesUpdate
+        self.groupsAwaitingDownload = groupsAwaitingDownload
+        self.offersGroupDetails = offersGroupDetails
+        self.offersNewGroup = offersNewGroup
+        self.offersGroupReorder = offersGroupReorder
+    }
+
+     
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        configurationName = try values.decode(String.self, forKey: .configurationName)
+        nodeSourceNames = try values.decodeIfPresent([String].self, forKey: .nodeSourceNames)
+        isCurrentConfiguration = try values.decode(Bool.self, forKey: .isCurrentConfiguration)
+        offersAddNodes = try values.decode(Bool.self, forKey: .offersAddNodes)
+        offersNodeSourcesUpdate = try values.decode(Bool.self, forKey: .offersNodeSourcesUpdate)
+        groupsAwaitingDownload = try values.decode([String].self, forKey: .groupsAwaitingDownload)
+        offersGroupDetails = try values.decodeIfPresent(Bool.self, forKey: .offersGroupDetails) ?? false
+        offersNewGroup = try values.decodeIfPresent(Bool.self, forKey: .offersNewGroup) ?? false
+        offersGroupReorder = try values.decodeIfPresent(Bool.self, forKey: .offersGroupReorder) ?? false
+        quotesConfigurationName = try values.decodeIfPresent(Bool.self, forKey: .quotesConfigurationName) ?? true
+        offersGroupDeletion = try values.decodeIfPresent(Bool.self, forKey: .offersGroupDeletion) ?? false
+        offersNodeRemoval = try values.decodeIfPresent(Bool.self, forKey: .offersNodeRemoval) ?? false
+        selfBuiltNodes = try values.decodeIfPresent([String].self, forKey: .selfBuiltNodes) ?? []
+        removableNodes = try values.decodeIfPresent([String].self, forKey: .removableNodes) ?? []
+    }
+
+     
+     
+    static func heading(for page: ClashProxiesConfigurationPage?) -> ClashDisplayText {
+        guard let page, page.quotesConfigurationName else { return "Proxies" }
+        return .format("Proxies of “%@”", [page.configurationName])
+    }
+}
+
 public enum ClashProxiesCatalogState:
     Codable,
     Equatable,
@@ -715,6 +813,20 @@ public struct ClashProxiesSnapshot: Codable, Equatable, Sendable {
     public var scriptsForNodes: [ClashProxyNodeScript] { nodeScripts ?? [] }
 
      
+     
+     
+    public var configurationPage: ClashProxiesConfigurationPage? = nil
+
+     
+     
+    public var offersLatencyTests: Bool { configurationPage?.isCurrentConfiguration ?? true }
+
+     
+     
+     
+    public var offersProviderUpdates: Bool { configurationPage?.isCurrentConfiguration ?? true }
+
+     
     public func canEdit(_ member: ClashProxyMemberSnapshot) -> Bool {
         !member.isGroup && editableMembers.contains(member.name)
     }
@@ -753,8 +865,10 @@ public struct ClashProxiesSnapshot: Codable, Equatable, Sendable {
         rememberedOpenGroup: String? = nil,
         readerFoldedAll: Bool? = nil,
         liveCatalog: Bool? = nil,
-        nodeScripts: [ClashProxyNodeScript] = []
+        nodeScripts: [ClashProxyNodeScript] = [],
+        configurationPage: ClashProxiesConfigurationPage? = nil
     ) {
+        self.configurationPage = configurationPage
         self.liveCatalog = liveCatalog
         self.nodeScripts = nodeScripts.isEmpty ? nil : nodeScripts
         self.groups = groups

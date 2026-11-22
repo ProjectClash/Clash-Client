@@ -3841,13 +3841,13 @@
   "listeners[*].route-address-set": {
     "summary": {
       "en": "Send only the IPs in these rule sets into the TUN; Linux only.",
-      "zh-Hans": "只让规则集合里的 IP 走 TUN，其余绕过，仅 Linux。",
-      "zh-Hant": "只讓規則集合裡的 IP 走 TUN，其餘繞過，僅 Linux。"
+      "zh-Hans": "只让规则集里的 IP 走 TUN，其余绕过，仅 Linux。",
+      "zh-Hant": "只讓規則集裡的 IP 走 TUN，其餘繞過，僅 Linux。"
     },
     "title": {
       "en": "Routed Rule Sets",
-      "zh-Hans": "路由规则集合",
-      "zh-Hant": "路由規則集合"
+      "zh-Hans": "路由规则集",
+      "zh-Hant": "路由規則集"
     }
   },
   "listeners[*].route-exclude-address": {
@@ -3866,13 +3866,13 @@
   "listeners[*].route-exclude-address-set": {
     "summary": {
       "en": "The IPs in these rule sets bypass the TUN; Linux only.",
-      "zh-Hans": "规则集合里的 IP 不走 TUN，仅 Linux。",
-      "zh-Hant": "規則集合裡的 IP 不走 TUN，僅 Linux。"
+      "zh-Hans": "规则集里的 IP 不走 TUN，仅 Linux。",
+      "zh-Hant": "規則集裡的 IP 不走 TUN，僅 Linux。"
     },
     "title": {
       "en": "Excluded Rule Sets",
-      "zh-Hans": "排除规则集合",
-      "zh-Hant": "排除規則集合"
+      "zh-Hans": "排除规则集",
+      "zh-Hant": "排除規則集"
     }
   },
   "listeners[*].routing-mark": {

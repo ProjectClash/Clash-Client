@@ -272,6 +272,8 @@ struct CustomProxyGroupEditor: View {
     @StateObject private var dismiss = ClashDismissHandle()
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
+    @Environment(\.configurationFieldCopy) private var fieldCopy
+    @Environment(\.locale) private var locale
     @State private var group: CustomProxyGroup
     @State private var interval = ""
     @State private var timeout = ""
@@ -324,6 +326,12 @@ struct CustomProxyGroupEditor: View {
         _showsRestoredDraft = State(initialValue: opening.needsNotice)
     }
 
+     
+     
+    private var groupTypes: [String: String] {
+        ConfigurationTypeWords.names(.proxyGroups, copy: fieldCopy, locale: locale)
+    }
+
     var body: some View {
         ClashFeatureNavigationContainer {
             Form {
@@ -345,10 +353,8 @@ struct CustomProxyGroupEditor: View {
                         .accessibilityIdentifier("custom.proxy-group.name")
                     Picker("Type", selection: $group.type) {
                         ForEach(CustomProxyGroup.types, id: \.self) { type in
-                            Text(
-                                ProxyGroupConfigurationCatalog.specification(for: type)?.displayName
-                                    ?? type
-                            )
+                             
+                            Text(ConfigurationTypeWords.word(type, in: groupTypes))
                             .tag(type)
                         }
                     }

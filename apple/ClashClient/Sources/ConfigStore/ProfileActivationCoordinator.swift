@@ -2938,12 +2938,25 @@ final class ProfileActivationCoordinator {
              
              
              
+             
+             
+             
+             
+             
+             
             ConfigurationCollectionContentBridge.keepInLibrary(plan.providers.compactMap { provider in
-                guard provider.kind == "proxy", materialized.downloadedNames.contains(provider.name),
+                guard provider.kind == "proxy" || provider.kind == "rule",
+                      materialized.downloadedNames.contains(provider.name),
                       let path = materialized.readPaths[provider.name] else { return nil }
-                return (provider, URL(fileURLWithPath: path), materialized.entryCounts[provider.name] ?? 0,
-                        materialized.subscriptionUserInfo[provider.name].flatMap { SubscriptionInfo.parse(header: $0) }
-                            .map(ConfigurationCenterSourceBridge.subscriptionUsage))
+                return .init(provider: provider, file: URL(fileURLWithPath: path),
+                             count: materialized.entryCounts[provider.name],
+                             usage: provider.kind == "proxy"
+                                ? materialized.subscriptionUserInfo[provider.name].flatMap { SubscriptionInfo.parse(header: $0) }
+                                    .map(ConfigurationCenterSourceBridge.subscriptionUsage)
+                                : nil,
+                             receivedAt: materialized.acquiredAt[provider.path] ?? Date(),
+                             sourceSHA256: materialized.sourceSHA256[provider.name],
+                             sourceBytes: materialized.sourceByteCounts[provider.name])
             }, userAgent: ownUserAgent, identity: identity, workingDirectory: coreHomeDir)
             firstLoadPending = materialized.firstLoadPending
             firstLoadPendingOfLastPublication = firstLoadPending

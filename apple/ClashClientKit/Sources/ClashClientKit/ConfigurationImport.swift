@@ -371,7 +371,17 @@ public extension ConfigurationLibraryStore {
              
             guard let base = snapshot.rules.first(where: { $0.id == baseID }) ?? ConfigurationBuiltins.schemes.first(where: { $0.id == baseID })
             else { continue }
-            let names = Set([base.label, base.displayLabel])
+            var names = Set([base.label, base.displayLabel])
+             
+            names.formUnion(ConfigurationBuiltins.legacyDisplayNames(for: base.id))
+             
+             
+             
+             
+            if let builtin = base.baseSchemeID, ConfigurationBuiltins.isNative(builtin) {
+                names.insert(base.label + ConfigurationBuiltins.legacyCustomSuffix)
+                names.formUnion(ConfigurationBuiltins.legacyDisplayNames(for: builtin).map { $0 + ConfigurationBuiltins.legacyCustomSuffix })
+            }
             let generated = view.label.hasSuffix(" (\(owner.label))") || view.label.hasSuffix("\u{FF08}\(owner.label)\u{FF09}")
                 || names.contains { (view.label.hasPrefix($0 + " (") && view.label.hasSuffix(")"))
                     || (view.label.hasPrefix($0 + "\u{FF08}") && view.label.hasSuffix("\u{FF09}")) }

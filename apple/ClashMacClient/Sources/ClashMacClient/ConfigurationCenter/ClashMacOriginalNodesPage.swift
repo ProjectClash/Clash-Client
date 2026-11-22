@@ -119,6 +119,15 @@ public struct ClashMacOriginalNodesActions {
      
      
     public var updateNote: ClashDisplayText?
+     
+     
+     
+     
+    public var providersPage: (@MainActor () -> AnyView)?
+     
+     
+     
+    public var proxiesPage: ClashMacRelatedPage?
 
     public init(
         load: @escaping @MainActor () async throws -> [ClashMacOriginalNode]?,
@@ -135,6 +144,42 @@ public struct ClashMacOriginalNodesActions {
     public static var unavailable: Self {
         Self(load: { nil }, nodeForm: { _, _ in AnyView(EmptyView()) }, librarySources: { [] },
              addFromLibrary: { _ in nil }, delete: { _ in })
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashMacStillUsedRefusal: LocalizedError {
+    public let name: String
+     
+    public let places: [String]
+     
+    public let locale: Locale
+
+    public init(name: String, places: [String], locale: Locale) {
+        self.name = name; self.places = places; self.locale = locale
+    }
+
+    public var errorDescription: String? {
+        lines(.format("Can’t delete “%@”: it’s still used in the places below. Change them first.", [name]), locale: locale)
+    }
+
+     
+    public func turningOff(locale: Locale) -> String {
+        lines(.format("Can’t turn off “%@”: it’s still used in the places below. Change them first.", [name]), locale: locale)
+    }
+
+     
+    public func whereUsed(locale: Locale) -> String {
+        lines(.copy("It’s still used in the places below. Change them first."), locale: locale)
+    }
+
+    private func lines(_ sentence: ClashDisplayText, locale: Locale) -> String {
+        ([ClashCopy.string(for: sentence, locale: locale)] + places).joined(separator: "\n")
     }
 }
 
@@ -240,6 +285,29 @@ public struct ClashMacOriginalNodesPage: View {
             } footer: {
                 if let note = actions.updateNote {
                     Text(clash: note).accessibilityIdentifier("configuration-center.original-nodes.update-note")
+                }
+            }
+             
+             
+            if let providersPage = actions.providersPage {
+                Section {
+                    ClashRoutedViewLink { providersPage() } label: {
+                        Text(clash: ClashMacConfigurationOutlineCard.title(.proxyProviders))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("configuration-center.original-nodes.providers")
+                }
+            }
+             
+            if let proxiesPage = actions.proxiesPage {
+                Section {
+                    ClashRoutedViewLink { proxiesPage.open() } label: {
+                        Text(clash: proxiesPage.title)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("configuration-center.original-nodes.proxies-page")
                 }
             }
         }
@@ -349,7 +417,7 @@ public struct ClashMacOriginalNodesPage: View {
                               operation: Self.deleteOperation)
             } catch is CancellationError {
             } catch {
-                feedback?.say(ClashMacFeedbackSentences.couldNotDelete(node.name, reason: ClashErrorCopy.message(error, locale: locale),
+                feedback?.say(ClashMacFeedbackSentences.couldNotDelete(node.name, reason: ClashMacFeedbackSentences.whyNotDeleted(error, locale: locale),
                                                                       id: Self.deleteOperation),
                               operation: Self.deleteOperation)
             }

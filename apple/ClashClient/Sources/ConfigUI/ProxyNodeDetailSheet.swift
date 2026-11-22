@@ -169,7 +169,8 @@ enum ProxyNodeDetailLookup {
      
      
      
-    static func coveredValues(for details: ProxyProtocolDetails) -> [String: String] {
+     
+    static func writtenValues(for details: ProxyProtocolDetails) -> [String: String] {
         guard let mapping = ProxyProtocolCatalog.mapping(from: details.configurationJSON) else {
             return [:]
         }
@@ -220,11 +221,7 @@ enum ProxyNodeDetailLookup {
                 leafRows(prefix: "\(prefix).\(leaf)", nested[leaf] as Any)
             }
         }
-        let text = asText(raw)
-        let leaf = prefix.split(separator: ".").last.map(String.init) ?? prefix
-        let covered = ProxyNodeDetailSheet.coveredKeys.contains(leaf.lowercased())
-        return [.init(label: prefix, value: covered ? String(repeating: "•", count: 8) : text,
-                      kind: covered ? .secret : .text, key: prefix)]
+        return [.init(label: prefix, value: asText(raw), key: prefix)]
     }
 
      
@@ -255,6 +252,11 @@ struct ProxyNodeDetailSheet: View {
      
     var failureCategory: String? = nil
     var failureMessage: String? = nil
+     
+     
+     
+     
+    var trailingSections: AnyView? = nil
 
      
      
@@ -269,9 +271,8 @@ struct ProxyNodeDetailSheet: View {
      
     @State private var loaded = false
     @State private var details: ProxyProtocolDetails?
-    @State private var covered: [String: String] = [:]
+    @State private var written: [String: String] = [:]
     @State private var expanded: [String: [ProxyProtocolDetailRow]] = [:]
-    @State private var revealed: Set<String> = []
     @State private var copied = false
      
     @State private var notLoaded = false
@@ -334,6 +335,9 @@ struct ProxyNodeDetailSheet: View {
                     )
                     .accessibilityIdentifier("proxy-detail.empty")
                 }
+                if loaded, let trailingSections {
+                    trailingSections
+                }
             }
             .accessibilityIdentifier("proxy-detail.sheet")
              
@@ -376,12 +380,12 @@ struct ProxyNodeDetailSheet: View {
                 ) : nil) else { return nil }
                 return (
                     details,
-                    ProxyNodeDetailLookup.coveredValues(for: details),
+                    ProxyNodeDetailLookup.writtenValues(for: details),
                     ProxyNodeDetailLookup.expandedRows(for: details)
                 )
             }.value
             details = found?.0
-            covered = found?.1 ?? [:]
+            written = found?.1 ?? [:]
             expanded = found?.2 ?? [:]
             notLoaded = found == nil && !(handed?.notLoaded.isEmpty ?? true)
             loaded = true
@@ -478,22 +482,8 @@ struct ProxyNodeDetailSheet: View {
      
      
      
-     
-    static let coveredKeys: Set<String> = [
-        "password", "psk", "pre-shared-key", "private-key", "private-key-passphrase",
-        "auth-key", "key", "obfs-password", "auth-str", "auth", "token", "secret",
-        "tls-auth", "tls-crypt", "tls-crypt-v2",
-    ]
-
-    private func isCovered(_ row: ProxyProtocolDetailRow) -> Bool {
-        guard let key = row.key else { return false }
-        return Self.coveredKeys.contains(key.lowercased())
-    }
-
-     
-     
     private func asWritten(_ row: ProxyProtocolDetailRow) -> String {
-        row.key.flatMap { covered[$0] } ?? row.value
+        row.key.flatMap { written[$0] } ?? row.value
     }
 
     @ViewBuilder
@@ -504,64 +494,25 @@ struct ProxyNodeDetailSheet: View {
             ForEach(leaves) { leaf in
                 leafRow(leaf)
             }
-        } else if !isCovered(row) {
+        } else {
+             
+             
+             
             valueRow(ClashCopy.key(row.label)) {
                 valueText(row, asWritten(row))
                     .textSelection(.enabled)
                     .multilineTextAlignment(.trailing)
                     .accessibilityIdentifier("proxy-detail.row.\(row.id)")
             }
-        } else {
-            coveredRow(row)
         }
     }
 
-    @ViewBuilder
     private func leafRow(_ leaf: ProxyProtocolDetailRow) -> some View {
-        if leaf.kind == .secret {
-            coveredRow(leaf)
-        } else {
-            valueRow(LocalizedStringKey(leaf.label)) {
-                Text(verbatim: leaf.value)
-                    .textSelection(.enabled)
-                    .multilineTextAlignment(.trailing)
-                    .accessibilityIdentifier("proxy-detail.row.\(leaf.id)")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func coveredRow(_ row: ProxyProtocolDetailRow) -> some View {
-        switch row.kind {
-        case .text, .toggle:
-             
-             
-             
-            valueRow(ClashCopy.key(row.label)) {
-                valueText(row, row.value)
-                    .textSelection(.enabled)
-                    .multilineTextAlignment(.trailing)
-                    .accessibilityIdentifier("proxy-detail.row.\(row.id)")
-            }
-        case .secret, .privateText:
-            let shown = revealed.contains(row.id)
-            let written = asWritten(row)
-            valueRow(ClashCopy.key(row.label)) {
-                HStack(spacing: ClashTheme.Spacing.row) {
-                    Text(verbatim: shown ? written : String(repeating: "•", count: 8))
-                        .textSelection(.enabled)
-                        .multilineTextAlignment(.trailing)
-                        .accessibilityIdentifier("proxy-detail.row.\(row.id)")
-                    Button {
-                        if shown { revealed.remove(row.id) } else { revealed.insert(row.id) }
-                    } label: {
-                        Image(systemName: (shown ? ClashSymbol.eyeSlash : ClashSymbol.eye).rawValue)
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(Text(ClashCopy.key(shown ? "Hide" : "Show")))
-                    .accessibilityIdentifier("proxy-detail.reveal.\(row.id)")
-                }
-            }
+        valueRow(LocalizedStringKey(leaf.label)) {
+            Text(verbatim: leaf.value)
+                .textSelection(.enabled)
+                .multilineTextAlignment(.trailing)
+                .accessibilityIdentifier("proxy-detail.row.\(leaf.id)")
         }
     }
 
@@ -651,6 +602,12 @@ struct ProxyNodeEditorSheet: View {
      
      
     @State private var overrideKey: String?
+     
+     
+     
+     
+    var library: ProxyNodeLibraryContext? = nil
+    @StateObject private var libraryActions = ProxyNodeLibraryActions()
 
     private func closeModal() {
         dismiss.closeModalOrDismiss()
@@ -693,7 +650,8 @@ struct ProxyNodeEditorSheet: View {
                             { try profiles.removeProxyNodeOverride(named: key, profileID: profile.id) }
                         },
                         onDone: { closeModal() },
-                        drawsClose: true
+                        drawsClose: true,
+                        trailingSections: librarySections
                     )
                      
 #if os(macOS)
@@ -711,7 +669,8 @@ struct ProxyNodeEditorSheet: View {
                     providersDir: providersDir,
                     resolved: resolution,
                     failureCategory: failureCategory,
-                    failureMessage: failureMessage
+                    failureMessage: failureMessage,
+                    trailingSections: librarySections
                 )
             }
         }
@@ -739,7 +698,30 @@ struct ProxyNodeEditorSheet: View {
             resolution = result.1
             overrideKey = await profiles.proxyNodeOverrideKey(named: name, profileID: current.id)
             loaded = true
+             
+             
+             
+             
+             
+             
+            if let library {
+                let handle = dismiss
+                libraryActions.attach(node: name, profileID: current.id, model: profiles, context: library,
+                                      locale: AppPreferences.language().locale, close: { handle.closeModalOrDismiss() })
+                await libraryActions.read()
+            }
         }
+#if os(iOS)
+        .modifier(ProxyNodeLibraryPresenters(actions: libraryActions))
+#else
+        .modifier(ClashMacProxyNodeLibraryPresenters(actions: libraryActions, context: library))
+#endif
         .clashCapturesDismiss(dismiss)
+    }
+
+     
+     
+    private var librarySections: AnyView? {
+        return library == nil ? nil : AnyView(ProxyNodeLibrarySections(actions: libraryActions))
     }
 }

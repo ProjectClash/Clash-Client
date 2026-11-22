@@ -66,39 +66,7 @@ struct ClashMemoryLedger: Equatable {
      
      
     static func lastRun(from lines: [String]) -> ClashMemoryLedger {
-         
-        func mebibytes(after key: String, in line: String) -> Int64? {
-            guard let range = line.range(of: key) else { return nil }
-            let magnitude = line[range.upperBound...]
-                .prefix { $0.isNumber || $0 == "." }
-            guard let value = Double(magnitude) else { return nil }
-            return Int64((value * 1_048_576).rounded())
-        }
-        var parsed: [(String, Int64, Int64?)] = []
-        for line in lines {
-            guard let phaseRange = line.range(of: "go-phase="),
-                  let fpRange = line.range(of: "fp=")
-            else { continue }
-             
-             
-             
-             
-            let name = line[phaseRange.upperBound..<fpRange.lowerBound]
-                .trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty,
-                  let footprint = mebibytes(after: "fp=", in: line)
-            else { continue }
-             
-             
-             
-             
-             
-            parsed.append((
-                name,
-                footprint,
-                mebibytes(after: "peak=", in: line)
-            ))
-        }
+        var parsed = lines.compactMap(probe(of:))
         if let start = parsed.lastIndex(where: {
             $0.0 == "start-first-statement"
         }) {
@@ -114,6 +82,122 @@ struct ClashMemoryLedger: Equatable {
             ))
         }
         return ClashMemoryLedger(rows: rows)
+    }
+
+     
+     
+    static var phaseFile: URL? {
+        ClashAppIdentifiers.appGroupContainer?
+            .appendingPathComponent(MemorySampleLog.startupPhaseFileName)
+    }
+
+     
+     
+    static func lastRunOfPhaseFile() -> ClashMemoryLedger? {
+        phaseFile.flatMap(lastRun(of:))
+    }
+
+     
+    static func lastRun(of url: URL) -> ClashMemoryLedger? {
+        lastRunLines(of: url).map(lastRun(from:))
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func lastRunLines(of url: URL) -> [String]? {
+        lastRunRead(of: url)?.lines
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func lastRunRead(of url: URL, first: Int = 64 * 1024,
+                            limit: Int = 1024 * 1024) -> (lines: [String], bytesRead: Int)? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let lineBreak = UInt8(ascii: "\n")
+        var bytesRead = 0
+        var span = max(first, 1)
+        while true {
+            guard let size = try? handle.seekToEnd() else { return nil }
+            let wanted = UInt64(min(span, limit))
+            let whole = wanted >= size
+             
+            let offset = whole ? 0 : size - wanted - 1
+            guard (try? handle.seek(toOffset: offset)) != nil,
+                  var data = try? handle.readToEnd() else { return nil }
+            bytesRead += data.count
+            if !whole {
+                let beginsALine = data.first == lineBreak
+                data = data.dropFirst()
+                if !beginsALine {
+                    data = data.firstIndex(of: lineBreak).map { data[data.index(after: $0)...] } ?? Data()
+                }
+            }
+            if let last = data.last, last != lineBreak {
+                data = data.lastIndex(of: lineBreak).map { data[...$0] } ?? Data()
+            }
+            let lines = String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+            if let opening = lines.lastIndex(where: opensRun) {
+                return (Array(lines[opening...]), bytesRead)
+            }
+            if whole || span >= limit { return (lines, bytesRead) }
+            span *= 2
+        }
+    }
+
+     
+     
+     
+    private static func probe(of line: String) -> (String, Int64, Int64?)? {
+         
+        func mebibytes(after key: String, in line: String) -> Int64? {
+            guard let range = line.range(of: key) else { return nil }
+            let magnitude = line[range.upperBound...]
+                .prefix { $0.isNumber || $0 == "." }
+            guard let value = Double(magnitude) else { return nil }
+            return Int64((value * 1_048_576).rounded())
+        }
+        guard let phaseRange = line.range(of: "go-phase="),
+              let fpRange = line.range(of: "fp="),
+              phaseRange.upperBound <= fpRange.lowerBound
+        else { return nil }
+         
+         
+         
+         
+        let name = line[phaseRange.upperBound..<fpRange.lowerBound]
+            .trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty,
+              let footprint = mebibytes(after: "fp=", in: line)
+        else { return nil }
+         
+         
+         
+         
+         
+        return (name, footprint, mebibytes(after: "peak=", in: line))
+    }
+
+     
+    private static func opensRun(_ line: String) -> Bool {
+        probe(of: line)?.0 == "start-first-statement"
     }
 
      

@@ -98,6 +98,29 @@ public struct ClashConfigurationPageParts {
     }
 }
 
+ 
+ 
+ 
+ 
+ 
+public enum ClashConfigurationCentreLibrary: CaseIterable, Hashable, Sendable {
+    case nodes, rules, scripts
+}
+
+ 
+ 
+ 
+public struct ClashConfigurationCentreLibraries {
+    public let value: (ClashConfigurationCentreLibrary) -> ClashDisplayText?
+    public let page: (ClashConfigurationCentreLibrary) -> AnyView
+
+    public init(value: @escaping (ClashConfigurationCentreLibrary) -> ClashDisplayText?,
+                page: @escaping (ClashConfigurationCentreLibrary) -> AnyView) {
+        self.value = value
+        self.page = page
+    }
+}
+
 private struct ClashConfigurationSearchingKey: EnvironmentKey {
     static let defaultValue = false
 }
@@ -218,6 +241,9 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
      
      
     private let configurationPage: ((Profile.ID) -> ClashConfigurationPageParts)?
+     
+     
+    private let libraries: ClashConfigurationCentreLibraries?
 
      
      
@@ -230,6 +256,8 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
     @State private var activeCapability:
         ClashProfilesCapabilityDestination?
     @State private var showsReorder = false
+     
+    @State private var presentedDetail: ClashProfileCentreDetail?
     @State private var showsBatchDetails = false
     @State private var displayedProfiles: [ClashProfileSnapshot]
     @State private var draggedProfileID: String?
@@ -258,6 +286,7 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
         quickAdd: (() -> AnyView)? = nil,
         quickAddLeads: Bool = false,
         configurationPage: ((Profile.ID) -> ClashConfigurationPageParts)? = nil,
+        libraries: ClashConfigurationCentreLibraries? = nil,
         capabilityInterceptor:
             ((ClashProfilesCapabilityDestination) -> Bool)? = nil,
         @ViewBuilder icon: @escaping (ClashSymbol) -> Icon,
@@ -279,6 +308,7 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
         self.quickAdd = quickAdd
         self.quickAddLeads = quickAddLeads
         self.configurationPage = configurationPage
+        self.libraries = libraries
         self.capabilityInterceptor = capabilityInterceptor
         self.icon = icon
         self.capabilityContent = capabilityContent
@@ -350,6 +380,27 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
                 message: { _ in .copy("This profile will be deleted. Sources and rule schemes in the library will remain.") },
                 identifier: "profile-center.delete.confirm") { doomed in performDeletion(doomed) }
         .clashCapturesDismiss(dismiss)
+    }
+
+     
+     
+    private func centreDetailPage(_ id: ClashProfileSnapshot.ID) -> some View {
+        pagePresentation(detailPresentation(
+            AnyView(
+                ClashProfileDetailView(
+                    profileID: id,
+                    snapshot: snapshot,
+                    actions: actions,
+                    presentationClass: presentationClass,
+                    palette: palette,
+                    pagePresentation: pagePresentation,
+                    configurationPage: configurationPage,
+                    capabilityInterceptor: capabilityInterceptor,
+                    icon: icon,
+                    capabilityContent: capabilityContent
+                )
+            )
+        ))
     }
 
      
@@ -558,10 +609,14 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
                         }
                     }
                 }
+                 
+                 
+                 
+                if let modules = snapshot.profiles.modules { modulesSection(modules) }
+                if let libraries { librariesSection(libraries) }
                 if let quickAdd, isCenterSection {
                     if !quickAddLeads { quickAdd() }
                 } else if snapshot.profiles.canCreateEmpty || snapshot.profiles.canImport { addSection }
-                if let modules = snapshot.profiles.modules { modulesSection(modules) }
                 if snapshot.profiles.canBackup { dataSection }
                 failureSection
             }
@@ -593,8 +648,25 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
         .onChange(of: opensModules) { opens in
             if opens { showsModules = true }
         }
+         
+         
+         
+         
+         
+         
+         
+        .clashProductModal(item: $presentedDetail, role: .page) { presented in
+            ClashProfileCentreDetailModal(
+                title: snapshot.profiles.profile(id: presented.id)?.label ?? "",
+                page: centreDetailPage(presented.id),
+                close: { presentedDetail = nil }
+            )
+        }
         .environment(\.clashDetailCanvas, palette.canvas)
         .onChange(of: snapshot.profiles.profiles) { profiles in
+             
+             
+            if let shown = presentedDetail, !profiles.contains(where: { $0.id == shown.id }) { presentedDetail = nil }
              
              
              
@@ -615,6 +687,7 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
                 showsDismissControl: showsDismissControl
             )
         )
+        .modifier(ClashConfigurationCentreHeading(isCentre: isCenterSection))
         .clashToolbarUnlessInPanel {
             ToolbarItem(placement: .cancellationAction) {
                  
@@ -759,7 +832,8 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
                             select(profile)
                         },
                         palette: palette,
-                        icon: icon, presentsDetailModally: isCenterSection
+                        icon: icon, presentsDetailModally: isCenterSection,
+                        openDetail: { presentedDetail = ClashProfileCentreDetail(id: profile.id) }
                     )
                     .clashDirectReorderRow(
                         id: profile.id.rawValue,
@@ -916,7 +990,8 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
                                     select(profile)
                                 },
                                 palette: palette,
-                                icon: icon, presentsDetailModally: isCenterSection
+                                icon: icon, presentsDetailModally: isCenterSection,
+                                openDetail: { presentedDetail = ClashProfileCentreDetail(id: profile.id) }
                             )
                             .clashDirectReorderRow(
                                 id: profile.id.rawValue,
@@ -1002,7 +1077,10 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
      
      
     private func modulesSection(_ entry: ClashModulesEntrySnapshot) -> some View {
-        ClashConfigurationLibraryCard(palette: palette, nativeList: isCenterSection) {
+         
+         
+        ClashConfigurationLibraryCard(palette: palette, nativeList: isCenterSection,
+                                      footer: isCenterSection ? .copy("Modules you turn on apply to every configuration.") : nil) {
             ClashRoutedViewLink(
                 showsDisclosureIndicator: false
             ) {
@@ -1020,6 +1098,40 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("profile-center.modules")
         }
+    }
+
+     
+     
+     
+    private func librariesSection(_ libraries: ClashConfigurationCentreLibraries) -> some View {
+        ClashConfigurationLibraryCard(palette: palette, nativeList: isCenterSection) {
+            libraryRow(.nodes, title: "Node Library", symbol: .serverRack,
+                       identifier: "profile-center.library.nodes", libraries)
+            libraryRow(.rules, title: "Rule Library", symbol: .listBulletRectangle,
+                       identifier: "profile-center.library.rules", libraries)
+            libraryRow(.scripts, title: "Override Library", symbol: .curlybraces,
+                       identifier: "profile-center.library.scripts", libraries)
+        }
+    }
+
+    private func libraryRow(_ library: ClashConfigurationCentreLibrary, title: ClashDisplayText, symbol: ClashSymbol,
+                            identifier: String, _ libraries: ClashConfigurationCentreLibraries) -> some View {
+        ClashRoutedViewLink(
+            showsDisclosureIndicator: false
+        ) {
+            libraries.page(library)
+        } label: {
+            ClashProfileActionRow(
+                title: title,
+                value: libraries.value(library),
+                symbol: symbol,
+                tint: .primary,
+                showsDisclosure: !isCenterSection,
+                icon: icon
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
     }
 
     private var dataSection: some View {
@@ -1413,6 +1525,35 @@ public struct ClashProfilesView<Icon: View, CapabilityContent: View>: View {
 
  
  
+struct ClashProfileCentreDetail: Identifiable, Hashable {
+    let id: ClashProfileSnapshot.ID
+}
+
+ 
+ 
+ 
+private struct ClashProfileCentreDetailModal<Page: View>: View {
+    let title: String
+    let page: Page
+     
+    let close: @MainActor @Sendable () -> Void
+
+    var body: some View {
+        ClashSingleColumnNavigationContainer {
+            page
+                .clashToolbarUnlessInPanel {
+                    ToolbarItem(placement: .cancellationAction) {
+                        ClashSheetCloseButton { close() }
+                    }
+                }
+                .clashProductModalRoot(title: .verbatim(title))
+        }
+        .environment(\.clashProductModalDismiss, close)
+    }
+}
+
+ 
+ 
 enum ClashProfileRoute: Hashable {
     case detail(Profile.ID)
 }
@@ -1476,7 +1617,10 @@ private struct ClashProfileRow<
     let palette: ClashProductPalette
     let icon: (ClashSymbol) -> Icon
     var presentsDetailModally = false
-    @State private var showsDetail = false
+     
+     
+     
+    var openDetail: () -> Void = {}
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -1489,18 +1633,6 @@ private struct ClashProfileRow<
                 standardProfileRow
             }
         }
-        .clashProductModal(isPresented: $showsDetail, role: .page) {
-            ClashSingleColumnNavigationContainer {
-                destination()
-                    .clashToolbarUnlessInPanel {
-                        ToolbarItem(placement: .cancellationAction) {
-                            ClashSheetCloseButton { showsDetail = false }
-                        }
-                    }
-                    .clashProductModalRoot(title: .verbatim(profile.label))
-            }
-            .environment(\.clashProductModalDismiss, { showsDetail = false })
-        }
     }
 
      
@@ -1511,7 +1643,7 @@ private struct ClashProfileRow<
         @ViewBuilder label: () -> Label
     ) -> some View {
         if presentsDetailModally {
-            Button { showsDetail = true } label: { label() }
+            Button { openDetail() } label: { label() }
         } else if #available(iOS 16.0, macOS 13.0, tvOS 16.0, *) {
              
              
@@ -1639,11 +1771,10 @@ private struct ClashProfileRow<
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(isSelecting || profile.isBusy)
-            .accessibilityLabel(
-                profile.isCurrent
-                    ? "\(profile.label), current"
-                    : "Switch to \(profile.label)"
-            )
+             
+             
+            .accessibilityLabel(Text(clash: profile.isCurrent
+                ? .format("%@, current", [profile.label]) : .format("Switch to %@", [profile.label])))
             .accessibilityIdentifier(
                 "profile-center.select.\(profile.id)"
             )
@@ -1700,7 +1831,9 @@ private struct ClashProfileRow<
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .accessibilityLabel("\(profile.label) details")
+         
+         
+        .accessibilityLabel(Text(clash: .format("%@ details", [profile.label])))
         .accessibilityIdentifier(
             "profile-center.detail.\(profile.id)"
         )
@@ -1771,11 +1904,10 @@ private struct ClashProfileRow<
             .disabled(isBlocked)
             .buttonStyle(.plain)
             .disabled(isSelecting || profile.isBusy)
-            .accessibilityLabel(
-                profile.isCurrent
-                    ? "\(profile.label), current"
-                    : "Switch to \(profile.label)"
-            )
+             
+             
+            .accessibilityLabel(Text(clash: profile.isCurrent
+                ? .format("%@, current", [profile.label]) : .format("Switch to %@", [profile.label])))
             .accessibilityIdentifier(
                 "profile-center.select.\(profile.id)"
             )
@@ -1803,7 +1935,7 @@ private struct ClashProfileRow<
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(profile.label) details")
+            .accessibilityLabel(Text(clash: .format("%@ details", [profile.label])))
             .accessibilityIdentifier(
                 "profile-center.detail.\(profile.id)"
             )
@@ -3303,7 +3435,12 @@ private struct ClashProfileReorderView: View {
     let actions: AppleClientActions
     let palette: ClashProductPalette
 
-    @Environment(\.dismiss) private var dismiss
+     
+     
+     
+     
+     
+    @StateObject private var dismiss = ClashDismissHandle()
     @State private var profiles: [ClashProfileSnapshot]
 
     init(
@@ -3392,6 +3529,9 @@ private struct ClashProfileReorderView: View {
             .clashProductModalRoot(title: "Reorder Profiles")
         }
         .accessibilityIdentifier("profile-reorder.screen")
+         
+         
+        .clashCapturesDismiss(dismiss)
     }
 
     private func moveProfile(at index: Int, offset: Int) {
@@ -3713,6 +3853,34 @@ public struct ClashProfileGroup<
 
  
  
+ 
+ 
+ 
+ 
+ 
+private struct ClashConfigurationCentreHeading: ViewModifier {
+    @Environment(\.clashShellDrawsRootHeading) private var railOwnsHeading
+    let isCentre: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isCentre {
+             
+             
+             
+            content
+                .clashRootHeading("Profile Center")
+                .clashToolbarUnlessInPanel {
+                    ToolbarItem(placement: .principal) {
+                        if !railOwnsHeading { Text("Profile Center").font(.headline) }
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
 public struct ClashProfileActionRow<Icon: View>: View {
     let title: ClashDisplayText
     var subtitle: ClashDisplayText? = nil
@@ -4065,42 +4233,18 @@ private struct ClashSubscriptionUsageView: View {
      
      
      
-     
-     
-     
-     
-     
-    private static let expiryFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        return formatter
-    }()
-
     private func dateString(_ date: Date) -> String {
-        Self.expiryFormatter.string(from: date)
+        ClashSubscriptionUsageFormat.compactExpiryDay(date)
     }
 
+     
+     
     private func expiryTint(_ expiration: Date) -> Color {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone =
-            TimeZone(identifier: "UTC")
-            ?? TimeZone(secondsFromGMT: 0)!
-        let days =
-            calendar.dateComponents(
-                [.day],
-                from: calendar.startOfDay(for: Date()),
-                to: calendar.startOfDay(for: expiration)
-            ).day ?? 0
-        if days <= 0 {
-            return .red
+        switch ClashSubscriptionUsageFormat.urgency(of: expiration) {
+        case .expired, .today: return .red
+        case .soon: return .orange
+        case .none: return .secondary
         }
-        if days <= 7 {
-            return .orange
-        }
-        return .secondary
     }
 }
 

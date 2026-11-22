@@ -438,13 +438,15 @@ struct ProxyShareView: View {
              
              
              
+             
+             
+             
             ClashFieldRow(
                 "Password",
                  
                  
                 hint: ClashDisplayText.format("%@ bytes", [ProxyShareCredentialPolicy.passwordByteRange]).resolved(locale: locale),
                 text: $password,
-                secure: true,
                 identifier: "proxyShare.password"
             )
             .textInputAutocapitalization(.never)

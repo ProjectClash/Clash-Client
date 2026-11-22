@@ -154,11 +154,30 @@ public enum ClashTunnelOutboundMode {
     public static let builtinExits: Set<String> = ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"]
 
      
-    public static func exit(ofResolved name: String, isGroup: Bool) -> GlobalExit {
+     
+     
+     
+     
+     
+     
+    public static func exit(ofResolved name: String, isGroup: Bool, type: String? = nil) -> GlobalExit {
         switch name {
         case "DIRECT": return .direct
         case "REJECT", "REJECT-DROP": return .reject
-        default: return name.isEmpty || isGroup || builtinExits.contains(name) ? .other : .proxy
+        default:
+            if name.isEmpty || isGroup || builtinExits.contains(name) { return .other }
+            return type.flatMap(exit(ofType:)) ?? .proxy
+        }
+    }
+
+     
+     
+    static func exit(ofType type: String) -> GlobalExit? {
+        switch type.lowercased().replacingOccurrences(of: "-", with: "") {
+        case "direct": return .direct
+        case "reject", "rejectdrop": return .reject
+        case "compatible", "pass", "passrule", "dns": return .other
+        default: return nil
         }
     }
 
@@ -168,11 +187,14 @@ public enum ClashTunnelOutboundMode {
         public let now: String?
         public let members: [String]?
         public let listsEveryMember: Bool
+         
+        public let memberTypes: [String: String]
 
-        public init(now: String?, members: [String]?, listsEveryMember: Bool = true) {
+        public init(now: String?, members: [String]?, listsEveryMember: Bool = true, memberTypes: [String: String] = [:]) {
             self.now = now
             self.members = members
             self.listsEveryMember = listsEveryMember
+            self.memberTypes = memberTypes
         }
     }
 
@@ -188,15 +210,15 @@ public enum ClashTunnelOutboundMode {
      
     public static func exit(following name: String, group: (String) -> WalkedGroup?) -> GlobalExit? {
         var path: Set<String> = []
-        func walk(_ name: String) -> GlobalExit? {
-            guard let found = group(name) else { return exit(ofResolved: name, isGroup: false) }
+        func walk(_ name: String, type: String?) -> GlobalExit? {
+            guard let found = group(name) else { return exit(ofResolved: name, isGroup: false, type: type) }
             guard path.insert(name).inserted else { return .other }
             defer { path.remove(name) }
-            if let now = found.now, !now.isEmpty { return walk(now) }
+            if let now = found.now, !now.isEmpty { return walk(now, type: found.memberTypes[now]) }
             guard let members = found.members, found.listsEveryMember, !members.isEmpty else { return nil }
             var exits: [GlobalExit] = []
             for member in members {
-                guard let exit = walk(member) else { return nil }
+                guard let exit = walk(member, type: found.memberTypes[member]) else { return nil }
                 exits.append(exit)
             }
             if exits.allSatisfy({ $0 == .proxy }) { return .proxy }
@@ -204,7 +226,7 @@ public enum ClashTunnelOutboundMode {
             if exits.allSatisfy({ $0 == .reject }) { return .reject }
             return .other
         }
-        return walk(name)
+        return walk(name, type: nil)
     }
 
      
@@ -423,13 +445,25 @@ public enum ClashTunnelOutboundMode {
     ) -> WalkedGroup? {
         guard let entry = groups[name] as? [String: Any] else { return nil }
         let now = (entry["now"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        guard now == nil || (readingGlobalsMembers && name == "GLOBAL") else { return WalkedGroup(now: now, members: nil) }
+         
+        var types: [String: String] = [:]
+        if let chosen = entry["nowMember"] as? [String: Any], let chosenName = chosen["name"] as? String,
+           chosenName == now, let type = chosen["type"] as? String {
+            types[chosenName] = type
+        }
+        guard now == nil || (readingGlobalsMembers && name == "GLOBAL") else {
+            return WalkedGroup(now: now, members: nil, memberTypes: types)
+        }
         let page = members(name).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
-        let names = (page?["members"] as? [[String: Any]])?.compactMap { $0["name"] as? String }
+        let rows = page?["members"] as? [[String: Any]]
+        let names = rows?.compactMap { $0["name"] as? String }
+        for row in rows ?? [] {
+            if let member = row["name"] as? String, let type = row["type"] as? String, types[member] == nil { types[member] = type }
+        }
         let total = page?["total"] as? Int
         var complete = false
         if let names { complete = total.map { names.count >= $0 } ?? true }
-        return WalkedGroup(now: now, members: names, listsEveryMember: complete)
+        return WalkedGroup(now: now, members: names, listsEveryMember: complete, memberTypes: types)
     }
 
      

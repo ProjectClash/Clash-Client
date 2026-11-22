@@ -73,6 +73,10 @@ public struct ClashMacConfigurationInspectorActions {
     public var setOriginalUse: @MainActor (Bool) -> Void = { _ in }
      
      
+     
+    public var schemePicker: (@MainActor () -> AnyView)? = nil
+     
+     
     public var leaveOriginal: @MainActor (String) -> Void = { _ in }
     public var loadScopeChoices: @MainActor (ConfigurationSourceRecord) async throws -> ClashMacNodeScopeChoices = { _ in
         throw ConfigurationLibraryError.unreadable
@@ -100,6 +104,14 @@ public struct ClashMacConfigurationInspectorActions {
      
      
     public var loadSchemeGroups: (@MainActor () async -> [(name: String, type: String)])? = nil
+     
+     
+     
+    public var configurationProxiesPage: ClashMacRelatedPage? = nil
+     
+     
+     
+    public var configurationRulesPage: ClashMacRelatedPage? = nil
      
     public var saveAsScheme: (@MainActor (String) -> Void)? = nil
      
@@ -164,7 +176,7 @@ public struct ClashMacConfigurationInspector: View {
     private let recipe: ConfigurationRecipe?
     private let scriptsActions: ClashMacScriptsActions
      
-    private let scriptsQuickAdd: ((@escaping @MainActor () -> Void) -> AnyView)?
+    private let scriptsQuickAdd: ((@escaping @MainActor (ClashMacAddedScript) -> Void) -> AnyView)?
     private let profileURL: String?
     private let actions: ClashMacConfigurationInspectorActions
      
@@ -241,7 +253,7 @@ public struct ClashMacConfigurationInspector: View {
         ruleShelves: [ClashMacRuleLibraryShelf],
         recipe: ConfigurationRecipe?,
         scriptsActions: ClashMacScriptsActions,
-        scriptsQuickAdd: ((@escaping @MainActor () -> Void) -> AnyView)? = nil,
+        scriptsQuickAdd: ((@escaping @MainActor (ClashMacAddedScript) -> Void) -> AnyView)? = nil,
         profileURL: String? = nil,
         actions: ClashMacConfigurationInspectorActions,
         door: @escaping (ClashMacConfigurationDoor) -> AnyView = { _ in AnyView(EmptyView()) },
@@ -685,25 +697,6 @@ public struct ClashMacConfigurationInspector: View {
         return sources.first { $0.id == id }?.updateIntervalHours
     }
 
-    private func chooseScheme(_ id: String) {
-         
-         
-         
-         
-         
-         
-         
-        if offersOriginal, usesOriginal, recipe != nil {
-            chosenScheme = id
-            actions.leaveOriginal(id)
-            return
-        }
-        guard id != chosenScheme || recipe == nil else { return }
-        chosenScheme = id
-        ClashMacDebugLog.note("page.choose scheme \(id)")
-        actions.setScheme(id)
-    }
-
      
 
      
@@ -807,11 +800,17 @@ public struct ClashMacConfigurationInspector: View {
      
     private func outlineDestination(_ section: ConfigurationOutlineSection) -> ClashMacOutlineDestination? {
         switch section {
+         
+         
+         
+         
+         
+         
         case .customRules:
             guard let rules = actions.customRules else { return nil }
             let initial = customRules
-            return .page {
-                AnyView(ClashMacCustomRulesPage(actions: rules, initial: initial)
+            return .page { [actions] in
+                AnyView(ClashMacCustomRulesPage(actions: rules, initial: initial, rulesPage: actions.configurationRulesPage)
                     .navigationTitle(Text(clash: .copy("Custom Rules"))))
             }
         case .overrideScript:
@@ -858,12 +857,14 @@ public struct ClashMacConfigurationInspector: View {
          
          
          
-        case .proxies where outlineForm == .composed && isComposed,
-             .proxyProviders where outlineForm == .composed && isComposed:
+         
+         
+         
+        case .proxies where outlineForm == .composed && isComposed:
             return .page { [sources, recipe, actions] in
                 AnyView(ClashMacConfigurationSourcesPage(
                     sources: sources, chosen: $chosenSources, recipe: recipe, actions: actions, toggle: toggleSource,
-                    section: section
+                    section: section, proxiesPage: actions.configurationProxiesPage
                 )
                 .navigationTitle(Text(clash: ClashMacConfigurationOutlineCard.title(section))))
             }
@@ -887,7 +888,7 @@ public struct ClashMacConfigurationInspector: View {
             original: offersOriginal
                 ? ClashMacOriginalChoice(isChosen: usesOriginal, sourceName: originalSourceName, choose: { actions.setOriginalUse(true) })
                 : nil,
-            schemes: schemeChoices ?? schemes,
+            schemePage: actions.schemePicker,
             usage: schemeUsage,
             followedLinks: followedLinks,
             scriptValue: scriptValue,
@@ -895,8 +896,7 @@ public struct ClashMacConfigurationInspector: View {
             busy: profile.isBusy,
             configurationLabel: profile.label,
             destination: outlineDestination,
-            onReturn: cardPageReturned,
-            chooseScheme: chooseScheme
+            onReturn: cardPageReturned
         )
     }
 
@@ -973,11 +973,16 @@ public struct ClashMacConfigurationInspector: View {
             if actions.isUpdatingSource {
                 ProgressView().controlSize(.small)
             } else {
-                Text(clash: Self.lastUpdated(profile.lastUpdatedAt, locale: locale))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help(profile.lastUpdatedAt.map { Self.dateFormatters.formatter(for: locale).string(from: $0) } ?? "")
-                    .accessibilityIdentifier("configuration-center.config-url.updated")
+                 
+                 
+                 
+                TimelineView(ClashMacLastUpdatedSchedule(since: profile.lastUpdatedAt)) { _ in
+                    Text(clash: Self.lastUpdated(profile.lastUpdatedAt, locale: locale))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(profile.lastUpdatedAt.map { Self.dateFormatters.formatter(for: locale).string(from: $0) } ?? "")
+                        .accessibilityIdentifier("configuration-center.config-url.updated")
+                }
             }
         }
          
@@ -1091,6 +1096,40 @@ public struct ClashMacConfigurationInspector: View {
             sentName = trimmed
             actions.rename(trimmed)
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+struct ClashMacLastUpdatedSchedule: TimelineSchedule {
+    let since: Date?
+
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+        var next: Date? = startDate
+        return AnyIterator {
+            guard let current = next else { return nil }
+            next = since.flatMap { Self.refresh(after: current, since: $0) }
+            return current
+        }
+    }
+
+     
+     
+     
+     
+    static func refresh(after now: Date, since: Date) -> Date? {
+        let age = now.timeIntervalSince(since)
+        guard age >= 0 else { return since }
+        let step: TimeInterval
+        switch age {
+        case ..<60: step = 1
+        case ..<3_600: step = 60
+        case ..<86_400: step = 3_600
+        default: step = 86_400
+        }
+        return since.addingTimeInterval((floor(age / step) + 1) * step)
     }
 }
 
@@ -1240,6 +1279,14 @@ struct ClashMacConfigurationSourcesPage: View {
      
     var section: ConfigurationOutlineSection = .proxies
      
+     
+     
+    var addSource: (() -> Void)? = nil
+     
+     
+     
+    var proxiesPage: ClashMacRelatedPage? = nil
+     
     @State private var brought: [String: ClashMacSourceNodes] = [:]
     @State private var filter = ""
      
@@ -1259,10 +1306,21 @@ struct ClashMacConfigurationSourcesPage: View {
     }
 
     private var shown: [ConfigurationSourceRecord] {
-        let offered = Self.offered(sources, chosen: chosen)
+        Self.filtered(Self.offered(sources, chosen: chosen), by: filter, shownAs: { $0.displayLabel(locale: locale) })
+    }
+
+     
+     
+     
+     
+    static func filtered(_ offered: [ConfigurationSourceRecord], by filter: String,
+                         shownAs name: (ConfigurationSourceRecord) -> String) -> [ConfigurationSourceRecord] {
         let needle = filter.trimmingCharacters(in: .whitespaces)
         guard !needle.isEmpty else { return offered }
-        return offered.filter { $0.label.localizedCaseInsensitiveContains(needle) }
+         
+        return offered.filter {
+            name($0).localizedCaseInsensitiveContains(needle) || $0.label.localizedCaseInsensitiveContains(needle)
+        }
     }
 
      
@@ -1378,6 +1436,14 @@ struct ClashMacConfigurationSourcesPage: View {
             }
              
              
+            if let addSource {
+                Section {
+                    Button(action: addSource) { Text(clash: .copy("Add Node Source…")) }
+                        .accessibilityIdentifier("configuration-center.configuration.sources.add")
+                }
+            }
+             
+             
              
              
              
@@ -1395,6 +1461,18 @@ struct ClashMacConfigurationSourcesPage: View {
                     } header: {
                         Text(clash: ClashConfigurationSourceCopy.name(source))
                     }
+                }
+            }
+             
+             
+            if let proxiesPage {
+                Section {
+                    ClashRoutedViewLink { proxiesPage.open() } label: {
+                        Text(clash: proxiesPage.title)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("configuration-center.configuration.sources.proxies-page")
                 }
             }
         }

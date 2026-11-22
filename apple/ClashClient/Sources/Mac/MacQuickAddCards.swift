@@ -23,16 +23,22 @@ struct MacQuickAddCard: View {
     @ObservedObject var controller: ProfileQuickAddController
     let identifiers: ClashMacQuickAddIdentifiers
     let doors: ClashMacQuickAddDoors
+     
+     
+    var header: String? = nil
+     
+     
+    var placeholder: String = MacQuickAddCard.placeholder
     @Environment(\.locale) private var locale
 
     var body: some View {
         ClashMacQuickAddCard(
-            header: .copy(controller.headerKey),
+            header: .copy(header ?? controller.headerKey),
             text: Binding(
                 get: { controller.state.text },
                 set: { controller.state.text = $0 }
             ),
-            placeholder: Self.placeholder,
+            placeholder: placeholder,
             status: Self.status(controller.state, locale: locale),
              
              
@@ -61,6 +67,8 @@ struct MacQuickAddCard: View {
      
      
     static let placeholder = "https://example.com/config.yaml"
+     
+    static let scriptPlaceholder = "https://example.com/override.js"
 
      
      
@@ -116,6 +124,15 @@ extension ClashMacQuickAddIdentifiers {
         fileIdentifier: "configuration.library.rules.quick-add.file",
         statusIdentifier: "configuration.library.rules.quick-add.status",
         nodesOnlyIdentifier: "configuration.library.rules.quick-add.nodes-only"
+    )
+     
+     
+    static let overrideLibrary = ClashMacQuickAddIdentifiers(
+        linkIdentifier: "configuration.library.override-library.quick-add.link",
+        scanIdentifier: "configuration.library.override-library.quick-add.scan",
+        fileIdentifier: "configuration.library.override-library.quick-add.file",
+        statusIdentifier: "configuration.library.override-library.quick-add.status",
+        nodesOnlyIdentifier: "configuration.library.override-library.quick-add.nodes-only"
     )
     static let scripts = ClashMacQuickAddIdentifiers(
         linkIdentifier: "configuration.library.scripts.quick-add.link",

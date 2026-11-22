@@ -47,11 +47,61 @@ public struct ConfigurationNodeScope: Codable, Equatable, Sendable {
     public var providerKeys: [String]
      
     public var inlineNodeNames: [String]?
-    public init(includesInlineNodes: Bool, providerKeys: [String], inlineNodeNames: [String]? = nil) {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public var excludedNodeNames: [String]?
+    public init(includesInlineNodes: Bool, providerKeys: [String], inlineNodeNames: [String]? = nil,
+                excludedNodeNames: [String]? = nil) {
         self.includesInlineNodes = includesInlineNodes; self.providerKeys = providerKeys
-        self.inlineNodeNames = inlineNodeNames
+        self.inlineNodeNames = inlineNodeNames; self.excludedNodeNames = excludedNodeNames
     }
     public var isEmpty: Bool { (!includesInlineNodes || inlineNodeNames?.isEmpty == true) && providerKeys.isEmpty }
+
+     
+     
+    public func choosesNode(named name: String) -> Bool {
+        includesInlineNodes && (inlineNodeNames?.contains(name) ?? true) && !(excludedNodeNames ?? []).contains(name)
+    }
+
+     
+     
+     
+     
+     
+     
+    public func choosingNode(named name: String, checked: Bool) -> ConfigurationNodeScope {
+        var scope = self
+        if checked {
+            scope.excludedNodeNames?.removeAll { $0 == name }
+            if !scope.includesInlineNodes {
+                scope.includesInlineNodes = true
+                scope.inlineNodeNames = [name]
+            } else if let picked = scope.inlineNodeNames, !picked.contains(name) {
+                scope.inlineNodeNames = (picked + [name]).sorted()
+            }
+        } else {
+            scope.excludedNodeNames = Array(Set(scope.excludedNodeNames ?? []).union([name])).sorted()
+        }
+        return scope
+    }
+
+     
+     
+     
+    public func settled(nodeSets: [String]) -> ConfigurationNodeScope? {
+        var scope = self
+        if scope.excludedNodeNames?.isEmpty == true { scope.excludedNodeNames = nil }
+        guard scope.includesInlineNodes, scope.inlineNodeNames == nil, scope.excludedNodeNames == nil,
+              Set(scope.providerKeys) == Set(nodeSets) else { return scope }
+        return nil
+    }
 
     public func applying(to input: ConfigurationInput) throws -> ConfigurationInput {
         guard !isEmpty, Set(providerKeys).count == providerKeys.count else { throw ConfigurationLibraryError.invalidIdentifier.noted() }
@@ -65,18 +115,34 @@ public struct ConfigurationNodeScope: Codable, Equatable, Sendable {
         func string(_ value: OrderedJSON?) -> String? { value?.foundationValue as? String }
         func strings(_ value: OrderedJSON?) -> [String] { value?.foundationValue as? [String] ?? [] }
         let allNodes = array("proxies"), allGroups = array("proxy-groups"), allProviders = entries("proxy-providers")
+         
+         
+         
+         
+        var nodesByName: [String: OrderedJSON] = [:], groupsByName: [String: OrderedJSON] = [:]
+        var providersByName: [String: OrderedJSON] = [:]
+        for node in allNodes {
+            if let name = string(node.topLevelValue("name")), nodesByName[name] == nil { nodesByName[name] = node }
+        }
+        for group in allGroups {
+            if let name = string(group.topLevelValue("name")), groupsByName[name] == nil { groupsByName[name] = group }
+        }
+        for entry in allProviders where providersByName[entry.key] == nil { providersByName[entry.key] = entry.value }
         var nodes = Set<String>(), providers = Set<String>(), done = Set<String>()
          
          
         var path: [(identity: String, viaIncludeAll: Bool)] = []
+         
+         
         let publicNodes = includesInlineNodes
-            ? Set(inlineNodeNames ?? allNodes.compactMap { string($0.topLevelValue("name")) }) : []
+            ? Set(inlineNodeNames ?? allNodes.compactMap { string($0.topLevelValue("name")) })
+                .subtracting(excludedNodeNames ?? []) : []
         func missing(_ name: String) -> ConfigurationCompositionError { .unresolvedDependency(source: input.id, name: name) }
-        let availableNodes = Set(allNodes.compactMap { string($0.topLevelValue("name")) })
+        let availableNodes = Set(nodesByName.keys)
         if let unavailable = publicNodes.subtracting(availableNodes).sorted().first { throw missing(unavailable) }
         func isOutbound(_ name: String) -> Bool {
             availableNodes.contains(name) || ConfigurationComposer.builtins.contains(name)
-                || allGroups.contains { string($0.topLevelValue("name")) == name }
+                || groupsByName[name] != nil
         }
         func walk(_ kind: String, _ name: String, viaIncludeAll: Bool = false) throws {
             let identity = kind + ":" + name
@@ -96,7 +162,7 @@ public struct ConfigurationNodeScope: Codable, Equatable, Sendable {
             path.append((identity, viaIncludeAll))
             defer { path.removeLast() }
             if kind == "provider" {
-                guard let value = allProviders.first(where: { $0.key == name })?.value else { throw missing(name) }
+                guard let value = providersByName[name] else { throw missing(name) }
                 providers.insert(name)
                  
                  
@@ -108,10 +174,10 @@ public struct ConfigurationNodeScope: Codable, Equatable, Sendable {
                 }
             } else if ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL"].contains(name) {
                  
-            } else if let value = allNodes.first(where: { string($0.topLevelValue("name")) == name }) {
+            } else if let value = nodesByName[name] {
                 nodes.insert(name)
                 if let target = string(value.topLevelValue("dialer-proxy")), !target.isEmpty { try walk("outbound", target) }
-            } else if let group = allGroups.first(where: { string($0.topLevelValue("name")) == name }) {
+            } else if let group = groupsByName[name] {
                 for target in strings(group.topLevelValue("proxies")) { try walk("outbound", target) }
                 for key in strings(group.topLevelValue("use")) { try walk("provider", key) }
                 if group.topLevelValue("include-all") == .scalar("true") || group.topLevelValue("include-all-proxies") == .scalar("true") {
@@ -153,7 +219,7 @@ public struct ConfigurationCollectionEntry: Identifiable, Equatable, Sendable {
      
      
      
-    public var copyUpdatedAt: Date? = nil
+    public var usageUpdatedAt: Date? = nil
      
      
      
@@ -263,6 +329,24 @@ public extension ConfigurationRuleScheme {
                 ("include-all", .scalar("true")), ("proxies", .array([.string("DIRECT")]))])])),
             ("rules", .array([.string("RULE-SET," + key + ",PROXY"), .string("MATCH,PROXY")]))
         ])
+    }
+}
+
+public extension ConfigurationSourceRecord {
+     
+     
+     
+     
+     
+     
+     
+    var projectedAsCollectionScheme: ConfigurationSourceRecord {
+        var metadata = self; metadata.nodeCount = 0; metadata.providerCount = 0
+        metadata.groupCount = 1; metadata.ruleCount = 2; metadata.ruleProviderCount = 1; metadata.suppliesNodes = false
+         
+         
+        metadata.rulesWrittenInOriginal = nil
+        return metadata
     }
 }
 

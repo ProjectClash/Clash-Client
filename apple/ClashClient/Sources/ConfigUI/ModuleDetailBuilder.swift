@@ -72,14 +72,15 @@ enum ModuleDetailBuilder {
      
      
     static func detail(record: ModuleRecord, facts: ModulePageFacts, source text: Data?, isUpdating: Bool,
-                       locale: Locale) -> ClashModuleDetailSnapshot {
+                       locale: Locale, thisYear: Int = ModuleDetailBuilder.year(of: Date())) -> ClashModuleDetailSnapshot {
          
         let counted = facts.modules[record.id].map { ModulePageSnapshotBuilder.counted(facts, record: record, ir: $0) }
         var out = detail(record: record, ir: facts.modules[record.id], source: text, decryption: ModulePageSnapshotBuilder.decryption(facts),
                          isUpdating: isUpdating, locale: locale, publication: facts.summary, storedValues: facts.storedValues,
                          settingsRefusal: facts.settingsModuleID == record.id ? facts.settingsFailure?.displayText : nil,
                          counted: counted,
-                         scriptFile: facts.locations.map { locations in { locations.script(record.id, sha256: $0) } })
+                         scriptFile: facts.locations.map { locations in { locations.script(record.id, sha256: $0) } },
+                         thisYear: thisYear)
         out.panels = panels(record: record, ir: facts.modules[record.id], facts: facts)
          
          
@@ -113,7 +114,8 @@ enum ModuleDetailBuilder {
                        isUpdating: Bool, locale: Locale, publication: ModulePublicationSummary? = nil,
                        storedValues: [String: String] = [:], settingsRefusal: ClashDisplayText? = nil,
                        counted: ModulePageSnapshotBuilder.Counted? = nil,
-                       scriptFile: ((String) -> URL)? = nil) -> ClashModuleDetailSnapshot {
+                       scriptFile: ((String) -> URL)? = nil,
+                       thisYear: Int = ModuleDetailBuilder.year(of: Date())) -> ClashModuleDetailSnapshot {
         let source: ClashModuleSource
         let failure: ClashDisplayText?
         var failureIsSentence = false
@@ -126,6 +128,9 @@ enum ModuleDetailBuilder {
             lines = ir.flatMap { writtenLines(text, of: $0) }
             taken = ir.map { published($0, record: record, publication: publication, written: lines) }
         }
+         
+         
+        let notUpdated = Self.notUpdated(record: record, ir: ir, locale: locale, thisYear: thisYear).lines
         let ir = taken
         let row = ModulePageSnapshotBuilder.row(record, ir: ir, locale: locale, decryption: decryption, written: lines)
          
@@ -163,6 +168,12 @@ enum ModuleDetailBuilder {
                 }
                 return item
             }
+        }
+         
+        if !notUpdated.isEmpty {
+            sections.insert(Section(id: Section.notUpdatedID, title: notUpdatedTitle, items: notUpdated.enumerated().map {
+                Item(id: "not-updated-\($0.offset)", text: $0.element.sentence)
+            }), at: 0)
         }
          
         let counts = ir.map { self.counts($0, decryption: decryption, written: lines) } ?? Counts(kept: 0, waiting: 0, unavailable: 0)
@@ -1001,6 +1012,236 @@ enum ModuleDetailBuilder {
         case .systemDNS: return "server:system"
         case .ipMode(let mode): return "ip-mode:\(mode)"
         }
+    }
+}
+
+ 
+
+extension ModuleDetailBuilder {
+     
+     
+     
+    struct Missed: Equatable {
+        enum Resource: Equatable {
+            case script
+            case file(key: String)
+            case ruleSet(key: String)
+        }
+
+        var resource: Resource
+        var address: String
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func missed(by record: ModuleRecord, ir: ModuleIR?) -> (said: [AuthoredText], kept: [Missed]) {
+        guard let checked = record.lastCheckedAt else { return ([], []) }
+         
+         
+        var items = record.scriptFailureCount.compactMap { address, count -> Missed? in
+            guard count > 0, let tried = record.scriptAttemptedAt[address], tried.timeIntervalSince(checked) >= 0 else { return nil }
+            return Missed(resource: .script, address: address)
+        }.sorted { $0.address < $1.address }
+         
+        let setPlace = ModuleResourceFetcher.Place.sets.rawValue + " "
+        items += record.fileStates.compactMap { key, state -> (key: String, missed: Missed)? in
+            guard state.failures > 0, let tried = state.attemptedAt, tried.timeIntervalSince(checked) >= 0,
+                  let space = key.firstIndex(of: " ") else { return nil }
+            let address = String(key[key.index(after: space)...])
+            return (key, Missed(resource: key.hasPrefix(setPlace) ? .ruleSet(key: key) : .file(key: key), address: address))
+        }.sorted { ($0.missed.address, $0.key) < ($1.missed.address, $1.key) }.map(\.missed)
+        guard !items.isEmpty else { return ([], []) }
+         
+        let wanted = Set(items.map(\.address))
+        var setAside: [String: ModuleIgnoredEntry] = [:]
+        for entry in ir?.ignored ?? [] where wanted.contains(entry.text) && setAside[entry.text] == nil {
+            setAside[entry.text] = entry
+        }
+        var said: [AuthoredText] = []
+        var kept: [Missed] = []
+        for item in items {
+             
+            if let entry = setAside[item.address] { said.append(entry.reason.authoredText) } else { kept.append(item) }
+        }
+        return (said, kept)
+    }
+
+     
+     
+     
+     
+    enum Unsaid: Error, Equatable {
+        case noName
+        case noDate
+        case noReason
+    }
+
+     
+     
+    struct NotUpdatedLine: Equatable {
+        var name: String
+        var sentence: String
+    }
+
+     
+     
+     
+    struct NotUpdated {
+        var said: [AuthoredText] = []
+        var lines: [NotUpdatedLine] = []
+        var unsaid: [(address: String, why: Unsaid)] = []
+         
+        var kept: Int { lines.count + unsaid.count }
+    }
+
+     
+    static func notUpdated(record: ModuleRecord, ir: ModuleIR?, locale: Locale,
+                           thisYear: Int = ModuleDetailBuilder.year(of: Date())) -> NotUpdated {
+        let found = Self.missed(by: record, ir: ir)
+        var out = NotUpdated(said: found.said)
+        for item in found.kept {
+            switch notUpdatedLine(item, record: record, ir: ir, locale: locale, thisYear: thisYear) {
+            case .success(let line): out.lines.append(line)
+            case .failure(let why): out.unsaid.append((item.address, why))
+            }
+        }
+        return out
+    }
+
+     
+     
+    static func notUpdatedLine(_ item: Missed, record: ModuleRecord, ir: ModuleIR?,
+                               locale: Locale, thisYear: Int) -> Result<NotUpdatedLine, Unsaid> {
+        let name: String?
+        let since: Date?
+        let kind: ModuleDownloadMiss.Kind?
+        func fileFacts(_ key: String) -> (Date?, ModuleDownloadMiss.Kind?) {
+            guard let state = record.fileStates[key] else { return (nil, nil) }
+             
+            return (state.fetchedAt, state.lastMiss.flatMap { $0.at == state.attemptedAt ? $0.kind : nil })
+        }
+        switch item.resource {
+        case .script:
+            name = ir.flatMap { ir in
+                ir.scripts.first { $0.scriptURL == item.address }?.name ?? ir.appScripts.first { $0.scriptURL == item.address }?.name
+            }
+            since = record.scriptFetchedAt[item.address]
+            kind = record.scriptMisses[item.address].flatMap { $0.at == record.scriptAttemptedAt[item.address] ? $0.kind : nil }
+        case .file(let key):
+            name = fileName(item.address)
+            let facts = fileFacts(key)
+            since = facts.0
+            kind = facts.1
+        case .ruleSet(let key):
+            name = ir?.ruleSets.first { $0.url == item.address }.map(ruleSetLine)
+            let facts = fileFacts(key)
+            since = facts.0
+            kind = facts.1
+        }
+        guard let name, !name.isEmpty else { return .failure(.noName) }
+        guard let since else { return .failure(.noDate) }
+        guard let kind, let why = Self.reason(kind) else { return .failure(.noReason) }
+         
+         
+        let result = ClashCopy.string(for: .format(notUpdatedResult, [name, day(since, locale: locale, thisYear: thisYear)]), locale: locale)
+        return .success(NotUpdatedLine(name: name, sentence: result + ClashCopy.string(for: why, locale: locale)))
+    }
+
+    static let notUpdatedResult = "“%@” wasn’t updated; the version from %@ is still in use. "
+    static let notUpdatedOne = "%@: “%@” wasn’t updated"
+    static let notUpdatedSeveral = "%@: “%@” and %@ more weren’t updated"
+    static let notUpdatedTitle: ClashDisplayText = "Not Updated This Time"
+
+     
+     
+     
+     
+     
+     
+     
+     
+    static func reason(_ kind: ModuleDownloadMiss.Kind) -> ClashDisplayText? {
+        switch kind {
+        case .status(407):
+            return "The server couldn’t be reached. Try again later."
+        case .status(let status) where (300...499).contains(status) && status != 304 && status != 408 && status != 429:
+            return .format("The link no longer opens (HTTP %@). Wait for the module’s author to update it, or use another module.", [String(status)])
+        case .status(let status) where (500...599).contains(status) || status == 408 || status == 429:
+            return .format("The server had a problem (HTTP %@). Try again later.", [String(status)])
+        case .status:
+            return nil
+        case .unreached(let connected) where connected == false:
+            return "The server couldn’t be reached. Connect Clash and try again, or try again later."
+        case .unreached:
+            return "The server couldn’t be reached. Try again later."
+        case .unusable:
+            return "What was downloaded isn’t usable. Wait for the module’s author to update it, or use another module."
+        }
+    }
+
+     
+     
+     
+     
+    static func day(_ date: Date, locale: Locale, thisYear: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .autoupdatingCurrent
+         
+        let english = isEnglish(notUpdatedResult, locale: locale)
+        if year(of: date) == thisYear {
+            formatter.dateFormat = english ? #"MMM d"# : #"MM-dd"#
+        } else {
+            formatter.dateFormat = english ? #"MMM d, yyyy"# : #"yyyy-MM-dd"#
+        }
+        return formatter.string(from: date)
+    }
+
+     
+    static func year(of date: Date) -> Int {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .autoupdatingCurrent
+        return calendar.component(.year, from: date)
+    }
+
+     
+     
+    static func isEnglish(_ key: String, locale: Locale) -> Bool {
+        ClashCopy.string(key, locale: locale) == key
+    }
+
+     
+     
+     
+    static func batchLine(module: String, names: [String], locale: Locale) -> String? {
+        guard let first = names.first else { return nil }
+        guard names.count > 1 else { return ClashCopy.string(for: .format(notUpdatedOne, [module, first]), locale: locale) }
+        let count = isEnglish(notUpdatedSeveral, locale: locale) ? names.count - 1 : names.count
+        return ClashCopy.string(for: .format(notUpdatedSeveral, [module, first, ClashCopy.count(count, locale: locale)]), locale: locale)
+    }
+
+     
+     
+    static func fileName(_ address: String) -> String? {
+        let last = URL(string: address)?.lastPathComponent
+            ?? address.split(separator: "/").last.flatMap { String($0).removingPercentEncoding }
+        guard let last, !last.isEmpty, last != "/" else { return nil }
+        return last
+    }
+
+     
+     
+    static var notUpdatedCopy: [ClashDisplayText] {
+        [.format(notUpdatedResult, ["a.js", "11-12"]), .format(notUpdatedOne, ["M", "a.js"]),
+         .format(notUpdatedSeveral, ["M", "a.js", "2"]), notUpdatedTitle]
+            + [ModuleDownloadMiss.Kind.status(404), .status(503), .unreached(connected: false), .unreached(connected: nil), .unusable]
+            .compactMap(reason)
     }
 }
 #endif

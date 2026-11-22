@@ -106,10 +106,10 @@ struct ModuleEngineInsight: Equatable {
             let name = module.name.trimmingCharacters(in: .whitespacesAndNewlines)
             switch module.reason {
             case .overBudget:
-                return name.isEmpty ? .app("One module's rewrites, scripts and some rules are more than memory can hold, so they weren't loaded.") : moduleTooLarge(name)
+                return name.isEmpty ? .app("One module's rewrites, scripts and some rules weren't loaded: that module alone needs more memory than is available.") : moduleTooLarge(name)
             case .overSharedBudget:
                  
-                return name.isEmpty ? .app("Not enough memory to load one module's rewrites, scripts and some rules; turn some modules off to make room.")
+                return name.isEmpty ? .app("One module's rewrites, scripts and some rules weren't loaded: the modules that are on need more memory together than is available. Turn a few others off and it will load.")
                     : tooManyModulesOn(name)
             case .unreadable, .digestMismatch, .scriptMismatch:
                 return name.isEmpty ? .app("A module couldn't be loaded this time, so it was skipped.") : moduleNotLoaded(name)
@@ -122,13 +122,16 @@ struct ModuleEngineInsight: Equatable {
         }
 
          
+         
         static func moduleTooLarge(_ name: String) -> AuthoredText {
-            .app("The rewrites, scripts and some rules of “%@” are more than memory can hold, so they weren't loaded.", arguments: [name])
+            .app("The rewrites, scripts and some rules of “%@” weren't loaded: this module alone needs more memory than is available.", arguments: [name])
         }
 
          
+         
+         
         static func tooManyModulesOn(_ name: String) -> AuthoredText {
-            .app("Not enough memory to load the rewrites, scripts and some rules of “%@”; turn some modules off to make room.", arguments: [name])
+            .app("The rewrites, scripts and some rules of “%@” weren't loaded: the modules that are on need more memory together than is available. Turn a few others off and it will load.", arguments: [name])
         }
 
          

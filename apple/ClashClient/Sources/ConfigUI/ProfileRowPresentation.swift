@@ -31,7 +31,7 @@ enum ProfileRowPresentation {
             return [.copy("Original")]
         }
         if recipe.preservesOriginal == true { return [.copy("Original")] }
-        switch recipe.ruleSchemeID {
+        switch builtinBase(of: recipe.ruleSchemeID, in: library) ?? recipe.ruleSchemeID {
         case ConfigurationBuiltins.basicRuleID: return [.copy("Default Rules")]
         case ConfigurationBuiltins.lazyRuleID: return [.copy("Lazy Rules")]
         default:
@@ -41,8 +41,37 @@ enum ProfileRowPresentation {
              
              
             guard let scheme = library.rules.first(where: { $0.id == recipe.ruleSchemeID }) else { return [] }
-            return [.verbatim(Self.tagText(scheme.displayLabel))]
+             
+             
+             
+            let named = scheme.ownViewBaseID.flatMap { base in library.rules.first { $0.id == base } } ?? scheme
+            return [.verbatim(Self.tagText(named.displayLabel))]
         }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func builtinBase(of schemeID: String, in library: ConfigurationLibrarySnapshot) -> String? {
+        var next: String? = schemeID
+        var seen = Set<String>()
+        while let id = next, seen.insert(id).inserted {
+            if ConfigurationBuiltins.isNative(id) { return id == schemeID ? nil : id }
+            guard let scheme = library.rules.first(where: { $0.id == id }) else { return nil }
+            if let base = scheme.baseSchemeID, ConfigurationBuiltins.isNative(base), scheme.builtinNamedAfter == nil {
+                return nil
+            }
+            next = scheme.baseSchemeID ?? scheme.rulesFromSchemeID ?? scheme.rulesCustomizedFromSchemeID
+        }
+        return nil
     }
 
      

@@ -626,6 +626,10 @@ final class ClashMacStatusMenuController: NSObject, NSMenuDelegate {
     var isListening: Bool { !listening.isEmpty }
      
      
+    var onOpen: (() -> Void)?
+    var onClose: (() -> Void)?
+     
+     
     private var latestLatency: [String: [String: ClashProxyLatencyState]] = [:]
 
     init(
@@ -678,6 +682,7 @@ final class ClashMacStatusMenuController: NSObject, NSMenuDelegate {
      
      
     func menuWillOpen(_ menu: NSMenu) {
+        onOpen?()
          
          
          
@@ -726,6 +731,7 @@ final class ClashMacStatusMenuController: NSObject, NSMenuDelegate {
         listening.removeAll()
         latestLatency = [:]
         menu.removeAllItems()
+        onClose?()
     }
 
      
@@ -901,5 +907,320 @@ final class ClashMacTrailingMenuItem: NSMenuItem {
         title.append(NSAttributedString(string: "\t" + text, attributes: attributes))
         title.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: title.length))
         attributedTitle = title
+    }
+}
+
+ 
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashMacStatusMenuSpace {
+    struct Window: Equatable {
+        var ownerPID: pid_t
+        var ownerName: String
+        var layer: Int
+         
+        var bounds: CGRect
+         
+         
+        var stackedCount = 1
+        var tallestStackedHeight: CGFloat?
+    }
+
+     
+     
+    static let desktopLevel = Int(CGWindowLevelForKey(.desktopIconWindow))
+
+     
+    static let splitGap: CGFloat = 24
+
+     
+     
+     
+     
+     
+     
+    static func coveringWindow(
+        policy: NSApplication.ActivationPolicy,
+        appIsActive: Bool,
+        display: CGRect,
+        topAllowance: CGFloat,
+        windows: [Window]?,
+        ownPID: pid_t,
+        desktopOwnerPID: pid_t?
+    ) -> Window? {
+        guard policy == .regular, !appIsActive, let windows, !display.isEmpty else { return nil }
+        let slack: CGFloat = 1
+        let desktopShown = windows.contains { window in
+            window.layer == desktopLevel && window.ownerPID == desktopOwnerPID
+                && window.bounds.insetBy(dx: -slack, dy: -slack).contains(display)
+        }
+        guard !desktopShown else { return nil }
+         
+         
+         
+         
+        let onThisDisplay = windows.filter { window in
+            window.layer == 0 && window.ownerPID != ownPID
+                && display.insetBy(dx: -slack, dy: -slack).contains(window.bounds)
+        }
+        let tall = stacked(onThisDisplay, slack: slack).filter { window in
+            let b = window.bounds
+            return abs(b.maxY - display.maxY) <= slack && b.minY - display.minY <= max(0, topAllowance) + slack
+                && (window.tallestStackedHeight ?? b.height) >= display.height * stackedContentShare
+        }
+         
+         
+         
+        var reach = display.minX
+        for window in tall.sorted(by: { $0.bounds.minX < $1.bounds.minX }) {
+            guard window.bounds.minX - reach <= (reach == display.minX ? slack : splitGap) else { break }
+            reach = max(reach, window.bounds.maxX)
+        }
+        guard display.maxX - reach <= slack, let first = tall.max(by: { $0.bounds.width < $1.bounds.width }) else { return nil }
+        return first
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func stacked(_ windows: [Window], slack: CGFloat) -> [Window] {
+        var joined: [Window] = []
+        for window in windows.sorted(by: { $0.bounds.minY < $1.bounds.minY }) {
+            if let index = joined.firstIndex(where: { group in
+                group.ownerPID == window.ownerPID
+                    && abs(group.bounds.minX - window.bounds.minX) <= slack
+                    && abs(group.bounds.maxX - window.bounds.maxX) <= slack
+                    && window.bounds.minY <= group.bounds.maxY + slack
+            }) {
+                let tallest = max(joined[index].tallestStackedHeight ?? joined[index].bounds.height, window.bounds.height)
+                joined[index].bounds = joined[index].bounds.union(window.bounds)
+                joined[index].stackedCount += 1
+                joined[index].tallestStackedHeight = tallest
+            } else {
+                joined.append(window)
+            }
+        }
+        return joined
+    }
+
+     
+     
+     
+     
+    static let stackedContentShare: CGFloat = 0.75
+
+     
+     
+    static func onScreenWindows() -> [Window]? {
+         
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+                as? [[String: Any]] else { return nil }
+        return list.compactMap { info in
+            guard let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let layer = info[kCGWindowLayer as String] as? Int,
+                  let raw = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: raw) else { return nil }
+            return Window(ownerPID: pid, ownerName: info[kCGWindowOwnerName as String] as? String ?? "",
+                          layer: layer, bounds: bounds)
+        }
+    }
+
+     
+     
+     
+    static let minimumTopAllowance: CGFloat = 44
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @MainActor
+    static func coveringWindow(for button: NSStatusBarButton?, application: NSApplication = .shared) -> Window? {
+        guard application.activationPolicy() == .regular, !application.isActive else { return nil }
+        let event = application.currentEvent
+        let byMouse = (event?.type == .leftMouseDown || event?.type == .rightMouseDown)
+            && ProcessInfo.processInfo.systemUptime - (event?.timestamp ?? 0) < 1
+        let pointer = NSEvent.mouseLocation
+        guard let screen = (byMouse ? NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) : nil)
+                ?? NSScreen.main ?? button?.window?.screen,
+              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+        return coveringWindow(
+            policy: .regular,
+            appIsActive: false,
+            display: CGDisplayBounds(CGDirectDisplayID(number.uint32Value)),
+            topAllowance: max(screen.safeAreaInsets.top, minimumTopAllowance),
+            windows: onScreenWindows(),
+            ownPID: ProcessInfo.processInfo.processIdentifier,
+            desktopOwnerPID: NSRunningApplication.runningApplications(withBundleIdentifier: finderBundleID).first?.processIdentifier
+        )
+    }
+
+     
+    static let finderBundleID = "com.apple.finder"
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+@MainActor
+final class ClashMacStatusMenuOpener: NSObject {
+    private weak var item: NSStatusItem?
+    private let menu: NSMenu
+    private let covering: () -> ClashMacStatusMenuSpace.Window?
+     
+    private let setPolicy: (NSApplication.ActivationPolicy) -> Bool
+    private let open: (NSStatusItem, NSMenu) -> Void
+    private let log: (String) -> Void
+     
+     
+    private(set) var openedAsAccessory = false
+     
+     
+    private var press = 0
+     
+    private var opened = -1
+     
+     
+     
+    var openDeadline: TimeInterval = 1.0
+
+    init(
+        item: NSStatusItem,
+        menu: NSMenu,
+        covering: (() -> ClashMacStatusMenuSpace.Window?)? = nil,
+        setPolicy: @escaping (NSApplication.ActivationPolicy) -> Bool = { NSApplication.shared.setActivationPolicy($0) },
+        open: @escaping (NSStatusItem, NSMenu) -> Void = { item, menu in
+            item.menu = menu
+            item.button?.performClick(nil)
+        },
+        log: @escaping (String) -> Void = { ClashLogStore.shared.append($0, stream: .app) }
+    ) {
+        self.item = item
+        self.menu = menu
+        self.covering = covering ?? { [weak item] in ClashMacStatusMenuSpace.coveringWindow(for: item?.button) }
+        self.setPolicy = setPolicy
+        self.open = open
+        self.log = log
+        super.init()
+    }
+
+     
+     
+    func attach() {
+        guard let button = item?.button else { return }
+        button.target = self
+        button.action = #selector(pressed(_:))
+        button.sendAction(on: [.leftMouseDown, .rightMouseDown])
+    }
+
+    @objc func pressed(_ sender: Any?) {
+         
+        guard let item, item.menu == nil else { return }
+        press &+= 1
+        let thisPress = press
+        if let window = covering() {
+            ClashMacDockIcon.heldByStatusMenu = true
+            if setPolicy(.accessory) {
+                openedAsAccessory = true
+                 
+                 
+                 
+                let stack = window.stackedCount > 1 ? ", \(window.stackedCount) of its windows stacked" : ""
+                log("status menu: opened without the Dock icon, over \(window.ownerName) (pid \(window.ownerPID)) "
+                    + "filling the display at \(window.bounds)\(stack) -- a Dock app's menu does not show in another app's fullscreen space")
+            } else {
+                 
+                ClashMacDockIcon.heldByStatusMenu = false
+                log("status menu: the system refused the switch without the Dock icon, over \(window.ownerName) "
+                    + "(pid \(window.ownerPID)); the menu opens as a Dock app's")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + openDeadline) { [weak self] in
+            guard let self, self.press == thisPress, self.opened != thisPress else { return }
+            if self.openedAsAccessory { self.log("status menu: no menu came within \(self.openDeadline) s") }
+            self.menuDidClose()
+        }
+        open(item, menu)
+    }
+
+     
+    func menuDidOpen() {
+        opened = press
+    }
+
+     
+    func menuDidClose() {
+        putTheDockAppBack()
+         
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let item = self.item, item.menu === self.menu else { return }
+            item.menu = nil
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    func putTheDockAppBack() {
+        if openedAsAccessory {
+            openedAsAccessory = false
+            if setPolicy(.regular) {
+                log(#"status menu: the Dock icon is back"#)
+            } else {
+                log(#"status menu: the system refused the Dock icon's return; the next update tries again"#)
+            }
+        }
+        ClashMacDockIcon.heldByStatusMenu = false
     }
 }

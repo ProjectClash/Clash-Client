@@ -13,17 +13,30 @@ public struct ClashHomeDomainSnapshot: Codable, Equatable, Sendable {
     public let countUnit: String?
     public let breakdown: String?
     public let names: [String]
+     
+     
+     
+     
+     
+     
+    public let ruleScheme: ClashHomeRuleScheme?
 
     public init(
         count: Int? = nil,
         countUnit: String? = nil,
         breakdown: String? = nil,
-        names: [String] = []
+        names: [String] = [],
+        ruleScheme: ClashHomeRuleScheme? = nil
     ) {
         self.count = count.map { max(0, $0) }
         self.countUnit = countUnit.map { String($0.prefix(64)) }
         self.breakdown = breakdown.map { String($0.prefix(256)) }
         self.names = names.prefix(12).map { String($0.prefix(128)) }
+         
+        self.ruleScheme = ruleScheme.map {
+            ClashHomeRuleScheme(name: $0.name.bounded(to: 128), schemeRules: $0.schemeRules, customRules: $0.customRules,
+                                total: $0.total)
+        }
     }
 
     public static let empty = ClashHomeDomainSnapshot()
@@ -139,6 +152,17 @@ public struct ClashHomeConnectionIssue:
          
          
         case globalOnDirect
+         
+         
+         
+         
+        case stoppedForMemory
+         
+         
+         
+         
+         
+        case stoppedUnexpectedly
 
          
          
@@ -149,10 +173,12 @@ public struct ClashHomeConnectionIssue:
          
          
          
+         
         public var lineTapCommand: ClashHomeCommand {
             if lineTapResetsVPNProfile { return .resetVPNProfile }
             if self == .stoppedByOnDemandRule { return .openOnDemand }
             if self == .globalOnDirect { return .openProxies }
+            if self == .stoppedUnexpectedly { return .performPrimaryAction(.none) }
             return .showConnectionIssue
         }
     }
@@ -189,12 +215,42 @@ public struct ClashHomeConnectionIssue:
     public var text: ClashDisplayText {
         subject.map { .format(message, [$0]) } ?? .copy(message)
     }
+
+     
+     
+     
+     
+    public var coreWords: String? {
+        kind == .connectionFailure ? subject : nil
+    }
+
+     
+     
+     
+     
+     
+    public static let configurationRefusalRow = "The core rejected this configuration: %@"
+
+     
+     
+    public var refusesConfiguration: Bool {
+        coreWords != nil && message == Self.configurationRefusalRow
+    }
 }
 
 public enum ClashVPNAuthorizationState: String, Codable, Equatable, Sendable {
     case required
     case waiting
     case notCompleted
+}
+
+ 
+ 
+public enum ClashHomeUnrequestedStop: String, Codable, Equatable, Sendable {
+     
+    case memory
+     
+    case unexplained
 }
 
  
@@ -250,6 +306,11 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
      
      
     public var errorSubject: String?
+     
+     
+     
+     
+    public var errorUnrequestedStop: ClashHomeUnrequestedStop?
     public var allowsSystemVPNProfileReset: Bool
     public var isSwitchingProxy: Bool
     public var recoveryMode: ClashHomeRecoveryMode
@@ -282,6 +343,7 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
         errorIsConfigurationNotFound: Bool = false,
         errorOnDemandRuleNames: String? = nil,
         errorSubject: String? = nil,
+        errorUnrequestedStop: ClashHomeUnrequestedStop? = nil,
         allowsSystemVPNProfileReset: Bool = false,
         isSwitchingProxy: Bool = false,
         recoveryMode: ClashHomeRecoveryMode = .none,
@@ -303,6 +365,7 @@ public struct ClashHomeConnectionFacts: Codable, Equatable, Sendable {
         self.errorIsConfigurationNotFound = errorIsConfigurationNotFound
         self.errorOnDemandRuleNames = errorOnDemandRuleNames
         self.errorSubject = errorSubject
+        self.errorUnrequestedStop = errorUnrequestedStop
         self.allowsSystemVPNProfileReset = allowsSystemVPNProfileReset
         self.isSwitchingProxy = isSwitchingProxy
         self.recoveryMode = recoveryMode
@@ -327,6 +390,59 @@ public struct ClashHomeFinalRuleRoute: Codable, Equatable, Sendable {
         self.group = group
         self.node = node
         self.delayMilliseconds = delayMilliseconds
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashHomeRuleScheme: Codable, Equatable, Sendable {
+     
+    public var name: ClashDisplayText
+    public var schemeRules: Int
+    public var customRules: Int
+
+     
+     
+     
+     
+    public var total: Int?
+
+    public init(name: ClashDisplayText, schemeRules: Int, customRules: Int, total: Int? = nil) {
+        self.name = name
+        self.schemeRules = max(0, schemeRules)
+        self.customRules = max(0, customRules)
+        self.total = total.map { max(0, $0) }
+    }
+
+     
+    public func totalling(_ total: Int?) -> ClashHomeRuleScheme {
+        ClashHomeRuleScheme(name: name, schemeRules: schemeRules, customRules: customRules, total: total)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public func countsLine(locale: Locale, total: Int? = nil) -> String {
+        let scheme = ClashCopy.format(schemeRules == 1 ? "%d scheme rule" : "%d scheme rules", locale: locale, schemeRules)
+        let custom = ClashCopy.format(customRules == 1 ? "%d custom rule" : "%d custom rules", locale: locale, customRules)
+        guard let total else { return scheme + " · " + custom }
+         
+         
+        let all = ClashCopy.format(total == 1 ? "%@ rule" : "%@ rules", locale: locale,
+                                   ClashCopy.count(max(0, total), locale: locale))
+        return scheme + " · " + custom + " · " + all
     }
 }
 
@@ -442,6 +558,8 @@ public enum ClashHomeConnectionPresenter {
             kind = .configurationNotFound
         } else if facts.errorOnDemandRuleNames != nil {
             kind = .stoppedByOnDemandRule
+        } else if let stop = facts.errorUnrequestedStop {
+            kind = stop == .memory ? .stoppedForMemory : .stoppedUnexpectedly
         } else if facts.errorIsStartupStopped {
             kind = .startupStopped
         } else {

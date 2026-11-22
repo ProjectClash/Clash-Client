@@ -445,6 +445,11 @@ public struct ClashModuleDetailSnapshot: Equatable, Sendable {
             self.items = items
             self.waiting = waiting
         }
+
+         
+         
+        public static let notUpdatedID = "not-updated"
+        public var isSentences: Bool { id == Self.notUpdatedID }
     }
 
      

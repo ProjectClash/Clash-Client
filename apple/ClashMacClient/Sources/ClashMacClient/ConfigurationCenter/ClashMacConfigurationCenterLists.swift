@@ -9,6 +9,95 @@ public enum ClashMacConfigurationCenterItem: Hashable, Sendable {
     case scheme(String)
      
     case collection(ConfigurationCollection.ID)
+     
+     
+    case script(String)
+}
+
+ 
+ 
+public enum ClashMacConfigurationRowMenuItem: Equatable, Sendable {
+    case openPage, use, update, copyLink, editSource, runtimeConfiguration, duplicate, export, moveUp, moveDown, delete
+}
+
+ 
+ 
+ 
+ 
+ 
+enum ClashMacConfigurationRowWords {
+    static func line(_ profileID: String, in snapshot: ConfigurationLibrarySnapshot, note: ClashDisplayText?,
+                     locale: Locale, now: Date) -> ClashDisplayText? {
+        guard let recipe = snapshot.recipes.first(where: { $0.id == profileID }) else { return nil }
+        let records = recipe.sources.compactMap { pin in snapshot.sources.first { $0.id == pin.id } }
+        guard let latest = records.max(by: { $0.updatedAt < $1.updatedAt }) else { return nil }
+        var parts = [ConfigurationValueWords.listJoined(records.map { $0.displayLabel(locale: locale) }, locale: locale)]
+        if let note { parts.append(ClashCopy.string(for: note, locale: locale)) }
+        parts.append(ClashConfigurationSourceCopy.lastUpdated(latest, locale: locale, now: now))
+        return .verbatim(parts.joined(separator: " · "))
+    }
+}
+
+ 
+public enum ClashMacConfigurationRowMenu {
+     
+    public struct Facts: Equatable, Sendable {
+        public var isCurrent: Bool
+         
+        public var hasProfileURL: Bool
+         
+        public var canEditSource: Bool
+         
+        public var canOpenRuntimePreview: Bool
+         
+        public var canDuplicate: Bool
+         
+        public var configurationCount: Int
+
+        public init(isCurrent: Bool, hasProfileURL: Bool, canEditSource: Bool, canOpenRuntimePreview: Bool,
+                    canDuplicate: Bool, configurationCount: Int) {
+            self.isCurrent = isCurrent
+            self.hasProfileURL = hasProfileURL
+            self.canEditSource = canEditSource
+            self.canOpenRuntimePreview = canOpenRuntimePreview
+            self.canDuplicate = canDuplicate
+            self.configurationCount = configurationCount
+        }
+
+        public init(profile: ClashProfileSnapshot, hasProfileURL: Bool, configurationCount: Int) {
+            self.init(isCurrent: profile.isCurrent, hasProfileURL: hasProfileURL, canEditSource: profile.canEditSource,
+                      canOpenRuntimePreview: profile.canOpenRuntimePreview, canDuplicate: profile.canDuplicate,
+                      configurationCount: configurationCount)
+        }
+    }
+
+     
+     
+     
+     
+    public static func items(for facts: Facts) -> [ClashMacConfigurationRowMenuItem] {
+        var items: [ClashMacConfigurationRowMenuItem] = [.openPage]
+        if !facts.isCurrent { items.append(.use) }
+        if facts.hasProfileURL { items += [.update, .copyLink] }
+        if facts.canEditSource { items.append(.editSource) }
+        if facts.canOpenRuntimePreview { items.append(.runtimeConfiguration) }
+        if facts.canDuplicate { items.append(.duplicate) }
+        items.append(.export)
+        if facts.configurationCount > 1 { items += [.moveUp, .moveDown] }
+        items.append(.delete)
+        return items
+    }
+
+     
+    static func group(_ item: ClashMacConfigurationRowMenuItem) -> Int {
+        switch item {
+        case .openPage, .use: 0
+        case .update, .copyLink: 1
+        case .editSource, .runtimeConfiguration, .duplicate, .export: 2
+        case .moveUp, .moveDown: 3
+        case .delete: 4
+        }
+    }
 }
 
  
@@ -55,6 +144,14 @@ public struct ClashMacConfigurationCenterListActions {
      
      
     public var editScheme: (@MainActor (String) -> Void)? = nil
+     
+     
+     
+     
+    public var editSource: (@MainActor (Profile.ID) -> Void)? = nil
+    public var openRuntimeConfiguration: (@MainActor (Profile.ID) -> Void)? = nil
+    public var duplicate: (@MainActor (Profile.ID) async throws -> String)? = nil
+    public var export: (@MainActor (Profile.ID) -> Void)? = nil
 
     public init(
         addConfiguration: @escaping @MainActor () -> Void,
@@ -152,7 +249,11 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
     @State private var expandedShelves: Set<String> = []
     @State private var expandedNodeSets: Set<String> = []
     @State private var expandedRuleSets: Set<String> = []
+     
+     
+    @State private var duplicating = false
     @Environment(\.locale) private var locale
+    @Environment(\.clashFeedback) private var feedback
 
     public var body: some View {
          
@@ -173,6 +274,10 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
                 case .configurations: configurationRows
                 case .nodes: sourceRows
                 case .rules: schemeRows
+                 
+                 
+                 
+                case .scripts: EmptyView()
                 }
                 Color.clear
                     .frame(height: ClashTheme.Spacing.section)
@@ -316,7 +421,7 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
          
          
         let showsList = segment == .configurations && listHasLine && (actions.failure != nil || !batchReports)
-        let issues = segment == .configurations ? nil : updateIssuesLine
+        let issues = segment == .nodes || segment == .rules ? updateIssuesLine : nil
         if showsList || issues != nil || failures != nil {
             Group {
                 if showsList { listStatusLines }
@@ -324,7 +429,7 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
                     let line = Text(verbatim: issues).foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                     switch segment {
-                    case .configurations: line.accessibilityIdentifier("configuration-center.configurations.update-issues")
+                    case .configurations, .scripts: line.accessibilityIdentifier("configuration-center.configurations.update-issues")
                     case .nodes: line.accessibilityIdentifier("configuration-center.nodes.update-issues")
                     case .rules: line.accessibilityIdentifier("configuration-center.rules.update-issues")
                     }
@@ -334,7 +439,7 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .id(Self.updateFailuresAnchor)
                     switch segment {
-                    case .configurations: line.accessibilityIdentifier("configuration-center.configurations.update-failures")
+                    case .configurations, .scripts: line.accessibilityIdentifier("configuration-center.configurations.update-failures")
                     case .nodes: line.accessibilityIdentifier("configuration-center.nodes.update-failures")
                     case .rules: line.accessibilityIdentifier("configuration-center.rules.update-failures")
                     }
@@ -374,38 +479,123 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
      
      
      
-     
-     
-     
-     
     @ViewBuilder
-    private func configurationMenu(_ profile: ClashProfileSnapshot, index: Int) -> some View {
-                    if actions.hasProfileURL(profile.id) {
-                        if let update = actions.updateConfiguration {
-                            Button { update(profile.id) } label: { Text(clash: .copy("Update")) }
-                                .disabled(profile.isBusy)
-                        }
-                        if let copy = actions.copyProfileURL {
-                            Button { copy(profile.id) } label: { Text(clash: .copy("Copy Link")) }
-                        }
-                        Divider()
-                    }
-                    if !profile.isCurrent {
-                        Button { actions.activate(profile.id) } label: { Text(clash: .copy("Use This Profile")) }
-                    }
-                    if let reorder = actions.reorder, profiles.count > 1 {
-                        if !profile.isCurrent { Divider() }
-                        Button { reorder(Self.order(profiles, moving: profile.id, by: -1)) } label: { Text(clash: .copy("Move Up")) }
-                            .disabled(index == 0)
-                        Button { reorder(Self.order(profiles, moving: profile.id, by: 1)) } label: { Text(clash: .copy("Move Down")) }
-                            .disabled(index == profiles.count - 1)
-                    }
-                    Divider()
-                    Button(role: .destructive) { pendingDelete = .configuration(profile.id) } label: { Text(clash: .copy("Delete")) }
+    private func configurationMenu(_ profile: ClashProfileSnapshot) -> some View {
+        let index = profiles.firstIndex { $0.id == profile.id } ?? 0
+        let items = ClashMacConfigurationRowMenu.items(for: .init(
+            profile: profile, hasProfileURL: actions.hasProfileURL(profile.id), configurationCount: profiles.count
+        )).filter(offers)
+        ForEach(Array(items.enumerated()), id: \.offset) { position, item in
+            if position > 0, ClashMacConfigurationRowMenu.group(items[position - 1]) != ClashMacConfigurationRowMenu.group(item) {
+                Divider()
+            }
+            menuItem(item, profile, index: index)
+        }
+    }
+
+     
+    private func offers(_ item: ClashMacConfigurationRowMenuItem) -> Bool {
+        switch item {
+        case .openPage: pushRoute != nil
+        case .use, .delete: true
+        case .update: actions.updateConfiguration != nil
+        case .copyLink: actions.copyProfileURL != nil
+        case .editSource: actions.editSource != nil
+        case .runtimeConfiguration: actions.openRuntimeConfiguration != nil
+        case .duplicate: actions.duplicate != nil
+        case .export: actions.export != nil
+        case .moveUp, .moveDown: actions.reorder != nil
+        }
     }
 
     @ViewBuilder
+    private func menuItem(_ item: ClashMacConfigurationRowMenuItem, _ profile: ClashProfileSnapshot, index: Int) -> some View {
+        switch item {
+        case .openPage:
+             
+            Button { open(profile) } label: { Text(clash: .copy("View Details")) }
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.open")
+        case .use:
+            Button { actions.activate(profile.id) } label: { Text(clash: .copy("Use This Profile")) }
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.use")
+        case .update:
+            Button { actions.updateConfiguration?(profile.id) } label: { Text(clash: .copy("Update")) }
+                .disabled(profile.isBusy)
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.update")
+        case .copyLink:
+            Button { actions.copyProfileURL?(profile.id) } label: { Text(clash: .copy("Copy Link")) }
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.copy-link")
+        case .editSource:
+            Button { actions.editSource?(profile.id) } label: { Text(clash: .copy("Edit Source…")) }
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.edit-source")
+        case .runtimeConfiguration:
+            Button { actions.openRuntimeConfiguration?(profile.id) } label: { Text(clash: .copy("View Runtime Configuration")) }
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.runtime")
+        case .duplicate:
+            Button { duplicate(profile) } label: { Text(clash: .copy("Duplicate")) }
+                .disabled(duplicating)
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.duplicate")
+        case .export:
+            Button { actions.export?(profile.id) } label: { Text(clash: .copy("Export…")) }
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.export")
+        case .moveUp:
+            Button { actions.reorder?(Self.order(profiles, moving: profile.id, by: -1)) } label: { Text(clash: .copy("Move Up")) }
+                .disabled(index == 0)
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.move-up")
+        case .moveDown:
+            Button { actions.reorder?(Self.order(profiles, moving: profile.id, by: 1)) } label: { Text(clash: .copy("Move Down")) }
+                .disabled(index == profiles.count - 1)
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.move-down")
+        case .delete:
+             
+            Button(role: .destructive) { pendingDelete = .configuration(profile.id) } label: { Text(clash: .opens("Delete", locale: locale)) }
+                .accessibilityIdentifier("configuration-center.configurations.row-menu.delete")
+        }
+    }
+
+     
+    private func open(_ profile: ClashProfileSnapshot) {
+        guard let pushRoute else { return }
+        let token = UUID()
+        let detail = self.detail
+        ClashViewRouteRegistry.set(token, ownership: .oneShot, onReturn: {}) { AnyView(detail(.configuration(profile.id))) }
+        pushRoute(ClashViewRoute(id: token))
+    }
+
+     
+     
+     
+    private func duplicate(_ profile: ClashProfileSnapshot) {
+        guard let duplicate = actions.duplicate, !duplicating else { return }
+        duplicating = true
+        Task { @MainActor in
+            defer { duplicating = false }
+            do {
+                let label = try await duplicate(profile.id)
+                feedback?.say(ClashMacConfigurationInspector.duplicateResult(label), operation: "configuration.duplicate")
+            } catch is CancellationError {
+            } catch {
+                feedback?.say(ClashMacFeedbackSentences.couldNotSave(reason: ClashErrorCopy.message(error, locale: locale),
+                                                                       id: "configuration.duplicate"),
+                               operation: "configuration.duplicate")
+            }
+        }
+    }
+
+     
+    private var dragsTheOrder: ((IndexSet, Int) -> Void)? {
+        guard let reorder = actions.reorder, profiles.count > 1 else { return nil }
+        let profiles = self.profiles
+        return { offsets, destination in reorder(Self.order(profiles, moving: offsets, to: destination)) }
+    }
+
+     
+     
+     
+    @ViewBuilder
     private var configurationRows: some View {
+         
+        let now = Date()
         ForEach(Array(profiles.enumerated()), id: \.element.id) { index, profile in
                 HStack(spacing: ClashTheme.Spacing.compact) {
                      
@@ -436,10 +626,15 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
                          
                          
                          
+                         
+                         
+                        let line = ClashMacConfigurationRowWords.line(profile.id.rawValue, in: model.snapshot, note: profile.note,
+                                                                      locale: locale, now: now)
                         ClashMacLibraryRowLabel(
                             title: .verbatim(profile.label),
+                            subtitle: line,
                             badges: profile.badges,
-                            note: profile.note,
+                            note: line == nil ? profile.note : nil,
                             usage: ClashMacConfigurationUsageFacts.usage(configurationID: profile.id.rawValue, fetched: profile.subscription, in: model.snapshot),
                             busy: profile.isBusy
                         )
@@ -448,7 +643,7 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
                      
                      
                      
-                    Menu { configurationMenu(profile, index: index) } label: {
+                    Menu { configurationMenu(profile) } label: {
                         ClashSymbolImage(symbol: .ellipsisCircle)
                             .foregroundStyle(.secondary)
                             .frame(width: ClashTheme.Control.pointerRowTarget)
@@ -462,12 +657,14 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
                     .accessibilityLabel(Text(clash: .copy("More")))
                     .accessibilityIdentifier("configuration-center.configurations.menu.\(profile.id.rawValue)")
                 }
-                .contextMenu { configurationMenu(profile, index: index) }
+                .contextMenu { configurationMenu(profile) }
                  
                  
                 .accessibilityElement(children: .contain)
                 .clashMacGroupRow(first: index == 0, last: index == profiles.count - 1, margin: 0)
         }
+         
+        .onMove(perform: dragsTheOrder)
         if profiles.isEmpty {
             Text(clash: .copy("None")).foregroundStyle(.secondary)
                 .clashMacGroupRow(first: true, last: true, margin: 0)
@@ -821,6 +1018,14 @@ public struct ClashMacConfigurationCenterListPage<Detail: View>: View {
      
 
      
+     
+    static func order(_ profiles: [ClashProfileSnapshot], moving offsets: IndexSet, to destination: Int) -> [Profile.ID] {
+        var ids = profiles.map(\.id)
+        ids.move(fromOffsets: offsets, toOffset: destination)
+        return ids
+    }
+
+     
     static func order(_ profiles: [ClashProfileSnapshot], moving id: Profile.ID, by offset: Int) -> [Profile.ID] {
         var ids = profiles.map(\.id)
         guard let index = ids.firstIndex(of: id), ids.indices.contains(index + offset) else { return ids }
@@ -840,6 +1045,9 @@ public enum ClashMacDeleteCopy {
         case .source: ClashCopy.string(isChain ? "Delete Proxy Chain" : "Delete Source", locale: locale)
         case .scheme: ClashCopy.string("Delete Rule Scheme", locale: locale)
         case .configuration, .collection: ClashCopy.string("Delete Profile", locale: locale)
+         
+         
+        case .script: ClashCopy.string("Delete Override Script", locale: locale)
         }
     }
 
@@ -856,7 +1064,7 @@ public enum ClashMacDeleteCopy {
             : "Saved profiles keep their current content and stop following this source.", locale: locale)
         case .scheme: ClashCopy.string("Saved profiles keep their current rules and stop following this scheme.", locale: locale)
         case .configuration: ClashCopy.string("This profile will be deleted. Sources and rule schemes in the library will remain.", locale: locale)
-        case .collection: ""
+        case .collection, .script: ""
         }
     }
 }
@@ -903,6 +1111,51 @@ public extension View {
  
  
  
+ 
+ 
+ 
+public struct ClashMacItemPage<Item, Content: View>: View {
+    private let item: Item?
+    private let content: (Item) -> Content
+
+    public init(_ item: Item?, @ViewBuilder content: @escaping (Item) -> Content) {
+        self.item = item
+        self.content = content
+    }
+
+    public var body: some View {
+        ZStack {
+            if let item {
+                content(item)
+            } else {
+                Color.clear
+            }
+        }
+        .clashMacPopsWhenGone(item == nil)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashMacRelatedPage {
+    public var title: ClashDisplayText
+    public var open: @MainActor () -> AnyView
+
+    public init(title: ClashDisplayText, open: @escaping @MainActor () -> AnyView) {
+        self.title = title
+        self.open = open
+    }
+}
+
+ 
+ 
+ 
+ 
 private struct ClashMacCenterListIdentifier: ViewModifier {
     let segment: ClashMacConfigurationCenterSegment
 
@@ -912,6 +1165,8 @@ private struct ClashMacCenterListIdentifier: ViewModifier {
         case .configurations: content.accessibilityIdentifier("configuration-center.configurations")
         case .nodes: content.accessibilityIdentifier("configuration-center.nodes")
         case .rules: content.accessibilityIdentifier("configuration-center.rules")
+         
+        case .scripts: content
         }
     }
 }

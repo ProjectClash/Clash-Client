@@ -3,7 +3,7 @@
   "upstreamRepository": "https://github.com/MetaCubeX/meta-rules-dat",
   "upstreamRevision": "4178770badecb1b349fbcd62c737e0d7a2079729",
   "releaseTag": "latest",
-  "publishedAt": "2026-09-20T00:14:40Z",
+  "publishedAt": "2026-11-21T03:21:17Z",
   "licenseFile": "LICENSE.meta-rules-dat.txt",
   "resources": [
     {
@@ -11,44 +11,44 @@
       "fileName": "GeoSite.dat",
       "sourceAsset": "GeoSite.dat.xz",
       "encoding": "xz",
-      "bundledSize": 816220,
-      "bundledSHA256": "5b01fcd3febc2148c9cbfda0ec529d1520a6fdd230f6358fd3232e6820898c8f",
+      "bundledSize": 830088,
+      "bundledSHA256": "81de262952b23837a5dd4574bb6615807439c3f3f6bbcfdec66b157e2ee4a55a",
       "downloadURL": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
-      "size": 4244510,
-      "sha256": "03e53e166f2ecbde04b00e38a8b587aab5bed64a739a6d13c3ef11cb7bf304a4"
+      "size": 4349121,
+      "sha256": "55c0ff0bb7a75de661de7a30984ece344d9c7840a37a92893b59af9f4baed280"
     },
     {
       "kind": "mmdb",
       "fileName": "geoip.metadb",
       "sourceAsset": "geoip.metadb.xz",
       "encoding": "xz",
-      "bundledSize": 2131064,
-      "bundledSHA256": "702cb813aa56db9d2239384a75bfbff9dcedef38b8e40946d45f17544124120b",
+      "bundledSize": 2147896,
+      "bundledSHA256": "d7cc730682ad0c58806a41fa45a39848a9e8d64386b0047d2e7d8ec937121393",
       "downloadURL": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
-      "size": 8510129,
-      "sha256": "1b237ecc416bb79443c8f386f5e6f9d3395771e745b8e0ce412ed009fc29619e"
+      "size": 8434612,
+      "sha256": "41bce1c35748f2748433739e0f3d3093db2fbabe244c159e2d9fa5f5566b1bbf"
     },
     {
       "kind": "geoip",
       "fileName": "GeoIP.dat",
       "sourceAsset": "GeoIP.dat.xz",
       "encoding": "xz",
-      "bundledSize": 1737932,
-      "bundledSHA256": "ae49303cb4e983363910d334c3e656a69b0368ef067cea3c3f7abf2337f08edb",
+      "bundledSize": 1731000,
+      "bundledSHA256": "ea2b43d41bb0662b066c8e17f90bc346b49af4579f7368885e1878c5728f8c94",
       "downloadURL": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
-      "size": 16907278,
-      "sha256": "f3370cf391831bb01e1e662df88596164d136e7d9f81a91c00bae26587e02d72"
+      "size": 16503149,
+      "sha256": "d4ec4c5e5d5a38c1399964ea9fd8c94288426a3b31b483904b67819fc07f4466"
     },
     {
       "kind": "asn",
       "fileName": "ASN.mmdb",
       "sourceAsset": "ASN.mmdb.xz",
       "encoding": "xz",
-      "bundledSize": 3816960,
-      "bundledSHA256": "b5f27dd7031c93968911565d0ee79f488a0a1a816abcf47fc7a8c8556744fa82",
+      "bundledSize": 3405272,
+      "bundledSHA256": "d30a8e77ada8b7509bc82c4c94a9c9131c608f731e80f5e1d4a303125205a312",
       "downloadURL": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
-      "size": 12103050,
-      "sha256": "7dcc428e82ef1e9514de68e7413afbf58cccfa56de760448a69768a0b08f5950"
+      "size": 9072814,
+      "sha256": "ba7c4964c71b51d28dc23eefd5e4376801bf90472d26f766648aae003af9388e"
     }
   ]
 }

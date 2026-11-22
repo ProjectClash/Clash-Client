@@ -51,6 +51,10 @@ public struct ClashMacCustomRulesActions {
      
      
     public var ruleNames: @MainActor () async -> ClashRuleNames? = { nil }
+     
+     
+     
+    public var deleted: (@MainActor (String, @escaping @MainActor () async -> Bool) -> Void)? = nil
 
     public init(
         load: @escaping @MainActor () async -> ClashMacCustomRulesState,
@@ -124,7 +128,38 @@ final class ClashMacCustomRulesModel: ObservableObject {
     }
 
     func remove(_ text: String, _ actions: ClashMacCustomRulesActions) {
-        act(actions) { $0.filter { $0.text != text } }
+        guard let index = state.rules.firstIndex(where: { $0.text == text }) else { return }
+        let removed = state.rules[index]
+        let next = state.rules.dropFirst(index + 1).first?.text
+        act(actions, { $0.filter { $0.text != text } }) { [weak self] in
+             
+             
+             
+            actions.deleted?(text) {
+                do {
+                    let restore = { (rules: [ClashMacCustomRule]) -> [ClashMacCustomRule]? in
+                        guard !rules.contains(where: { $0.text == text }) else { return nil }
+                        var rules = rules
+                        rules.insert(removed, at: next.flatMap { next in rules.firstIndex { $0.text == next } } ?? rules.count)
+                        return rules
+                    }
+                    if let self {
+                        var restored = false
+                        try await self.writes.turns.run {
+                            guard let rules = restore(self.state.rules) else { return }
+                            self.state = try await actions.save(rules)
+                            restored = true
+                        }
+                        return restored
+                    }
+                    guard let rules = restore(await actions.load().rules) else { return false }
+                    _ = try await actions.save(rules)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+        }
     }
 
      
@@ -144,6 +179,19 @@ final class ClashMacCustomRulesModel: ObservableObject {
     func add(_ rule: ClashMacCustomRule, _ actions: ClashMacCustomRulesActions) async throws {
         try await writes.turns.run {
             state = try await actions.save(state.rules + [rule])
+        }
+    }
+
+     
+     
+     
+     
+    func replace(_ text: String, with rule: ClashMacCustomRule, _ actions: ClashMacCustomRulesActions) async throws {
+        try await writes.turns.run {
+            var next = state.rules
+            guard let index = next.firstIndex(where: { $0.text == text }) else { throw ConfigurationLibraryError.staleGeneration }
+            next[index] = rule
+            state = try await actions.save(next)
         }
     }
 
@@ -168,7 +216,8 @@ final class ClashMacCustomRulesModel: ObservableObject {
         }
     }
 
-    private func act(_ actions: ClashMacCustomRulesActions, _ change: @escaping ([ClashMacCustomRule]) -> [ClashMacCustomRule]) {
+    private func act(_ actions: ClashMacCustomRulesActions, _ change: @escaping ([ClashMacCustomRule]) -> [ClashMacCustomRule],
+                     done: (@MainActor () -> Void)? = nil) {
         error = nil
         let id = UUID()
         acting[id] = Task { @MainActor [weak self] in
@@ -178,6 +227,7 @@ final class ClashMacCustomRulesModel: ObservableObject {
                 try await self.writes.turns.run {
                     self.state = try await actions.save(change(self.state.rules))
                 }
+                done?()
             } catch {
                 self.error = ClashErrorCopy.message(error, locale: self.locale)
             }
@@ -194,11 +244,18 @@ public struct ClashMacCustomRulesPage: View {
     @Environment(\.configurationFieldCopy) private var copy
     @Environment(\.locale) private var locale
     let actions: ClashMacCustomRulesActions
+     
+     
+     
+     
+    var rulesPage: ClashMacRelatedPage?
     @StateObject private var model: ClashMacCustomRulesModel
     @State private var adding = false
 
-    public init(actions: ClashMacCustomRulesActions, initial: ClashMacCustomRulesState = .empty) {
+    public init(actions: ClashMacCustomRulesActions, initial: ClashMacCustomRulesState = .empty,
+                rulesPage: ClashMacRelatedPage? = nil) {
         self.actions = actions
+        self.rulesPage = rulesPage
         _model = StateObject(wrappedValue: ClashMacCustomRulesModel(initial: initial))
     }
 
@@ -209,13 +266,19 @@ public struct ClashMacCustomRulesPage: View {
                 ForEach(state.rules) { rule in
                     let key = ClashMacCustomRulesModel.rule(rule.text)
                     VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
+                        HStack(alignment: .firstTextBaseline, spacing: ClashTheme.Spacing.compact) {
                         ClashStoredToggle(model.switches, key: key, stored: rule.isEnabled,
                                           identifier: "configuration-center.custom-rules.rule.\(rule.text)",
                                           set: { model.setEnabled(rule.text, $0, actions) }) {
+                            Text(clash: .copy("Enabled"))
+                        }
+                        .labelsHidden()
+                         
+                         
+                         
+                        ClashRoutedViewLink(showsDisclosureIndicator: false) { editPage(rule) } label: {
                             VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
-                                 
-                                 
-                                ConfigurationRuleRow(rule.text, showsChevron: false)
+                                ConfigurationRuleRow(rule.text)
                                 if let comment = rule.comment, !comment.isEmpty {
                                     Text(verbatim: comment).font(.subheadline).foregroundStyle(.secondary)
                                 }
@@ -227,6 +290,10 @@ public struct ClashMacCustomRulesPage: View {
                                         .accessibilityIdentifier("configuration-center.custom-rules.not-in-effect")
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .accessibilityIdentifier("configuration-center.custom-rules.open")
                         }
                         .toggleStyle(.checkbox)
                          
@@ -271,6 +338,17 @@ public struct ClashMacCustomRulesPage: View {
                         .accessibilityIdentifier("configuration-center.custom-rules.error")
                 }
             }
+             
+            if let rulesPage {
+                Section {
+                    ClashRoutedViewLink { rulesPage.open() } label: {
+                        Text(clash: rulesPage.title)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("configuration-center.custom-rules.rules-page")
+                }
+            }
         }
          
          
@@ -293,6 +371,60 @@ public struct ClashMacCustomRulesPage: View {
             .clashModalPresentation(.fitted)
         }
     }
+
+     
+     
+    private func editPage(_ rule: ClashMacCustomRule) -> some View {
+        ClashMacAddRuleSheet(
+            targets: actions.targets,
+            ruleSets: model.names?.ruleSets.map { $0.sorted() },
+            geoValues: actions.geoValues,
+            add: { _ in },
+            close: {},
+            editing: rule,
+            replace: { [model, actions] old, new in try await model.replace(old, with: new, actions) }
+        )
+        .environment(\.clashRuleTargetSearch, actions.targetSearch)
+        .navigationTitle(Text(clash: .copy("Rule")))
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+struct ClashMacCustomRuleWrites: Equatable {
+     
+     
+    private(set) var opened: ClashMacRuleRowEditor.Opened?
+     
+    private(set) var written: ClashMacRuleRowEditor.Opened?
+
+    init(opened: ClashMacRuleRowEditor.Opened? = nil) {
+        self.opened = opened
+        written = opened
+    }
+
+     
+     
+    mutating func send(_ now: ClashMacRuleRowEditor.Opened, canSave: Bool, editing: String) -> String? {
+        guard ClashMacRuleRowEditor.writes(opened: opened, now: now, canSave: canSave) else { return nil }
+        let old = opened?.raw ?? editing
+        opened = now
+        return old
+    }
+
+     
+    mutating func landed(_ now: ClashMacRuleRowEditor.Opened) {
+        written = now
+    }
+
+     
+     
+    mutating func failed(_ now: ClashMacRuleRowEditor.Opened) {
+        if opened == now { opened = written }
+    }
 }
 
  
@@ -311,7 +443,21 @@ struct ClashMacAddRuleSheet: View {
     let geoValues: ClashMacGeoValueLoader
     let add: @MainActor (ClashMacCustomRule) async throws -> Void
     let close: () -> Void
+     
+     
+    var editing: ClashMacCustomRule? = nil
+     
+     
+    var replace: (@MainActor (String, ClashMacCustomRule) async throws -> Void)? = nil
     @State private var action: ClashStructuredRule.Action = .domainSuffix
+     
+     
+    @State private var noResolve = false
+    @State private var src = false
+     
+    @State private var additionalParams: [String] = []
+     
+    @State private var writes = ClashMacCustomRuleWrites()
      
     @State private var pickingRuleSet = false
      
@@ -333,15 +479,18 @@ struct ClashMacAddRuleSheet: View {
     @State private var error: String?
 
     private var assembled: String {
-        var parts = [action.rawValue]
-        if action.needsContent { parts.append(content.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        parts.append(target)
-        return parts.joined(separator: ",")
+        ClashStructuredRule(action: action, content: action.needsContent ? content.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                            target: target, noResolve: noResolve, src: src, additionalParams: additionalParams).rawValue
     }
 
     private var canAdd: Bool {
         (!action.needsContent || !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && !busy && !pickingGeo && !pickingTarget
             && !pickingRuleSet
+    }
+
+     
+    private func optionName(_ option: String) -> String {
+        copy.ruleOptionName(option, language: ConfigurationFieldCopy.Language(locale: locale)) ?? option
     }
 
     private var title: ClashDisplayText {
@@ -352,7 +501,103 @@ struct ClashMacAddRuleSheet: View {
     }
 
     var body: some View {
+        if editing != nil {
+            pageBody
+        } else {
+            sheetBody
+        }
+    }
+
+     
+     
+    private var pageBody: some View {
+        formArea
+            .toolbar {
+                ToolbarItem(placement: .navigation) { backButton }
+            }
+            .onAppear(perform: readEditing)
+            .onChange(of: ClashMacRuleRowEditor.Opened(raw: assembled, enabled: enabled, note: comment)) { now in
+                guard let old = writes.send(now, canSave: canAdd, editing: editing?.text ?? "") else { return }
+                let note = now.note.trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { @MainActor in
+                    do {
+                        try await replace?(old, ClashMacCustomRule(text: now.raw, isEnabled: now.enabled, comment: note.isEmpty ? nil : note))
+                        writes.landed(now)
+                        error = nil
+                    } catch {
+                        writes.failed(now)
+                        self.error = ClashErrorCopy.message(error, locale: locale)
+                    }
+                }
+            }
+            .onChange(of: action, perform: actionChanged)
+    }
+
+     
+    private func readEditing() {
+        guard let editing, writes.opened == nil else { return }
+        if let parsed = ClashStructuredRule.parse(editing.text) {
+            action = parsed.action
+            lastAction = parsed.action
+             
+            pickedFrom = parsed.action.clashMacGeoResource
+            content = parsed.content
+            target = parsed.target
+            noResolve = parsed.noResolve
+            src = parsed.src
+            additionalParams = parsed.additionalParams
+        }
+        enabled = editing.isEnabled
+        comment = editing.comment ?? ""
+        writes = ClashMacCustomRuleWrites(opened: ClashMacRuleRowEditor.Opened(raw: assembled, enabled: enabled, note: comment))
+    }
+
+    @ViewBuilder
+    private var backButton: some View {
+        if pickingGeo {
+            Button { pickingGeo = false } label: { Text(clash: .copy("Back")) }
+                .accessibilityIdentifier("configuration-center.custom-rules.form.geo.back")
+        } else if pickingTarget {
+            Button { pickingTarget = false } label: { Text(clash: .copy("Back")) }
+                .accessibilityIdentifier("configuration-center.custom-rules.form.target.back")
+        } else if pickingRuleSet {
+            Button { pickingRuleSet = false } label: { Text(clash: .copy("Back")) }
+                .accessibilityIdentifier("configuration-center.custom-rules.form.rule-set.back")
+        }
+    }
+
+    private var sheetBody: some View {
         ClashMacSheetFrame(title: title, width: 520, height: 440) {
+            formArea
+        } leading: {
+            backButton
+        } trailing: {
+            ClashMacSheetButtons(
+                closeTitle: .copy("Cancel"),
+                closeIdentifier: "configuration-center.custom-rules.form.cancel",
+                primaryTitle: .copy("Add"),
+                primaryIdentifier: "configuration-center.custom-rules.form.add",
+                primaryDisabled: !canAdd,
+                isBusy: busy,
+                onClose: close,
+                onPrimary: submit
+            )
+        }
+        .onChange(of: action, perform: actionChanged)
+    }
+
+    private func actionChanged(_ changed: ClashStructuredRule.Action) {
+         
+         
+         
+        if changed.clashMacGeoResource != pickedFrom { content = ""; pickedFrom = nil }
+         
+        content = ClashRulePolicyOptions.value(content, from: lastAction, to: changed, ruleSets: ruleSets)
+        lastAction = changed
+    }
+
+    @ViewBuilder
+    private var formArea: some View {
             if pickingGeo, let resource = action.clashMacGeoResource {
                 ClashMacGeoValuePickerPage(
                     resource: resource, current: content, load: geoValues,
@@ -384,38 +629,6 @@ struct ClashMacAddRuleSheet: View {
             } else {
                 form
             }
-        } leading: {
-            if pickingGeo {
-                Button { pickingGeo = false } label: { Text(clash: .copy("Back")) }
-                    .accessibilityIdentifier("configuration-center.custom-rules.form.geo.back")
-            } else if pickingTarget {
-                Button { pickingTarget = false } label: { Text(clash: .copy("Back")) }
-                    .accessibilityIdentifier("configuration-center.custom-rules.form.target.back")
-            } else if pickingRuleSet {
-                Button { pickingRuleSet = false } label: { Text(clash: .copy("Back")) }
-                    .accessibilityIdentifier("configuration-center.custom-rules.form.rule-set.back")
-            }
-        } trailing: {
-            ClashMacSheetButtons(
-                closeTitle: .copy("Cancel"),
-                closeIdentifier: "configuration-center.custom-rules.form.cancel",
-                primaryTitle: .copy("Add"),
-                primaryIdentifier: "configuration-center.custom-rules.form.add",
-                primaryDisabled: !canAdd,
-                isBusy: busy,
-                onClose: close,
-                onPrimary: submit
-            )
-        }
-        .onChange(of: action) { changed in
-             
-             
-             
-            if changed.clashMacGeoResource != pickedFrom { content = ""; pickedFrom = nil }
-             
-            content = ClashRulePolicyOptions.value(content, from: lastAction, to: changed, ruleSets: ruleSets)
-            lastAction = changed
-        }
     }
 
     private var form: some View {
@@ -461,6 +674,19 @@ struct ClashMacAddRuleSheet: View {
                         pickingTarget = true
                     }
                     .disabled(busy)
+                     
+                     
+                    let options = ClashMacRuleRowEditor.options(of: action, in: syntax)
+                    if options.contains("no-resolve") {
+                        Toggle(isOn: $noResolve) { Text(verbatim: optionName("no-resolve")) }
+                            .disabled(busy)
+                            .accessibilityIdentifier("configuration-center.custom-rules.form.no-resolve")
+                    }
+                    if options.contains("src") {
+                        Toggle(isOn: $src) { Text(verbatim: optionName("src")) }
+                            .disabled(busy)
+                            .accessibilityIdentifier("configuration-center.custom-rules.form.src")
+                    }
                     Toggle(isOn: $enabled) { Text(clash: .copy("Enabled")) }
                         .disabled(busy)
                         .accessibilityIdentifier("configuration-center.custom-rules.form.enabled")
@@ -471,6 +697,12 @@ struct ClashMacAddRuleSheet: View {
                     Text(clash: .format("Written as %@ in the configuration file", [assembled]))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                }
+                if editing != nil, !canAdd {
+                    Section {
+                        Text(clash: .copy(ClashMacRuleRowEditor.incompleteNote)).foregroundStyle(.orange)
+                            .accessibilityIdentifier("configuration-center.custom-rules.form.incomplete")
+                    }
                 }
                 if let error {
                     Section {

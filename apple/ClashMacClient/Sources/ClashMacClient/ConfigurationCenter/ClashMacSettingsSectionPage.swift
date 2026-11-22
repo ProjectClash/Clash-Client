@@ -2450,6 +2450,11 @@ struct ClashMacMapEntryKind {
     let mapPath: String
     let valuePath: String
 
+     
+     
+     
+    var keyLabel: ClashDisplayText { keyFormat == .domain ? .copy("Domain") : .copy("Name") }
+
     init(map: ConfigurationField, entry: ConfigurationField?, control make: (ConfigurationField) -> ClashMacFieldControl?) {
         choices = map.key?.values.flatMap { $0.isEmpty ? nil : $0 }
         keyFormat = map.key?.format
@@ -2561,10 +2566,10 @@ struct ClashMacNewEntrySheet: View {
                     if let available {
                         Picker(selection: $key) {
                             ForEach(available, id: \.self) { Text(verbatim: $0).tag($0) }
-                        } label: { Text(clash: .copy("Name")) }
+                        } label: { Text(clash: entry.keyLabel) }
                         .accessibilityIdentifier("configuration-center.section.new-entry.choice")
                     } else {
-                        TextField(text: $key) { Text(clash: .copy("Name")) }
+                        TextField(text: $key) { Text(clash: entry.keyLabel) }
                             .disableAutocorrection(true)
                             .accessibilityIdentifier("configuration-center.section.new-entry.name")
                          

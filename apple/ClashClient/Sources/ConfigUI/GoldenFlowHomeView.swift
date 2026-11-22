@@ -218,13 +218,15 @@ struct GoldenFlowHomeAdapter: View {
     @State private var runtimeConfigurationPresentation:
         RuntimeConfigurationPresentation?
     @State private var runtimeConfigurationPreparationGeneration: UInt64 = 0
-    @State private var presentedConnectionIssue: HomeConnectionIssue?
+    @State private var presentedConnectionIssue: PresentedConnectionIssue?
      
      
      
      
     @State private var presentedHomeSnapshot: AppleClientSnapshot?
     @State private var configTally: ProfileConfigTally?
+     
+    @State private var configTallyProfileID: String?
     @State private var tallyGeneration: UInt64 = 0
      
      
@@ -242,6 +244,9 @@ struct GoldenFlowHomeAdapter: View {
      
     @State private var resourceCounts: HomeResourceCounts?
     @State private var rulesOverview: RulesOverviewModel?
+     
+     
+    @State private var homeRuleScheme: ClashHomeRuleScheme?
     @State private var configuredMode: Profile.OutboundMode = .rule
      
      
@@ -267,6 +272,14 @@ struct GoldenFlowHomeAdapter: View {
     private struct ProxiesPreparationKey: Hashable {
         let generation: UInt64
         let overrides: ProxyNodeOverrideSpec?
+         
+         
+         
+         
+         
+         
+         
+        let published: UInt64
     }
     @State private var preparedProxiesPresentation:
         PreparedProxiesPresentation?
@@ -393,6 +406,9 @@ struct GoldenFlowHomeAdapter: View {
         .onChange(of: profiles.savedConfigurationGeneration) { _ in
             recomputeTally()
             startupOutcome.refresh()
+             
+             
+            vpn.reviewTheOnDemandPause()
             if !command.isConnected { Task { await nodes.refresh() } }
         }
          
@@ -654,11 +670,11 @@ struct GoldenFlowHomeAdapter: View {
             }
             rebuildFailureCaptureIfNeeded()
         }
-        .clashSheet(item: $presentedConnectionIssue) { issue in
+        .clashSheet(item: $presentedConnectionIssue) { presented in
              
              
              
-            connectionIssueSheet(issue)
+            connectionIssueSheet(presented)
                 .clashModalPresentation(.form)
         }
         .alert(
@@ -725,7 +741,10 @@ struct GoldenFlowHomeAdapter: View {
                     pendingProxiesGroup = group
                     proxiesOpening = .browsing
                     presentProxiesOverview(for: profile)
-                }
+                },
+                 
+                 
+                profileID: live.id
             )
         case .proxiesOverview(let profile):
              
@@ -767,7 +786,9 @@ struct GoldenFlowHomeAdapter: View {
                             readerFoldedAll: nodes.readerFoldedAllGroups,
                             opening: proxiesOpening
                         ),
-                        opening: proxiesOpening
+                        opening: proxiesOpening,
+                         
+                        reprepare: { proxiesPreparationGeneration &+= 1 }
                     )
                 } else {
                     HomePreparationPlaceholder(
@@ -789,7 +810,8 @@ struct GoldenFlowHomeAdapter: View {
             }
             .task(id: ProxiesPreparationKey(
                 generation: proxiesPreparationGeneration,
-                overrides: live.proxyNodeOverrides
+                overrides: live.proxyNodeOverrides,
+                published: profiles.publishedGeneration(of: live.id)
             )) {
                 await prepareProxiesOverview(
                     for: live,
@@ -827,8 +849,9 @@ struct GoldenFlowHomeAdapter: View {
 
     @ViewBuilder
     private func connectionIssueSheet(
-        _ issue: ClashHomeConnectionIssue
+        _ presented: PresentedConnectionIssue
     ) -> some View {
+        let issue = presented.issue
         HomeConnectionIssueView(
             issue: issue,
             vpn: vpn,
@@ -861,13 +884,34 @@ struct GoldenFlowHomeAdapter: View {
              
              
             onDemandNote: vpn.onDemandNoteForTheReasonSheet(locale: locale),
-            openOnDemand: { throughDoor("home.connection-issue.on-demand") { openOnDemandPage() } }
+            openOnDemand: { throughDoor("home.connection-issue.on-demand") { openOnDemandPage() } },
+             
+             
+             
+            onDemandPausedNote: vpn.onDemandPauseNoteForTheReasonSheet(
+                refusesConfiguration: issue.refusesConfiguration,
+                about: Self.revisionForThePauseNote(
+                    isTheBreadcrumbs: presented.isTheBreadcrumbs, paused: vpn.refusalOfThePause,
+                    live: vpn.startRefusedByCore, record: startupOutcome.record,
+                    selectedProfileID: currentProfile?.id))
+                 
+                 
+                ?? vpn.onDemandMemoryPauseNoteForTheReasonSheet(
+                    saysMemory: issue.coreWords == nil
+                        && (issue.kind == .stoppedForMemory || startupExplanation?.memoryWasTheStory == true)),
+             
+            unrequestedStop: vpn.unrequestedStop
         )
         .onDisappear {
              
              
              
-            guard issue.kind == .startupStopped else { return }
+             
+             
+             
+             
+             
+            guard presented.isTheBreadcrumbs else { return }
             command.clearStartupExplanation()
             startupExplanation = nil
             geoNameCount = nil
@@ -909,17 +953,9 @@ struct GoldenFlowHomeAdapter: View {
         geoCensusCount: Int? = nil,
         geoCensusBytes: Int64? = nil
     ) -> [MemoryBillSection.Line] {
-        guard let container = ClashAppIdentifiers.appGroupContainer,
-              let text = try? String(
-                  contentsOf: container.appendingPathComponent(
-                      MemorySampleLog.startupPhaseFileName
-                  ),
-                  encoding: .utf8
-              )
-        else { return [] }
-        let ledger = ClashMemoryLedger.lastRun(
-            from: text.split(separator: "\n").map(String.init)
-        )
+         
+         
+        guard let ledger = ClashMemoryLedger.lastRunOfPhaseFile() else { return [] }
         let lines = MemoryBillSection.lines(
             ledger: ledger,
             pressureFootprintBytes: CoreMemoryPressure.observed()?
@@ -1140,14 +1176,79 @@ struct GoldenFlowHomeAdapter: View {
 
      
      
-     
-     
-     
-    private var connectionErrorMessage: String {
+    struct FailureLine: Equatable {
+         
+        var message = ""
+         
+        var subject: String?
          
          
-        let live = vpn.homeLastErrorRow
-        guard let startupExplanation else { return live }
+        var isStartupStopped = false
+         
+         
+        var unrequestedStop: ClashHomeUnrequestedStop?
+    }
+
+     
+     
+     
+     
+     
+    static func failureLine(
+        live: String, lastErrorIsEmpty: Bool, refusal: CoreStartRefusal?,
+        explanation: ClashStartupExplanation?, record: StartupOutcomeRecord?,
+        unrequestedStop: UnrequestedStopAccount? = nil,
+        selectedProfileID: String?, locale: Locale, paused: CoreStartRefusal? = nil
+    ) -> FailureLine {
+        var live = live, lastErrorIsEmpty = lastErrorIsEmpty
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        if let refusal, live == refusal.message {
+            if refusal.isAbout(selected: selectedProfileID) {
+                return FailureLine(message: live, subject: refusal.words)
+            }
+            live = ""
+            lastErrorIsEmpty = true
+        }
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        if live.isEmpty || VPNDisconnectErrorPresentation.isProviderStoppedUnexpectedly(live),
+           let paused, paused.isAbout(selected: selectedProfileID) {
+            return FailureLine(message: paused.message, subject: paused.words)
+        }
+        guard let explanation else {
+             
+             
+             
+             
+             
+             
+             
+            if let unrequestedStop,
+               live.isEmpty || VPNDisconnectErrorPresentation.isProviderStoppedUnexpectedly(live) {
+                return FailureLine(
+                    message: unrequestedStop.homeStop == .memory
+                        ? UnrequestedStopAccount.memoryRow
+                        : VPNDisconnectErrorPresentation.providerStoppedUnexpectedlyMessage,
+                    unrequestedStop: unrequestedStop.homeStop)
+            }
+            return FailureLine(message: live)
+        }
          
          
          
@@ -1161,30 +1262,101 @@ struct GoldenFlowHomeAdapter: View {
          
         guard live.isEmpty || VPNDisconnectErrorPresentation
             .isProviderStoppedUnexpectedly(live)
-        else { return live }
-        return ClashCopy.string(for: startupExplanation.summary, locale: locale)
+        else { return FailureLine(message: live) }
+         
+         
+         
+         
+         
+         
+         
+         
+        if let refusal = CoreStartRefusal.from(record: record, sameAs: explanation.failureReason) {
+            return refusal.isAbout(selected: selectedProfileID)
+                ? FailureLine(message: refusal.message, subject: refusal.words) : FailureLine()
+        }
+        return FailureLine(message: ClashCopy.string(for: explanation.summary, locale: locale),
+                           isStartupStopped: lastErrorIsEmpty)
     }
 
      
      
      
      
-    static func errorSubject(for line: String, refusal: CoreStartRefusal?) -> String? {
-        guard let refusal, line == refusal.message else { return nil }
-        return refusal.words
+     
+     
+     
+     
+     
+     
+     
+     
+    nonisolated static func revisionForThePauseNote(
+        isTheBreadcrumbs: Bool, paused: CoreStartRefusal?, live: CoreStartRefusal?,
+        record: StartupOutcomeRecord?, selectedProfileID: String?
+    ) -> StartupOutcomeRecord.Revision? {
+        guard isTheBreadcrumbs else { return live?.requested }
+        if let paused, paused.isAbout(selected: selectedProfileID) { return paused.requested }
+        return record?.requested
+    }
+
+    nonisolated static func accountIsTheBreadcrumbs(_ issue: ClashHomeConnectionIssue, liveRefusal: CoreStartRefusal?) -> Bool {
+        issue.kind == .startupStopped || (issue.coreWords != nil && liveRefusal == nil)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    struct PresentedConnectionIssue: Identifiable {
+        let issue: ClashHomeConnectionIssue
+        let isTheBreadcrumbs: Bool
+        var id: String { issue.id }
+
+        init(_ issue: ClashHomeConnectionIssue, liveRefusal: CoreStartRefusal?, selectedProfileID: String?) {
+            self.issue = issue
+            isTheBreadcrumbs = GoldenFlowHomeAdapter.accountIsTheBreadcrumbs(
+                issue, liveRefusal: liveRefusal.flatMap { $0.isAbout(selected: selectedProfileID) ? $0 : nil })
+        }
+    }
+
+    private var failureLine: FailureLine {
+        Self.failureLine(
+             
+             
+            live: vpn.homeLastErrorRow, lastErrorIsEmpty: vpn.lastError.isEmpty,
+            refusal: vpn.startRefusedByCore, explanation: startupExplanation,
+             
+             
+            record: startupOutcome.record,
+             
+             
+            unrequestedStop: vpn.unrequestedStop,
+            selectedProfileID: currentProfile?.id, locale: locale,
+            paused: vpn.refusalOfThePause)
     }
 
     private var presentation: HomeConnectionPresentation {
-        let route = namedRoute
-        let line = connectionErrorMessage
+        presentation(route: namedRoute)
+    }
+
+     
+     
+    private func presentation(route: HomeNamedRoute.Route) -> HomeConnectionPresentation {
+         
+         
+        let route = route.groupAsRead(profileID: currentProfile?.id, locale: locale)
+        let line = failureLine
         return HomeConnectionPresenter.presentation(
             for: HomeConnectionFacts(
                 activeProfileName: currentProfile.map { ProfileRowPresentation.label(for: $0, locale: .current) },
                 vpnStatus: homeVPNStatus,
-                errorMessage: line,
+                errorMessage: line.message,
                 vpnAuthorization: vpn.systemVPNAuthorization,
-                errorIsStartupStopped: vpn.lastError.isEmpty
-                    && startupExplanation != nil,
+                errorIsStartupStopped: line.isStartupStopped,
                 errorIsProviderNotLaunched: VPNDisconnectErrorPresentation
                     .isProviderNotLaunched(vpn.homeLastErrorRow),
                  
@@ -1194,7 +1366,9 @@ struct GoldenFlowHomeAdapter: View {
                 errorOnDemandRuleNames: vpn.startRefusedByOnDemand?.isCertain == true
                     ? vpn.onDemandRuleNames(locale: locale) : nil,
                  
-                errorSubject: Self.errorSubject(for: line, refusal: vpn.startRefusedByCore),
+                errorSubject: line.subject,
+                 
+                errorUnrequestedStop: line.unrequestedStop,
                 allowsSystemVPNProfileReset:
                     vpn.systemVPNProfileResetAvailable,
                 isSwitchingProxy: nodes.isSwitchingProxy,
@@ -1244,8 +1418,11 @@ struct GoldenFlowHomeAdapter: View {
          
          
         let timedProfile = ClashPerf.measure("home.s.profile") { currentProfile }
+         
+         
+        let route = ClashPerf.measure("home.s.route") { namedRoute }
         let timedPresentation = ClashPerf.measure("home.s.presentation") {
-            presentation
+            presentation(route: route)
         }
         let timedProxyCount = ClashPerf.measure("home.s.proxyCount") {
             homeProxyCount
@@ -1308,13 +1485,23 @@ struct GoldenFlowHomeAdapter: View {
                         breakdown: timedProxyBreakdown,
                         names: timedTally?.groupNames ?? []
                     ),
-                    globalNode: globalGroupNode
+                    globalNode: globalGroupNode,
+                     
+                     
+                    namesReadIn: HomeGroupName.Reading(profileID: timedProfile?.id, locale: locale)
                 ),
                 rules: ClashHomeDomainSnapshot(
                     count: timedTally?.rules,
                     countUnit: "rules",
                     breakdown: timedRuleBreakdown,
-                    names: timedRuleTargets
+                    names: timedRuleTargets,
+                     
+                     
+                     
+                    ruleScheme: homeRuleScheme.map {
+                        $0.totalling(HomeRulesCardPolicy.total(timedTally?.rules, countedFor: configTallyProfileID,
+                                                               showing: timedProfile?.id))
+                    }
                 ),
                 egress: timedEgress,
                 lanAddress: lanAddress,
@@ -2081,56 +2268,9 @@ struct GoldenFlowHomeAdapter: View {
         for profile: Profile,
         generation requestedGeneration: UInt64
     ) async {
-        let sourceYAML = await profiles.loadPagesYAML(for: profile)
-        let selectedMap = profile.selectedMap
-        let profileID = profile.id
          
          
-         
-        let isActive = profiles.activeProfileID == profileID
-         
-         
-         
-        let asksKernel = !command.isConnected && !command.tunnelIsUp
-        let preparedModel = await Task.detached(
-            priority: .userInitiated
-        ) {
-            var providerNodes:
-                [String: [ProxiesOverviewModel.Proxy]] = [:]
-            var catalog: ProviderCatalog?
-            var notes: [String: ProviderNote] = [:]
-            if isActive,
-               let container = ClashAppIdentifiers.appGroupContainer,
-               let store = try? ConfigResourceStore(
-                   containerURL: container
-               ),
-               let directory =
-                   try? store.activeProvidersDirectory()
-            {
-                providerNodes = ProviderNodesLoader.load(
-                    providersDir: directory
-                )
-                catalog = ProviderCatalog.load(providersDir: directory)
-                 
-                notes = catalog?.proxyProviderNotes(
-                    state: ProviderRefreshState.read(workingDirectory: container.appendingPathComponent("working")),
-                    written: ProviderCatalog.writtenAt(providersDir: directory)) ?? [:]
-            }
-             
-             
-             
-             
-             
-             
-            let projected = ProxiesOverviewModel.make(
-                sourceYAML: sourceYAML,
-                selectedMap: selectedMap,
-                providerNodes: providerNodes,
-                notes: notes
-            )
-            return (asksKernel ? projected.resolvedWithKernelCatalog(profileID: profileID) : projected)
-                .explainingEmptyProviders(sourceYAML: sourceYAML, catalog: catalog)
-        }.value
+        let preparedModel = await ProxiesOverviewPreparation.model(for: profile, profiles: profiles, command: command)
         guard !Task.isCancelled,
               requestedGeneration == proxiesPreparationGeneration,
               editorDestination?.id == "\(profile.id)|proxies-overview"
@@ -2192,18 +2332,36 @@ struct GoldenFlowHomeAdapter: View {
         }
          
          
+        let libraryStore = profiles.configurationLibraryStore
          
-        let cacheKey = currentProfile.map {
-            HomeTallyCache.Key(profileID: $0.id, refreshToken: profileRefreshToken &+ Int(truncatingIfNeeded: profiles.savedConfigurationGeneration))
-        }
+         
+         
+        let cacheKey = homeTallyKey(for: currentProfile)
         if let cacheKey, let cached = HomeTallyCache.shared.entry(for: cacheKey) {
             configTally = cached.tally
+            if configTallyProfileID != cacheKey.profileID { configTallyProfileID = cacheKey.profileID }
             rulesOverview = cached.rulesOverview
             subscriptionNodeTally = cached.subscriptionNodeTally
             notDownloadedProxyProviders = cached.notDownloadedProxyProviders
             resourceCounts = cached.resourceCounts
+            homeRuleScheme = cached.ruleScheme
         }
         Task.detached(priority: .userInitiated) {
+             
+             
+             
+             
+             
+             
+            let library = try? libraryStore?.snapshot()
+            let ruleScheme = HomeRulesCardPolicy.ruleScheme(of: profileForResources, in: library,
+                                                            record: { try? libraryStore?.payload($0).record })
+            if let ruleScheme {
+                await MainActor.run {
+                    guard generation == tallyGeneration, currentProfile?.id == projectionProfile?.id else { return }
+                    if homeRuleScheme != ruleScheme { homeRuleScheme = ruleScheme }
+                }
+            }
              
              
              
@@ -2333,6 +2491,7 @@ struct GoldenFlowHomeAdapter: View {
                  
                  
                 if configTally != shown { configTally = shown }
+                if configTallyProfileID != projectionProfile?.id { configTallyProfileID = projectionProfile?.id }
                 if rulesOverview?.fingerprint != overview.fingerprint {
                     rulesOverview = overview
                 }
@@ -2343,6 +2502,7 @@ struct GoldenFlowHomeAdapter: View {
                     notDownloadedProxyProviders = notDownloaded
                 }
                 if resourceCounts != counts { resourceCounts = counts }
+                if homeRuleScheme != ruleScheme { homeRuleScheme = ruleScheme }
                 if let cacheKey, !awaitingRunningCount {
                     HomeTallyCache.shared.store(
                         HomeTallyCache.Entry(
@@ -2350,12 +2510,21 @@ struct GoldenFlowHomeAdapter: View {
                             rulesOverview: overview,
                             subscriptionNodeTally: subscription,
                             notDownloadedProxyProviders: notDownloaded,
-                            resourceCounts: counts
+                            resourceCounts: counts,
+                            ruleScheme: ruleScheme
                         ),
                         for: cacheKey
                     )
                 }
             }
+        }
+    }
+
+     
+     
+    private func homeTallyKey(for profile: Profile?) -> HomeTallyCache.Key? {
+        profile.map {
+            HomeTallyCache.Key(profileID: $0.id, refreshToken: profileRefreshToken &+ Int(truncatingIfNeeded: profiles.savedConfigurationGeneration))
         }
     }
 
@@ -2408,7 +2577,10 @@ struct GoldenFlowHomeAdapter: View {
 
     private func presentConnectionIssue() {
         presentationRecovery.supersede()
-        presentedConnectionIssue = presentation.issue
+         
+        presentedConnectionIssue = presentation.issue.map {
+            PresentedConnectionIssue($0, liveRefusal: vpn.startRefusedByCore, selectedProfileID: currentProfile?.id)
+        }
     }
 
     private func presentOnDemand() {
@@ -2440,6 +2612,70 @@ struct GoldenFlowHomeAdapter: View {
             await profiles.connectFromHome(profile)
             rebind()
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum HomeRulesCardPolicy {
+     
+     
+     
+     
+     
+     
+     
+    static func total(_ tally: Int?, countedFor: String?, showing: String?) -> Int? {
+        guard let countedFor, countedFor == showing else { return nil }
+        return tally
+    }
+
+     
+     
+     
+    static func ruleScheme(of profile: Profile?, in library: ConfigurationLibrarySnapshot?,
+                           record: (ConfigurationSourceVersion) -> ConfigurationSourceRecord? = { _ in nil }) -> ClashHomeRuleScheme? {
+        guard let profile, profile.id != LocalDefaultProfileProvisioner.profileID, let library else { return nil }
+        let customRules = profile.override.appendRules.count
+        let original = { (source: ConfigurationSourceRecord?) -> ClashHomeRuleScheme? in
+            source.map {
+                ClashHomeRuleScheme(name: .copy(ConfigurationSchemePickerSnapshot.originalTitle),
+                                    schemeRules: $0.ruleCount, customRules: customRules)
+            }
+        }
+        guard let recipe = library.recipes.first(where: { $0.id == profile.id }) else {
+             
+             
+            return original(library.sources.first { $0.id == "legacy-" + profile.id })
+        }
+        if recipe.preservesOriginal == true {
+             
+             
+             
+            let runs = recipe.ruleSource
+            let latest = library.sources.first { $0.id == runs.id }
+            return original(latest?.version == runs.version ? latest : record(runs))
+        }
+        guard let scheme = library.rules.first(where: { $0.id == recipe.ruleSchemeID })
+                ?? ConfigurationBuiltins.schemes.first(where: { $0.id == recipe.ruleSchemeID }),
+              let counted = ConfigurationSchemeDetailSnapshot.record(of: scheme, in: library) else { return nil }
+        return ClashHomeRuleScheme(name: .verbatim(scheme.displayLabel), schemeRules: counted.ruleCount, customRules: customRules)
     }
 }
 
@@ -2563,17 +2799,8 @@ enum HomeFailureCensus {
             forKey: Self.peakPriceMemoryKey
         ) as? [String: Int64]) ?? [:]
         var runPrices: [String: Int64] = [:]
-        if let container = ClashAppIdentifiers.appGroupContainer,
-           let text = try? String(
-               contentsOf: container.appendingPathComponent(
-                   MemorySampleLog.startupPhaseFileName
-               ),
-               encoding: .utf8
-           )
-        {
-            for row in ClashMemoryLedger.lastRun(
-                from: text.split(separator: "\n").map(String.init)
-            ).rows where row.name.hasPrefix("apply:rule-provider:") {
+        if let ledger = ClashMemoryLedger.lastRunOfPhaseFile() {
+            for row in ledger.rows where row.name.hasPrefix("apply:rule-provider:") {
                  
                  
                  
@@ -2737,17 +2964,8 @@ enum HomeFailureCensus {
     }
 
     static func providerLoadRows() -> [ProviderLoadDetailView.Row] {
-        guard let container = ClashAppIdentifiers.appGroupContainer,
-              let text = try? String(
-                  contentsOf: container.appendingPathComponent(
-                      MemorySampleLog.startupPhaseFileName
-                  ),
-                  encoding: .utf8
-              )
-        else { return [] }
-        return ClashMemoryLedger.lastRun(
-            from: text.split(separator: "\n").map(String.init)
-        ).rows.compactMap { row in
+        guard let ledger = ClashMemoryLedger.lastRunOfPhaseFile() else { return [] }
+        return ledger.rows.compactMap { row in
             guard row.name.hasPrefix("apply:proxy-provider:") else {
                 return nil
             }

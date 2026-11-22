@@ -14,11 +14,6 @@ struct ClashRuleBucketRoute: Hashable {
  
  
  
-struct ClashRulesEditRoute: Hashable {}
-
- 
- 
- 
  
  
  
@@ -47,6 +42,32 @@ private struct ClashRuleBucketRowChrome: ViewModifier {
     }
 }
 
+ 
+ 
+ 
+public struct ClashRulesEditQueryKey: EnvironmentKey {
+    public static let defaultValue = ""
+}
+
+public extension EnvironmentValues {
+    var clashRulesEditQuery: String {
+        get { self[ClashRulesEditQueryKey.self] }
+        set { self[ClashRulesEditQueryKey.self] = newValue }
+    }
+}
+
+ 
+ 
+public struct ClashRulesAddition {
+    public let title: ClashDisplayText
+    public let action: () -> Void
+
+    public init(title: ClashDisplayText, action: @escaping () -> Void) {
+        self.title = title
+        self.action = action
+    }
+}
+
 public struct ClashRulesOverviewView<
     Icon: View,
     ActiveRules: View
@@ -72,11 +93,48 @@ public struct ClashRulesOverviewView<
      
      
      
+    private let leadingSections: (() -> AnyView)?
      
      
      
-    private let editRulesDestination: (() -> AnyView)?
+     
+     
+     
+     
+    private let inPlaceEditing: (() -> AnyView)?
+     
+    private let addRule: (() -> Void)?
+     
+     
+     
+     
+    private let addToRules: ClashRulesAddition?
+     
+    private let title: ClashDisplayText?
+     
+     
+    private let rulesGroupTitle: ClashDisplayText?
+     
+     
+    private let rowsBeforeActiveRules: (() -> AnyView)?
+     
+     
+     
+     
+     
+     
+    private let alwaysPushesWithPageLinks: Bool
+     
+     
+     
+     
+    private let editRulesDisabled: Bool
+     
+     
+    private let showsActiveRules: Bool
     private let showsDismissControl: Bool
+     
+    @State private var editingInPlace = false
 
      
      
@@ -92,6 +150,11 @@ public struct ClashRulesOverviewView<
      
     @Environment(\.clashRegularRootSearchText) private var externalSearchText
     @Environment(\.clashHostedInRootPool) private var hostedInRootPool
+     
+     
+     
+    @Environment(\.clashRegularRootEditsInPlace) private var externalEditing
+    @Environment(\.clashInsideModalPresentation) private var insideModal
     @State private var query = ""
      
      
@@ -110,7 +173,16 @@ public struct ClashRulesOverviewView<
         searchPlacement: SearchFieldPlacement = .automatic,
         palette: ClashProductPalette,
         showsDismissControl: Bool = true,
-        editRulesDestination: (() -> AnyView)? = nil,
+        leadingSections: (() -> AnyView)? = nil,
+        inPlaceEditing: (() -> AnyView)? = nil,
+        addRule: (() -> Void)? = nil,
+        addToRules: ClashRulesAddition? = nil,
+        title: ClashDisplayText? = nil,
+        rulesGroupTitle: ClashDisplayText? = nil,
+        rowsBeforeActiveRules: (() -> AnyView)? = nil,
+        pushesWithPageLinks: Bool = false,
+        editRulesDisabled: Bool = false,
+        showsActiveRules: Bool = true,
         @ViewBuilder icon: @escaping (ClashSymbol) -> Icon,
         @ViewBuilder activeRulesDestination: @escaping () -> ActiveRules
     ) {
@@ -120,13 +192,30 @@ public struct ClashRulesOverviewView<
         self.searchPlacement = searchPlacement
         self.palette = palette
         self.showsDismissControl = showsDismissControl
-        self.editRulesDestination = editRulesDestination
+        self.leadingSections = leadingSections
+        self.inPlaceEditing = inPlaceEditing
+        self.addRule = addRule
+        self.addToRules = addToRules
+        self.title = title
+        self.rulesGroupTitle = rulesGroupTitle
+        self.rowsBeforeActiveRules = rowsBeforeActiveRules
+        self.alwaysPushesWithPageLinks = pushesWithPageLinks
+        self.editRulesDisabled = editRulesDisabled
+        self.showsActiveRules = showsActiveRules
         self.icon = icon
         self.activeRulesDestination = activeRulesDestination
     }
 
      
-    var offersRuleEditing: Bool { editRulesDestination != nil }
+    var offersRuleEditing: Bool { inPlaceEditing != nil }
+
+     
+     
+     
+    private var showsInPlaceEditing: Bool { (externalEditing ?? editingInPlace) && inPlaceEditing != nil }
+
+     
+    private var pageTitle: ClashDisplayText { title ?? "Rules" }
 
     public var body: some View {
         routedRootPage
@@ -154,24 +243,7 @@ public struct ClashRulesOverviewView<
             rootPage
                 .navigationDestination(for: ClashRuleBucketRoute.self) { route in
                     ClashLazyView {
-                        Group {
-                            if let bucket = overview.buckets.first(
-                                where: { $0.target == route.target }
-                            ) {
-                                bucketDetail(bucket)
-                            } else {
-                                 
-                                 
-                                 
-                                ClashEmptyState(
-                                    title: "Rules Changed",
-                                    message:
-                                        "This group is no longer in the profile's rules."
-                                ) {
-                                    icon(.exclamationmarkTriangle)
-                                }
-                            }
-                        }
+                        bucketPage(route.target)
                         .clashPushedDetailPage()
                         .modifier(ClashSetterRoutedBack())
                          
@@ -187,27 +259,51 @@ public struct ClashRulesOverviewView<
                         )
                     }
                 }
-                .navigationDestination(for: ClashRulesEditRoute.self) { _ in
-                    editRulesPage
-                        .clashPushedDetailPage()
-                }
         } else {
             rootPage
         }
     }
 
      
-     
     @ViewBuilder
-    private var editRulesPage: some View {
-        if let editRulesDestination {
-            ClashLazyView {
-                editRulesDestination()
-                    .environment(\.clashPushRoute, pushRoute)
-                    .environment(\.clashPopRoute, popRoute)
-                    .environment(\.clashDetailCanvas, inheritedDetailCanvas)
+    private func bucketPage(_ target: String) -> some View {
+        if let bucket = overview.buckets.first(where: { $0.target == target }) {
+            bucketDetail(bucket)
+        } else {
+             
+             
+            ClashEmptyState(
+                title: "Rules Changed",
+                message: "This group is no longer in the profile's rules."
+            ) {
+                icon(.exclamationmarkTriangle)
             }
         }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private var pushesWithPageLinks: Bool {
+#if os(iOS)
+        insideModal || alwaysPushesWithPageLinks
+#else
+        false
+#endif
     }
 
      
@@ -216,20 +312,28 @@ public struct ClashRulesOverviewView<
      
     @ViewBuilder
     private var editRulesControl: some View {
-        if let editRulesDestination {
-            Group {
-                if #available(iOS 16.0, macOS 13.0, tvOS 16.0, *) {
-                    NavigationLink(value: ClashRulesEditRoute()) { Text("Edit") }
-                } else {
-                    NavigationLink {
-                        editRulesDestination()
-                            .clashPushedDetailPage()
-                            .clashNativePushBoundary()
-                    } label: { Text("Edit") }
-                }
+        if inPlaceEditing != nil {
+             
+             
+            if showsInPlaceEditing {
+                Button { switchInPlace(to: false) } label: { Text("Done") }
+                    .accessibilityIdentifier("rules.overview.done")
+            } else {
+                 
+                 
+                Button { switchInPlace(to: true) } label: { Text("Edit") }
+                    .disabled(editRulesDisabled)
+                    .accessibilityIdentifier("rules.overview.edit")
             }
-            .accessibilityIdentifier("rules.overview.edit")
         }
+    }
+
+     
+     
+    private func switchInPlace(to editing: Bool) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { editingInPlace = editing }
     }
 
      
@@ -254,6 +358,7 @@ public struct ClashRulesOverviewView<
                     placement: searchPlacement,
                     prompt: Text("Search rules")
                 )
+                .clashBottomSearchClearance()
                 .clashToolbarUnlessInPanel {
                      
                      
@@ -267,6 +372,36 @@ public struct ClashRulesOverviewView<
                     ToolbarItem(placement: .primaryAction) {
                         editRulesControl
                     }
+                     
+                     
+                     
+                    ToolbarItem(placement: .primaryAction) {
+                        if let addRule, !showsInPlaceEditing {
+                             
+                             
+                            ControlGroup {
+                                if let addToRules {
+                                    Menu {
+                                         
+                                         
+                                        Button(action: addRule) { Text("Add Custom Rule") }
+                                            .accessibilityIdentifier("rules.overview.add.custom")
+                                        Button(action: addToRules.action) { Text(clash: addToRules.title) }
+                                            .accessibilityIdentifier("rules.overview.add.rules")
+                                    } label: {
+                                        Label("Add Rule", systemImage: ClashSymbol.plus.rawValue)
+                                    }
+                                    .accessibilityIdentifier("rules.overview.add")
+                                } else {
+                                    Button(action: addRule) {
+                                        Label("Add Rule", systemImage: ClashSymbol.plus.rawValue)
+                                    }
+                                    .accessibilityIdentifier("rules.overview.add")
+                                }
+                            }
+                            .clashReaderControlGroupStyle()
+                        }
+                    }
                 }
         } else {
             undecoratedRootPage
@@ -277,17 +412,36 @@ public struct ClashRulesOverviewView<
         ClashRulesBrowserHost {
              
              
-            ClashRulesSystemOverview(
-                overview: overview,
-                query: effectiveQuery,
-                palette: palette,
-                icon: icon,
-                activeRulesEntry: AnyView(activeRulesEntry(selfDrawnDisclosure: false))
-            )
+            Group {
+                if showsInPlaceEditing, let inPlaceEditing {
+                     
+                     
+                     
+                    inPlaceEditing()
+                        .environment(\.clashRulesEditQuery, effectiveQuery)
+                } else {
+                    ClashRulesSystemOverview(
+                        overview: overview,
+                        query: effectiveQuery,
+                        palette: palette,
+                        icon: icon,
+                        activeRulesEntry: AnyView(activeRulesEntry(selfDrawnDisclosure: false)),
+                        bucketPage: pushesWithPageLinks
+                            ? { target in AnyView(bucketPage(target).clashPushedDetailPage()) }
+                            : nil,
+                        leadingSections: leadingSections?(),
+                        rulesGroupTitle: rulesGroupTitle,
+                        rowsBeforeActiveRules: rowsBeforeActiveRules?(),
+                        showsActiveRules: showsActiveRules
+                    )
+                }
+            }
              
              
              
-            .clashRootHeading("Rules")
+             
+             
+            .clashRootHeading(pageTitle, watchAs: title == nil ? nil : "Rules")
             .accessibilityIdentifier("rules.overview")
             .environment(\.clashDetailCanvas, palette.canvas)
         } legacy: {
@@ -295,7 +449,25 @@ public struct ClashRulesOverviewView<
         }
     }
 
+     
+     
+     
+     
+    @ViewBuilder
     private var legacyRootPage: some View {
+        if showsInPlaceEditing, let inPlaceEditing {
+             
+             
+            inPlaceEditing()
+                .environment(\.clashRulesEditQuery, effectiveQuery)
+                .clashContentHeading(pageTitle)
+                .environment(\.clashDetailCanvas, palette.canvas)
+        } else {
+            selfDrawnRootPage
+        }
+    }
+
+    private var selfDrawnRootPage: some View {
         ClashProductRootPage(
             palette: palette,
             accessibilityIdentifier: "rules.product.root",
@@ -309,11 +481,23 @@ public struct ClashRulesOverviewView<
             hostsSelfDrawnCards: true
         ) {
             if effectiveQuery.isEmpty {
+                 
+                 
+                 
+                if let leadingSections {
+                    leadingSections()
+                }
                 overviewSections
             } else {
                 searchResults
             }
-            activeRulesEntry(selfDrawnDisclosure: true)
+             
+             
+             
+             
+            if showsActiveRules, rowsBeforeActiveRules == nil || !effectiveQuery.isEmpty {
+                activeRulesEntry(selfDrawnDisclosure: true)
+            }
         }
          
          
@@ -329,7 +513,10 @@ public struct ClashRulesOverviewView<
             if Task.isCancelled { return }
             countedSearch = (normalized, found)
         }
-        .clashContentHeading("Rules")
+         
+         
+         
+        .clashContentHeading(pageTitle)
         .accessibilityIdentifier("rules.overview")
         .environment(\.clashDetailCanvas, palette.canvas)
     }
@@ -405,9 +592,11 @@ public struct ClashRulesOverviewView<
         if overview.hasRulesGroup {
             let groupedByDestination: ClashDisplayText? = overview.buckets.isEmpty
                 ? nil
-                : "Grouped by destination. What the tunnel runs: the profile's rules with your custom rules and the override script applied."
+                : ClashRulesBucketsFooter.text(inUse: showsActiveRules)
+             
+             
             ClashProductGroup(
-                .format(
+                rulesGroupTitle ?? .format(
                     "Rules (%@)",
                     [ClashCopy.count(overview.inlineCount, locale: locale)]
                 ),
@@ -446,6 +635,17 @@ public struct ClashRulesOverviewView<
             }
         }
 
+         
+         
+        if let rowsBeforeActiveRules {
+            VStack(alignment: .leading, spacing: ClashTheme.Spacing.row) {
+                rowsBeforeActiveRules()
+                if showsActiveRules {
+                    activeRulesEntry(selfDrawnDisclosure: true)
+                }
+            }
+        }
+
         if !overview.ruleSets.isEmpty {
             ClashProductGroup(
                 .format(
@@ -467,7 +667,7 @@ public struct ClashRulesOverviewView<
 
         if !overview.fallback.isEmpty {
             ClashProductGroup(
-                "Fallback",
+                "Fallback (rules section)",
                 footer: "Traffic that matches nothing above.",
                 palette: palette
             ) {
@@ -919,6 +1119,16 @@ struct ClashRuleBucketLazyPage: View {
      
     static var renderedRowCap: Int { ClashRuleBucketSnapshot.pageRowCap }
 
+     
+     
+     
+    @State private var shown = Self.renderedRowCap
+
+     
+    static func nextShown(_ shown: Int, available: Int) -> Int {
+        min(available, shown + renderedRowCap)
+    }
+
     @Environment(\.locale) private var locale
 
     var body: some View {
@@ -944,7 +1154,7 @@ struct ClashRuleBucketLazyPage: View {
     }
 
     private var scroll: some View {
-        let rows = Array(bucket.rules.prefix(Self.renderedRowCap))
+        let rows = Array(bucket.rules.prefix(shown))
         let lastIndex = rows.count - 1
         return ScrollView {
             LazyVStack(spacing: 0) {
@@ -991,12 +1201,22 @@ struct ClashRuleBucketLazyPage: View {
                             }
                         }
                 }
-                if bucket.ruleCount > rows.count {
-                    Text(clash: .verbatim(ClashRulesCountCopy.moreRules(bucket.ruleCount - rows.count, locale: locale)))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, ClashTheme.Spacing.row)
+#if os(macOS)
+                if bucket.rules.count > rows.count {
+                     
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.top, ClashTheme.Spacing.row)
+                        .onAppear { shown = Self.nextShown(shown, available: bucket.rules.count) }
+                        .accessibilityIdentifier("rules.bucket.more")
+                } else if bucket.ruleCount > rows.count {
+                    moreRules(bucket.ruleCount - rows.count)
                 }
+#else
+                if bucket.ruleCount > rows.count {
+                    moreRules(bucket.ruleCount - rows.count)
+                }
+#endif
             }
             .padding(.vertical, ClashTheme.Spacing.section)
              
@@ -1009,6 +1229,14 @@ struct ClashRuleBucketLazyPage: View {
              
             .padding(.horizontal, ClashTheme.Spacing.standard)
         }
+    }
+
+     
+    private func moreRules(_ count: Int) -> some View {
+        Text(clash: .verbatim(ClashRulesCountCopy.moreRules(count, locale: locale)))
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.top, ClashTheme.Spacing.row)
     }
 
      
@@ -2114,6 +2342,32 @@ private extension String {
  
  
  
+enum ClashRuleDoneGate {
+    static func allows(rawMode: Bool, rawText: String, action: ClashStructuredRule.Action,
+                       content: String, logicConditions: [ClashLogicCondition]?, target: String,
+                       showsTarget: Bool = true) -> Bool {
+        if rawMode {
+            return !rawText.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+         
+         
+         
+         
+        if [.and, .or, .not, .subRule].contains(action), let conditions = logicConditions {
+            let minimum = action == .not || action == .subRule ? 1 : 2
+            guard conditions.count >= minimum,
+                  conditions.allSatisfy({ !$0.content.trimmingCharacters(in: .whitespaces).isEmpty }) else { return false }
+             
+             
+            return action != .subRule || !showsTarget || !target.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        return !action.needsContent || !content.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+}
+
+ 
+ 
+ 
 public struct ClashRuleEditorView<Icon: View>: View {
     private let delete: (() -> Void)?
     private let showsPersonalMetadata: Bool
@@ -2231,6 +2485,17 @@ public struct ClashRuleBuilderDraft: Codable, Equatable {
         let list = String(hash, radix: 16)
         return "Rule|\(scope)|" + (index.map { "\($0)|" } ?? "") + "list:\(list)|raw:\(raw)"
     }
+}
+
+ 
+ 
+ 
+ 
+enum ClashRuleBuilderCancel: Equatable {
+    case asksFirst
+    case closes
+
+    static func of(changed: Bool) -> Self { changed ? .asksFirst : .closes }
 }
 
 private struct ClashRuleBuilderView<Icon: View>: View {
@@ -2464,6 +2729,12 @@ private struct ClashRuleBuilderView<Icon: View>: View {
                 additionalParams = []
                 lastAction = updated
             }
+             
+             
+             
+             
+            .onAppear { conditionRows.resync(count: logicConditions?.count ?? 0) }
+            .onChange(of: logicConditions?.count ?? 0) { conditionRows.resync(count: $0) }
             .background(autoRouteLinks.opacity(0))
             .onAppear {
                 autoRoute = initialRoute
@@ -2495,9 +2766,20 @@ private struct ClashRuleBuilderView<Icon: View>: View {
                 confirmTitle: "Done",
                 confirmationIdentifier: "profile-rule.save",
                 confirmationDisabled: !saysSomething,
-                onCancel: { draftSlot.clear(); dismiss() },
+                onCancel: { cancel() },
                 onConfirm: { submit() }
             )
+             
+             
+            .interactiveDismissDisabled(hasChanges)
+            .confirmationDialog(Text("Discard Changes?"), isPresented: $confirmsDiscard, titleVisibility: .visible) {
+                Button(role: .destructive) {
+                    draftSlot.clear()
+                    dismiss()
+                } label: { Text("Discard Changes") }
+                .accessibilityIdentifier("profile-rule.discard")
+                Button(role: .cancel) {} label: { Text("Keep Editing") }
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if ClashPlatformLayout.modalEditorUsesGroupedForm
                     && insideProductModal
@@ -2616,7 +2898,7 @@ private struct ClashRuleBuilderView<Icon: View>: View {
             Section {
                 valueEditor
                 if let note = action.iOSInertNote {
-                    Text(note)
+                    Text(clash: .copy(note))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -2682,7 +2964,7 @@ private struct ClashRuleBuilderView<Icon: View>: View {
                         alignment: .leading,
                         spacing: ClashTheme.Spacing.tight
                     ) {
-                        Text(action.targetLabel)
+                        Text(clash: .copy(action.targetLabel))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         TextField(
@@ -2890,7 +3172,9 @@ private struct ClashRuleBuilderView<Icon: View>: View {
                 if !ClashPlatformLayout.modalEditorUsesGroupedForm {
                      
                      
-                    Text(action.contentLabel)
+                     
+                     
+                    Text(clash: .copy(action.contentLabel))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -3017,12 +3301,6 @@ private struct ClashRuleBuilderView<Icon: View>: View {
                     }
                 }
             }
-            let conditionCount = logicConditions?.count ?? 0
-            Color.clear.frame(width: 0, height: 0)
-                .onAppear { conditionRows.resync(count: conditionCount) }
-                .onChange(of: conditionCount) {
-                    conditionRows.resync(count: $0)
-                }
             if canAddCondition {
                 ClashAddRow(Text("Add Condition")) {
                     newCondition = ClashLogicCondition(
@@ -3067,7 +3345,7 @@ private struct ClashRuleBuilderView<Icon: View>: View {
                 if !ClashPlatformLayout.modalEditorUsesGroupedForm {
                      
                      
-                    Text(action.contentLabel)
+                    Text(clash: .copy(action.contentLabel))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -3211,10 +3489,8 @@ private struct ClashRuleBuilderView<Icon: View>: View {
      
      
     private var saysSomething: Bool {
-        if rawMode {
-            return !rawText.trimmingCharacters(in: .whitespaces).isEmpty
-        }
-        return !action.needsContent || !content.trimmingCharacters(in: .whitespaces).isEmpty
+        ClashRuleDoneGate.allows(rawMode: rawMode, rawText: rawText, action: action, content: content,
+                                 logicConditions: logicConditions, target: target, showsTarget: showsTarget)
     }
 
      
@@ -3226,6 +3502,24 @@ private struct ClashRuleBuilderView<Icon: View>: View {
      
      
     @State private var openedWith = ""
+
+     
+     
+    private var hasChanges: Bool { !openedWith.isEmpty && currentFingerprint != openedWith }
+
+     
+    @State private var confirmsDiscard = false
+
+     
+    private func cancel() {
+        switch ClashRuleBuilderCancel.of(changed: hasChanges) {
+        case .asksFirst:
+            confirmsDiscard = true
+        case .closes:
+            draftSlot.clear()
+            dismiss()
+        }
+    }
 
      
      
@@ -3621,7 +3915,7 @@ private struct ClashRuleConditionEditorView<Icon: View>: View {
                 }
                 .accessibilityIdentifier("condition.type")
             } footer: {
-                Text(condition.action.summary)
+                Text(clash: .copy(condition.action.summary))
             }
 
             Section("Value") {
@@ -3982,7 +4276,7 @@ public struct ClashRulePolicyPickerView<Icon: View>: View {
         if !builtIns.isEmpty {
             Section {
                 ForEach(builtIns, id: \.name) { entry in
-                    policyRow(entry.name, caption: entry.caption)
+                    policyRow(entry.name, caption: entry.caption.isEmpty ? .verbatim("") : .copy(entry.caption))
                 }
             } header: {
                 if let builtInsTitle {
@@ -3993,7 +4287,7 @@ public struct ClashRulePolicyPickerView<Icon: View>: View {
         if !filteredGroups.isEmpty || query.isEmpty {
             Section("Groups") {
                 ForEach(filteredGroups) {
-                    policyRow($0.name, caption: $0.type)
+                    policyRow($0.name, caption: .verbatim($0.type))
                 }
                 if offersGlobal,
                     !options.groups.contains(where: {
@@ -4005,7 +4299,7 @@ public struct ClashRulePolicyPickerView<Icon: View>: View {
                 {
                     policyRow(
                         "GLOBAL",
-                        caption: "Kernel built-in group"
+                        caption: .copy("Kernel built-in group")
                     )
                 }
                 if let createGroup, query.isEmpty {
@@ -4035,7 +4329,7 @@ public struct ClashRulePolicyPickerView<Icon: View>: View {
         if !filteredProxies.isEmpty {
             Section("Proxies") {
                 ForEach(filteredProxies) {
-                    policyRow($0.name, caption: $0.type)
+                    policyRow($0.name, caption: .verbatim($0.type))
                 }
             }
         }
@@ -4090,7 +4384,7 @@ public struct ClashRulePolicyPickerView<Icon: View>: View {
     @ViewBuilder
     private func policyRow(
         _ name: String,
-        caption: String
+        caption: ClashDisplayText
     ) -> some View {
 #if os(macOS)
         policyRowLabel(name, caption: caption)
@@ -4119,9 +4413,13 @@ public struct ClashRulePolicyPickerView<Icon: View>: View {
 #endif
     }
 
+     
+     
+     
+     
     private func policyRowLabel(
         _ name: String,
-        caption: String
+        caption: ClashDisplayText
     ) -> some View {
         HStack(spacing: ClashTheme.Spacing.row) {
             VStack(alignment: .leading, spacing: 2) {
@@ -4129,7 +4427,7 @@ public struct ClashRulePolicyPickerView<Icon: View>: View {
                  
                 Text(verbatim: ConfigurationRuleWords.targetName(name, locale: locale, copy: fieldCopy))
                     .foregroundStyle(.primary)
-                Text(caption)
+                Text(clash: caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -4576,10 +4874,13 @@ extension ClashRuleLineSnapshot {
      
      
      
+     
+     
     func typeLine(locale: Locale) -> String {
-        guard let entryCount else { return type }
+        let name = ConfigurationRuleWords.kindName(type, locale: locale)
+        guard let entryCount else { return name }
         let format = entryCount == 1 ? "%@ entry" : "%@ entries"
-        return type + " · " + ClashCopy.format(format, locale: locale, ClashCopy.count(entryCount, locale: locale))
+        return name + " · " + ClashCopy.format(format, locale: locale, ClashCopy.count(entryCount, locale: locale))
     }
 }
 
@@ -4686,4 +4987,18 @@ public enum ClashProfileRulesCopy {
      
      
     public static let everyProfileHint = "To apply rules to every profile, create a module in Profiles › Modules."
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashRulesBucketsFooter {
+    static func text(inUse: Bool) -> ClashDisplayText? {
+        inUse
+            ? "Grouped by destination. What the tunnel runs: the profile's rules with your custom rules and the override script applied."
+            : nil
+    }
 }

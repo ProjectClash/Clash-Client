@@ -112,6 +112,15 @@ struct AddProfileDraft: Equatable {
         return linkText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+     
+     
+     
+     
+    var linkRules: InstallLinkRuleScheme? {
+        if case .link(_, _, let rules) = PastedContentClassifier.classify(linkText) { return rules }
+        return nil
+    }
+
     var canSubmit: Bool {
         switch tab {
         case .link:

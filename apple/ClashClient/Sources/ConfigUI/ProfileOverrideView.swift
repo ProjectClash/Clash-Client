@@ -48,6 +48,8 @@ struct ProfileOverrideView: View {
     @State private var editingRule: RuleEditTarget?
     @State private var editingScript: ConfigScript?
     @State private var addingScriptSheet = false
+     
+    @State private var importedScript: ScriptManualDraft?
     @State private var scriptAddress = ""
     @State private var importingScript = false
     @State private var showsScriptFileImporter = false
@@ -77,6 +79,14 @@ struct ProfileOverrideView: View {
      
      
     private let ownsNavigationContainer: Bool
+#if os(iOS)
+     
+    @State private var scriptDetails: ConfigScript?
+     
+     
+     
+    private var libraryModel: ProfilesViewModel?
+#endif
 
     private struct RuleEditTarget: Identifiable {
         let id = UUID()
@@ -202,6 +212,21 @@ struct ProfileOverrideView: View {
         draftSlot.commit()
     }
 
+     
+     
+     
+     
+     
+     
+     
+     
+    static func draftAfterChoice(_ page: ProfileOverrideDraft, saved: Profile) -> ProfileOverrideDraft {
+        var draft = page
+        draft.selectedScriptID = saved.selectedScriptID
+        draft.mode = ProfileOverrideModePolicy.mode(stored: page.mode, selectedScriptID: saved.selectedScriptID)
+        return draft
+    }
+
     private var currentDraft: ProfileOverrideDraft {
         ProfileOverrideDraft(patchText: patchText, rules: rules, prependRules: prependRules,
                              disabledGlobalRules: Array(disabledGlobalRules), selectedScriptID: selectedScriptID,
@@ -290,7 +315,11 @@ struct ProfileOverrideView: View {
                      
                      
                      
+#if os(iOS)
+                if configurationCenter { scriptPicker } else { scriptSections }
+#else
                 scriptSections
+#endif
                 if mode == .custom {
                     Section {
                         ClashRoutedViewLink {
@@ -422,7 +451,17 @@ struct ProfileOverrideView: View {
                  
                  
             }
+#if os(iOS)
+            .clashPageTitle(pageTitle)
+             
+             
+            .clashProductModal(item: $scriptDetails, role: .page) { script in
+                scriptDetailsPage(script)
+                    .clashModalPresentation(.page)
+            }
+#else
             .clashPageTitle(.copy(configurationCenter ? "Overrides and Scripts" : "Profile Override"))
+#endif
              
              
              
@@ -462,10 +501,23 @@ struct ProfileOverrideView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
+#if os(iOS)
+                    if !savesWithSave {
+                         
+                         
+                         
+                        if ownsNavigationContainer { ClashSheetCloseButton(dismiss: { dismissPresentation() }) }
+                    } else if !insideProductModal {
+                        Button("Cancel") { draftSlot.clear(); dismissPresentation() }
+                    }
+#else
                     if !insideProductModal {
                         Button("Cancel") { draftSlot.clear(); dismissPresentation() }
                     }
+#endif
                 }
+                 
+                 
                  
                  
                  
@@ -474,7 +526,7 @@ struct ProfileOverrideView: View {
                      
                      
                      
-                    if !insideProductModal {
+                    if !insideProductModal, offersScriptUpdate {
                         Button { Task { await updateScripts() } } label: {
                             Label("Update Scripts", systemImage: ClashSymbol.arrowClockwise.name)
                         }
@@ -484,8 +536,15 @@ struct ProfileOverrideView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if !insideProductModal {
+#if os(iOS)
+                        if savesWithSave {
+                            ClashSaveButton { persist() }
+                                .disabled(projectionPending || saving)
+                        }
+#else
                         ClashSaveButton { persist() }
                             .disabled(projectionPending || saving)
+#endif
                     }
                 }
 #if !os(macOS)
@@ -511,11 +570,21 @@ struct ProfileOverrideView: View {
             )
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if insideProductModal {
+#if os(iOS)
+                    if savesWithSave {
+                        ClashModalActionBar(
+                            primaryTitle: "Save",
+                            primaryDisabled: !hasChanges || projectionPending || saving,
+                            onPrimary: persist
+                        )
+                    }
+#else
                     ClashModalActionBar(
                         primaryTitle: "Save",
                     primaryDisabled: !hasChanges || projectionPending || saving,
                         onPrimary: persist
                     )
+#endif
                 }
             }
             .clashProductModal(item: $editingRule, role: .page) { target in
@@ -549,18 +618,32 @@ struct ProfileOverrideView: View {
                 .clashModalPresentation(.page)
             }
             .clashProductModal(isPresented: $addingScriptSheet, role: .page) {
-                ScriptManualPage(library: scriptLibrary, close: { addingScriptSheet = false }) { added in
+                ScriptManualPage(library: scriptLibrary, opening: importedScript, check: newScriptCheck,
+                                 close: { addingScriptSheet = false; importedScript = nil }) { added in
                      
                      
-                    acceptAddedScript(added)
+                     
+                    acceptAddedScript(added, checked: newScriptCheck != nil)
                 }
                 .clashModalPresentation(.page)
             }
             .fileImporter(isPresented: $showsScriptFileImporter,
                           allowedContentTypes: [.javaScript, .plainText, .text],
                           allowsMultipleSelection: false) { outcome in
-                do { acceptAddedScript(try ScriptAddOutcome.fromFile(outcome, in: scriptLibrary)) }
-                catch { failScriptAdd(ClashErrorCopy.message(error, locale: locale)) }
+                 
+                 
+                 
+                 
+                 
+                do {
+                    importedScript = try ScriptAddOutcome.fromFile(outcome, in: scriptLibrary)
+                    if !showsScriptFileImporter { Task { @MainActor in addingScriptSheet = importedScript != nil } }
+                } catch { failScriptAdd(ClashErrorCopy.message(error, locale: locale)) }
+            }
+            .onChange(of: showsScriptFileImporter) { shown in
+                if !shown, importedScript != nil, !addingScriptSheet {
+                    Task { @MainActor in addingScriptSheet = importedScript != nil }
+                }
             }
             .alert("Import Failed", isPresented: $showsScriptFailure) {
                 Button("OK") {}
@@ -610,6 +693,11 @@ struct ProfileOverrideView: View {
      
     private var hasChanges: Bool {
         guard let updated = try? draftProfile() else { return true }
+#if os(iOS)
+         
+         
+        if configurationCenter { return Self.leavingTheScriptAside(updated) != Self.leavingTheScriptAside(profile) }
+#endif
         return updated != profile
     }
 
@@ -739,6 +827,10 @@ struct ProfileOverrideView: View {
             Button {
                  
                  
+#if os(iOS)
+                 
+                if configurationCenter { return use(selected ? nil : script.id) }
+#endif
                 selectedScriptID = selected ? nil : script.id
             } label: {
                 HStack(alignment: .center, spacing: ClashTheme.Spacing.row) {
@@ -769,6 +861,14 @@ struct ProfileOverrideView: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
             .accessibilityAction(named: Text("Rename…")) { beginRename(script) }
             Button {
+#if os(iOS)
+                 
+                 
+                if configurationCenter {
+                    scriptDetails = script
+                    return
+                }
+#endif
                 editingScript = script
             } label: {
                 Image(systemName: ClashSymbol.infoCircle.rawValue)
@@ -779,7 +879,11 @@ struct ProfileOverrideView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
+#if os(iOS)
+            .accessibilityLabel(configurationCenter ? Text(clash: .format("%@ details", [script.label])) : Text("Edit"))
+#else
             .accessibilityLabel("Edit")
+#endif
             .accessibilityIdentifier("profile.override.script.edit.\(script.id)")
             .padding(.trailing, ClashTheme.Spacing.standard)
         }
@@ -885,13 +989,37 @@ struct ProfileOverrideView: View {
         importingScript = true
         Task { @MainActor in
             defer { importingScript = false }
-            do { acceptAddedScript(try await ScriptAddOutcome.fromLink(address, in: scriptLibrary)) }
+            do { acceptAddedScript(try await ScriptAddOutcome.fromLink(address, in: scriptLibrary), fromLink: true) }
             catch { failScriptAdd(ClashErrorCopy.message(error, locale: locale)) }
         }
     }
 
-    private func acceptAddedScript(_ script: ConfigScript) {
+     
+     
+    private var newScriptCheck: ((ConfigScript) async -> ScriptSaveCheck.Verdict?)? {
+#if os(iOS)
+        if configurationCenter {
+            return { candidate in await choiceVerdict(of: configuration(using: candidate.id), adding: candidate) }
+        }
+#endif
+        return nil
+    }
+
+     
+     
+    private func acceptAddedScript(_ script: ConfigScript, checked: Bool = false, fromLink: Bool = false) {
         scripts = ScriptLibrary.load(from: scriptLibrary)
+        importedScript = nil
+#if os(iOS)
+        if configurationCenter {
+            scriptAddress = ""
+            addingScriptSheet = false
+             
+             
+            if checked { return commitChoice(configuration(using: script.id), fallingBackTo: selectedScriptID) }
+            return use(script.id, addedFromLink: fromLink)
+        }
+#endif
         selectedScriptID = script.id
         scriptAddress = ""
         addingScriptSheet = false
@@ -991,6 +1119,7 @@ struct ProfileOverrideView: View {
             .disabled(importingScript)
             .accessibilityIdentifier("profile.override.script.add.file")
             Button {
+                importedScript = nil
                 addingScriptSheet = true
             } label: {
                 Label(ClashCopy.key("New Script"), systemImage: ClashSymbol.docBadgePlus.name)
@@ -1005,6 +1134,263 @@ struct ProfileOverrideView: View {
          
     }
 
+#if os(iOS)
+     
+     
+    private var pageTitle: ClashDisplayText {
+        configurationCenter ? .format("Override Scripts of “%@”", [profile.label]) : .copy("Profile Override")
+    }
+
+     
+     
+     
+     
+     
+    @ViewBuilder
+    private var scriptPicker: some View {
+        let chosen = scripts.first { $0.id == selectedScriptID }
+        let others = scripts.filter { $0.id != selectedScriptID }
+        if let chosen {
+            Section {
+                scriptRow(chosen)
+            } header: {
+                Text("Override Script").accessibilityIdentifier("profile.override.scripts.selected")
+            }
+        }
+        if !others.isEmpty {
+            Section {
+                ForEach(others) { script in
+                    scriptRow(script)
+                }
+            } header: {
+                if chosen == nil {
+                    Text("Override Scripts")
+                } else {
+                    Text("Other Override Scripts").accessibilityIdentifier("profile.override.scripts.other")
+                }
+            }
+        }
+        Section {
+            scriptAddDoors
+        } header: {
+            ClashConfigurationLibraryHeader(title: .copy("Add Override Script"))
+        } footer: {
+            Text(clash: .format("Override scripts you add are used for “%@”.", [profile.label]))
+        }
+        manageScriptsSection
+    }
+
+     
+     
+     
+    @ViewBuilder
+    private var scriptAddDoors: some View {
+         
+         
+        HStack(spacing: ClashTheme.Spacing.standard) {
+            TextField("", text: $scriptAddress, prompt: Text(verbatim: "https://example.com/script.js"))
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+                .onSubmit { importScriptLink() }
+                .disabled(importingScript)
+                .accessibilityIdentifier("scripts.add.link.address")
+            ClashPasteControl(style: .square) { pasted in
+                scriptAddress = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+                importScriptLink()
+            }
+            .disabled(importingScript)
+        }
+        if importingScript {
+            HStack(spacing: ClashTheme.Spacing.compact) {
+                ProgressView().controlSize(.small)
+                Text(clash: .copy("Importing…")).font(.subheadline).foregroundStyle(.secondary)
+            }
+            .accessibilityIdentifier("scripts.add.status")
+        }
+        Button {
+            showsScriptFileImporter = true
+        } label: {
+            Label(ClashCopy.key("Import File"), systemImage: ClashSymbol.arrowUpDocument.name)
+        }
+        .disabled(importingScript)
+        .accessibilityIdentifier("profile.override.script.add.file")
+        Button {
+            importedScript = nil
+            addingScriptSheet = true
+        } label: {
+            Label(ClashCopy.key("New Script"), systemImage: ClashSymbol.docBadgePlus.name)
+        }
+        .disabled(importingScript)
+        .accessibilityIdentifier("profile.override.script.add")
+    }
+
+     
+     
+     
+     
+     
+    private var savesWithSave: Bool {
+        guard configurationCenter else { return true }
+        return Self.holdsSectionsSavedWithSave(draftSlot.original, globalRules: globalRules)
+            || Self.holdsSectionsSavedWithSave(currentDraft, globalRules: globalRules)
+    }
+
+    private static func holdsSectionsSavedWithSave(_ draft: ProfileOverrideDraft, globalRules: [String]) -> Bool {
+        draft.mode == .custom || !draft.proxyChain.isEmpty || !draft.legacyRelayMigrations.isEmpty || !globalRules.isEmpty
+    }
+
+     
+     
+    private static func leavingTheScriptAside(_ profile: Profile) -> Profile {
+        let facade = ProfileSettingsFacade()
+        var settings = facade.snapshot(for: profile)
+        settings.selectedScriptID = nil
+        settings.overwriteMode = ProfileOverrideModePolicy.mode(stored: settings.overwriteMode ?? .standard, selectedScriptID: nil)
+        return facade.applying(settings, to: profile)
+    }
+
+     
+     
+     
+    private func configuration(using id: String?) -> Profile {
+        var settings = settingsFacade.snapshot(for: profile)
+        settings.selectedScriptID = id
+        settings.overwriteMode = ProfileOverrideModePolicy.mode(stored: settings.overwriteMode ?? .standard, selectedScriptID: id)
+        return settingsFacade.applying(settings, to: profile)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func use(_ id: String?, addedFromLink: Bool = false) {
+        guard !saving else { return }
+        let updated = configuration(using: id)
+        let before = selectedScriptID
+        selectedScriptID = id
+        guard ScriptSaveCheck.runsAScript(updated) else { return commitChoice(updated, fallingBackTo: before) }
+        saving = true
+        let script = ScriptLibrary.load(from: scriptLibrary).first { $0.id == id }
+        Task { @MainActor in
+             
+             
+            let verdict = await choiceVerdict(of: updated)
+            saving = false
+            let aftermath: ScriptRefusalAftermath = addedFromLink ? .addedFromLink
+                : (script?.sourceURL ?? "").isEmpty ? .handWritten : .fromLink
+            let editScript: (() -> Void)? = aftermath == .handWritten ? script.map { script in { editingScript = script } } : nil
+            switch verdict {
+            case nil, .accepted?:
+                 
+                commitChoice(updated, fallingBackTo: before)
+            case .refused(let reason)?:
+                 
+                 
+                selectedScriptID = before
+                scriptRefusal = ScriptSaveRefusal(reason: reason, saveAnyway: { commitChoice(updated, fallingBackTo: before) },
+                                                  keepEditing: {}, aftermath: aftermath, editScript: editScript)
+            case .scriptFailed(let reason)?:
+                selectedScriptID = before
+                scriptRefusal = ScriptSaveRefusal(reason: reason, saveAnyway: nil, keepEditing: {},
+                                                  aftermath: aftermath, editScript: editScript)
+            }
+        }
+    }
+
+     
+     
+     
+     
+    private func choiceVerdict(of updated: Profile, adding extra: ConfigScript? = nil) async -> ScriptSaveCheck.Verdict? {
+        var library = ScriptLibrary.load(from: scriptLibrary)
+        if let extra { library.removeAll { $0.id == extra.id }; library.append(extra) }
+        if rawYAML == nil, projectionPending, let loadRawYAML {
+            let loaded = await loadRawYAML()
+            if rawYAML == nil { rawYAML = loaded }
+        }
+        guard let raw = rawYAML else { return nil }
+        let scripts = library
+        return await Task.detached(priority: .userInitiated) {
+            ScriptSaveCheck.verdict(raw: raw, profile: updated, scripts: scripts)
+        }.value
+    }
+
+     
+     
+     
+     
+     
+    private func commitChoice(_ updated: Profile, fallingBackTo before: String?) {
+        do {
+            try save(updated)
+        } catch {
+            selectedScriptID = before
+            return reportSaveFailure(error)
+        }
+        let written = Self.draftAfterChoice(currentDraft, saved: updated)
+        selectedScriptID = written.selectedScriptID
+        mode = written.mode
+        self.error = ""
+        refusal = nil
+        draftSlot = Self.draftSlot(for: updated, scripts: scripts, store: SourceEditDrafts.shared)
+        draftSlot.record(written)
+    }
+#endif
+#if os(iOS)
+
+     
+     
+     
+    @ViewBuilder
+    private var manageScriptsSection: some View {
+        if let libraryModel {
+            Section {
+                ClashRoutedViewLink {
+                    ScriptLibraryView(model: libraryModel, library: scriptLibrary)
+                } label: {
+                    Text("Manage Override Scripts")
+                }
+                .accessibilityIdentifier("profile.override.scripts.manage")
+            }
+        }
+    }
+
+     
+     
+     
+     
+    private func scriptDetailsPage(_ script: ConfigScript) -> some View {
+        ClashFeatureNavigationContainer {
+            ScriptDetailsFromAConfiguration(
+                script: script, library: scriptLibrary, profiles: ScriptLibrary.defaultProfileStore,
+                model: libraryModel,
+                update: { saved in Task { @MainActor in await updateScripts(only: saved) } },
+                delete: { saved in removeScriptWithUndo(saved) },
+                pageCheck: { scriptCheck(for: $0) })
+            .environment(\.clashPopRoute, nil)
+            .clashToolbarUnlessInPanel {
+                ToolbarItem(placement: .cancellationAction) {
+                    ClashSheetCloseButton(dismiss: { scriptDetails = nil })
+                }
+            }
+        }
+    }
+
+#endif
      
      
     private var addedRulesSection: some View {
@@ -1111,6 +1497,19 @@ struct ProfileOverrideView: View {
         })
     }
 
+     
+     
+     
+     
+     
+    private var offersScriptUpdate: Bool {
+#if os(iOS)
+        !scripts.isEmpty
+#else
+        true
+#endif
+    }
+
     @MainActor
     private func updateScripts(only: ConfigScript? = nil) async {
         guard !updatingScripts else { return }
@@ -1185,6 +1584,20 @@ struct ProfileOverrideView: View {
     }
 }
 
+#if os(iOS)
+extension ProfileOverrideView {
+     
+     
+     
+     
+    func overrideLibrary(_ model: ProfilesViewModel) -> ProfileOverrideView {
+        var page = self
+        page.libraryModel = model
+        return page
+    }
+}
+
+#endif
  
  
  

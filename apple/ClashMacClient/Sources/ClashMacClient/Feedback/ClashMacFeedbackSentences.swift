@@ -18,6 +18,13 @@ public enum ClashMacFeedbackSentences {
         .information(title: ClashFeedbackCopy.upToDate(name), accessibilityIdentifier: "feedback.\(id).up-to-date")
     }
 
+     
+     
+     
+    public static func putBack(_ title: ClashDisplayText, id: String) -> ClashFeedbackPresentation {
+        .warning(title: title, accessibilityIdentifier: "feedback.\(id).put-back")
+    }
+
     public static func couldNotUpdate(_ name: String, reason: String, id: String) -> ClashFeedbackPresentation {
         .error(title: ClashFeedbackCopy.couldNotUpdate(name), message: .verbatim(reason),
                accessibilityIdentifier: "feedback.\(id).failed")
@@ -47,6 +54,13 @@ public enum ClashMacFeedbackSentences {
     public static func couldNotDelete(_ name: String, reason: String, id: String) -> ClashFeedbackPresentation {
         .error(title: ClashFeedbackCopy.couldNotDelete(name), message: .verbatim(reason),
                accessibilityIdentifier: "feedback.\(id).failed")
+    }
+
+     
+     
+     
+    public static func whyNotDeleted(_ error: Error, locale: Locale) -> String {
+        (error as? ClashMacStillUsedRefusal)?.whereUsed(locale: locale) ?? ClashErrorCopy.message(error, locale: locale)
     }
 
     public static func added(_ name: String, id: String) -> ClashFeedbackPresentation {

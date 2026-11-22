@@ -23,7 +23,7 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
     private let openProxiesGroup: ((String) -> Void)?
      
      
-    private let editRules: (() -> AnyView)?
+    private let page: RulesOverviewPageParts
 
      
      
@@ -44,7 +44,7 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
         compileVerdicts: ProviderCompileVerdicts = ProviderCompileVerdicts(),
         openProxiesGroup: ((String) -> Void)? = nil,
         ownsNavigationContainer: Bool = true,
-        editRules: (() -> AnyView)? = nil,
+        page: RulesOverviewPageParts = RulesOverviewPageParts(),
         @ViewBuilder activeRules: @escaping () -> ActiveRules
     ) {
         self.sourceYAML = sourceYAML
@@ -52,7 +52,7 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
         self.compileVerdicts = compileVerdicts
         self.activeRules = activeRules
         self.openProxiesGroup = openProxiesGroup
-        self.editRules = editRules
+        self.page = page
         self.ownsNavigationContainer = ownsNavigationContainer
          
          
@@ -83,12 +83,12 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
         ClashFeatureNavigationContainer(
             ownsNavigationContainer: ownsNavigationContainer
         ) {
-            page
+            presentedPage
         }
     }
 
     @ViewBuilder
-    private var page: some View {
+    private var presentedPage: some View {
         if ownsNavigationContainer {
             content.clashSheetPresentation()
         } else {
@@ -113,7 +113,7 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
                             : .compactTouch,
                     showsDismissControl: ownsNavigationContainer,
                     actions: sharedActions,
-                    editRules: editRules,
+                    page: page,
                     activeRules: activeRules
                 )
                  
@@ -157,14 +157,17 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
         let presentationClass: ClashClientUI.ClashPresentationClass
         let showsDismissControl: Bool
         let actions: AppleClientActions
-        let editRules: (() -> AnyView)?
+        let page: RulesOverviewPageParts
         let activeRules: () -> ActiveRules
 
+         
+         
+         
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.token == rhs.token
                 && lhs.presentationClass == rhs.presentationClass
                 && lhs.showsDismissControl == rhs.showsDismissControl
-                && (lhs.editRules == nil) == (rhs.editRules == nil)
+                && lhs.page.signature == rhs.page.signature
         }
 
         var body: some View {
@@ -174,7 +177,16 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
                 presentationClass: presentationClass,
                 palette: ClashClientUI.ClashProductPalette.clashProduct,
                 showsDismissControl: showsDismissControl,
-                editRulesDestination: editRules
+                leadingSections: page.leadingSections,
+                inPlaceEditing: page.inPlaceEditing,
+                addRule: page.addRule,
+                addToRules: page.addToRules,
+                title: page.title,
+                rulesGroupTitle: page.rulesGroupTitle,
+                rowsBeforeActiveRules: page.rowsBeforeActiveRules,
+                pushesWithPageLinks: page.pushesWithPageLinks,
+                editRulesDisabled: page.editRulesDisabled,
+                showsActiveRules: page.showsActiveRules
             ) { symbol in
                 ClashSymbolImage(symbol: symbol)
             } activeRulesDestination: {
@@ -241,6 +253,49 @@ struct RulesOverviewAdapter<ActiveRules: View>: View {
                 break
             }
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+struct RulesOverviewPageParts {
+    var title: ClashDisplayText? = nil
+    var rulesGroupTitle: ClashDisplayText? = nil
+    var leadingSections: (() -> AnyView)? = nil
+    var rowsBeforeActiveRules: (() -> AnyView)? = nil
+    var inPlaceEditing: (() -> AnyView)? = nil
+    var addRule: (() -> Void)? = nil
+     
+    var addToRules: Addition? = nil
+    typealias Addition = ClashRulesAddition
+     
+     
+     
+    var pushesWithPageLinks = false
+     
+     
+    var editRulesDisabled = false
+     
+    var showsActiveRules = true
+
+     
+     
+    var signature: Signature {
+        Signature(title: title, rulesGroupTitle: rulesGroupTitle, addToRules: addToRules?.title,
+                  parts: [leadingSections != nil, rowsBeforeActiveRules != nil, inPlaceEditing != nil, addRule != nil,
+                          pushesWithPageLinks, editRulesDisabled, showsActiveRules])
+    }
+
+    struct Signature: Equatable {
+        let title: ClashDisplayText?
+        let rulesGroupTitle: ClashDisplayText?
+         
+        let addToRules: ClashDisplayText?
+        let parts: [Bool]
     }
 }
 

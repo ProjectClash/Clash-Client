@@ -31,13 +31,19 @@ enum ClashWidgetTimelineBuilder {
      
      
      
-    static func entry(style: ClashWidgetStyle, group: String?) async -> ClashWidgetEntry {
+    static func entry(style: ClashWidgetStyle, group: String?, family: WidgetFamily) async -> ClashWidgetEntry {
         let store = ClashWidgetMailboxClient.store
         let facts = store.readAppFacts()
          
          
          
-        let shown = facts.map { $0.group(for: group) } ?? group
+         
+         
+         
+         
+        let shown = ClashWidgetAppFacts.group(
+            shownFor: group, listsAGroup: ClashWidgetSlotFactory.drawnStyle(style, in: family) == .group, facts: facts
+        )
         let state = await ClashVPNControlDriver.state(journal: false)
         let active = state?.active ?? false
         var snapshot: ClashWidgetSnapshot?
@@ -134,12 +140,12 @@ struct ClashWidgetProvider: AppIntentTimelineProvider {
 
     func snapshot(for configuration: Intent, in context: Context) async -> ClashWidgetEntry {
         if context.isPreview { return ClashWidgetTimelineBuilder.preview(style: configuration.style) }
-        return await ClashWidgetTimelineBuilder.entry(style: configuration.style, group: configuration.group?.id)
+        return await ClashWidgetTimelineBuilder.entry(style: configuration.style, group: configuration.group?.id, family: context.family)
     }
 
-    func timeline(for configuration: Intent, in _: Context) async -> Timeline<ClashWidgetEntry> {
+    func timeline(for configuration: Intent, in context: Context) async -> Timeline<ClashWidgetEntry> {
         ClashWidgetTimelineBuilder.timeline(
-            await ClashWidgetTimelineBuilder.entry(style: configuration.style, group: configuration.group?.id)
+            await ClashWidgetTimelineBuilder.entry(style: configuration.style, group: configuration.group?.id, family: context.family)
         )
     }
 }

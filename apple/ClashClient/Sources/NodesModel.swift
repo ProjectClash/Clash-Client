@@ -1661,7 +1661,8 @@ enum GlobalProxySelectionPolicy {
                  
                 return ClashTunnelOutboundMode.WalkedGroup(
                     now: group.now, members: name == groupName ? globalMembers ?? group.members : group.members,
-                    listsEveryMember: group.hasEveryMember || (name == groupName && group.listsEveryGroup))
+                    listsEveryMember: group.hasEveryMember || (name == groupName && group.listsEveryGroup),
+                    memberTypes: group.memberTypes)
             }
             if let leaf = global?.memberResolvedNames[name], leaf != name {
                 return ClashTunnelOutboundMode.WalkedGroup(now: leaf, members: nil)
@@ -1739,7 +1740,8 @@ enum GlobalProxySelectionPolicy {
         ClashTunnelOutboundMode.exit(following: member) { name in
             if let group = byName[name] {
                 return ClashTunnelOutboundMode.WalkedGroup(now: group.now, members: group.members,
-                                                           listsEveryMember: group.hasEveryMember)
+                                                           listsEveryMember: group.hasEveryMember,
+                                                           memberTypes: group.memberTypes)
             }
             if let leaf = global.memberResolvedNames[name], leaf != name {
                 return ClashTunnelOutboundMode.WalkedGroup(now: leaf, members: nil)

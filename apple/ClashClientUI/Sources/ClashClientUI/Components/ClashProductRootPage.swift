@@ -61,7 +61,33 @@ public extension EnvironmentValues {
 }
 
 private struct ClashRegularRootLargeTitleKey: EnvironmentKey {
-    static let defaultValue: String? = nil
+    static let defaultValue: ClashRootLargeTitle.Value? = nil
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashRootLargeTitle {
+    typealias Value = ClashDisplayText
+
+     
+     
+    static func published(_ heading: ClashDisplayText) -> Value {
+        heading
+    }
+
+     
+    static func drawn(_ value: Value) -> ClashDisplayText {
+        value
+    }
 }
 
 private struct ClashRegularShellOwnsCanvasKey: EnvironmentKey {
@@ -176,6 +202,11 @@ public final class ClashRegularRootChannels: ObservableObject {
      
     @Published public var openGroup = ClashRootOpenGroupSignal()
     @Published public var displayPreferences = ClashRootDisplaySignal()
+     
+     
+     
+     
+    @Published public var editsInPlace = false
 
     public init() {}
 
@@ -329,6 +360,7 @@ public struct ClashPooledRootFeed: View {
             .environment(
                 \.clashRegularRootDisplayPreferences, channels.displayPreferences
             )
+            .environment(\.clashRegularRootEditsInPlace, channels.editsInPlace)
             .environment(\.clashHostedInRootPool, true)
              
              
@@ -367,6 +399,13 @@ private struct ClashPageDrawsOwnCardsKey: EnvironmentKey {
  
 private struct ClashRegularRootSearchTextKey: EnvironmentKey {
     static let defaultValue: String? = nil
+}
+
+ 
+ 
+ 
+private struct ClashRegularRootEditsInPlaceKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
 }
 
  
@@ -450,6 +489,11 @@ extension EnvironmentValues {
         set { self[ClashRegularRootSearchTextKey.self] = newValue }
     }
 
+    public var clashRegularRootEditsInPlace: Bool? {
+        get { self[ClashRegularRootEditsInPlaceKey.self] }
+        set { self[ClashRegularRootEditsInPlaceKey.self] = newValue }
+    }
+
     public var clashRegularRootFoldCommand: Int {
         get { self[ClashRegularRootFoldCommandKey.self] }
         set { self[ClashRegularRootFoldCommandKey.self] = newValue }
@@ -460,7 +504,7 @@ extension EnvironmentValues {
         set { self[ClashRegularRootFoldStateSinkKey.self] = newValue }
     }
 
-    var clashRegularRootLargeTitle: String? {
+    var clashRegularRootLargeTitle: ClashRootLargeTitle.Value? {
         get { self[ClashRegularRootLargeTitleKey.self] }
         set { self[ClashRegularRootLargeTitleKey.self] = newValue }
     }
@@ -689,11 +733,11 @@ struct ClashProductRootPage<Content: View>: View {
         }
     }
 
-    private func largeTitle(_ title: String) -> some View {
+    private func largeTitle(_ title: ClashRootLargeTitle.Value) -> some View {
          
          
          
-        Text(clash: .copy(title))
+        Text(clash: ClashRootLargeTitle.drawn(title))
             .font(.title2.bold())
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("regular.detail.title")

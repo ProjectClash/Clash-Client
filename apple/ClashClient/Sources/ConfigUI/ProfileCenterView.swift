@@ -57,11 +57,11 @@ struct ProfileCenterAdapter: View {
     private var activeFailure: ProfileSwitchAlertFailure? {
         model.lastFailure.map { ProfileSwitchAlertFailure($0) }
     }
-    private func sayFailure(_ failure: ConfigurationFailure?) {
+    private func sayFailure(_ saying: ProfilesFailureSaying) {
          
          
          
-        guard let failure else { feedback?.dismiss(operation: "profiles.failure"); return }
+        guard case .say(let failure) = saying else { feedback?.dismiss(operation: "profiles.failure"); return }
         let text = ProfileSwitchAlertFailure(failure)
         let retries = failure.recoveryActions.contains(.retry)
         let model = model
@@ -91,12 +91,23 @@ struct ProfileCenterAdapter: View {
     @State private var configurationLibrary = ConfigurationLibrarySnapshot()
      
      
+    @State private var centerLibraryRead: Task<Void, Never>?
+    @State private var centerLibraryReadsAsked = 0
+     
+     
     @State private var providerNodeCounts: [String: Int] = [:]
     @State private var providerDownloads = 0
     @State private var libraryBrowseCache: ConfigurationLibraryBrowseCache?
      
      
-    @State private var handoffsTaken = 0
+    @State private var handoffsAwaiting = 0
+     
+     
+    @State private var listOnScreen = true
+     
+     
+     
+    @State private var scriptCount = 0
      
     @State private var centreID = UUID()
 
@@ -153,27 +164,26 @@ struct ProfileCenterAdapter: View {
         let _ = ClashPerf.count("center.body")
         ClashOptionalNavigationContainer(owns: ownsNavigationContainer) {
 #if os(iOS)
-            ClashConfigurationCenterSections(revealsConfigurations: handoffsTaken) {
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            profilesPage
+                .profileQuickAddPresenters(quickAdd)
                  
                  
                  
                  
                  
-                 
-                 
-                 
-                 
-                profilesPage
-                    .profileQuickAddPresenters(quickAdd)
-            } nodes: {
-                ConfigurationSourceLibraryAdapter(model: model, library: configurationLibrary,
-                    changed: applyNodeLibraryChange, close: { centerDismiss() },
-                    embedded: true, showsClose: ownsNavigationContainer, browseCache: $libraryBrowseCache)
-            } rules: {
-                ConfigurationRuleLibraryAdapter(model: model, library: configurationLibrary,
-                    changed: applyCenterLibrary, close: { centerDismiss() },
-                    embedded: true, showsClose: ownsNavigationContainer, browseCache: $libraryBrowseCache)
-            }
+                .clashOnScreen { listOnScreen = $0 }
 #else
             profilesPage
 #endif
@@ -189,7 +199,11 @@ struct ProfileCenterAdapter: View {
          
          
          
-        .onReceive(model.$lastFailure) { sayFailure($0) }
+         
+         
+         
+         
+        .onReceive(facts.failureSayings) { sayFailure($0) }
 #endif
          
          
@@ -203,6 +217,11 @@ struct ProfileCenterAdapter: View {
 #endif
          
         .task { await ModulePageModel.shared.reload() }
+         
+        .task { scriptCount = ScriptLibrary.load().count }
+        .onReceive(NotificationCenter.default.publisher(for: ScriptLibrary.didChange)) { _ in
+            scriptCount = ScriptLibrary.load().count
+        }
         .onAppear {
             importRouter.centreAppeared(centreID)
             model.load()
@@ -222,12 +241,25 @@ struct ProfileCenterAdapter: View {
              
              
              
-             
             if let request = importRouter.take() {
+                if CentreHandoffNotice.makesAConfiguration(request, among: model.profiles) { handoffsAwaiting &+= 1 }
                 consume(request)
-                handoffsTaken &+= 1
             }
         }
+#if os(iOS)
+         
+         
+         
+         
+         
+        .onReceive(model.handedImportsSettled) { id in
+            guard handoffsAwaiting > 0 else { return }
+            handoffsAwaiting -= 1
+            guard let id, let profile = model.profiles.first(where: { $0.id == id }),
+                  let said = CentreHandoffNotice.presentation(for: profile, listOnScreen: listOnScreen) else { return }
+            feedback?.show(said, operation: CentreHandoffNotice.operation)
+        }
+#endif
         .onReceive(model.$profiles) { _ in
              
              
@@ -235,16 +267,15 @@ struct ProfileCenterAdapter: View {
              
              
              
-            Task { @MainActor in
-                guard let store = model.configurationLibraryStore else { return }
-                if let snapshot = try? await Task.detached(operation: { try store.snapshot() }).value {
-                    guard snapshot.generation >= configurationLibrary.generation else { return }
-                    let composed = Set(snapshot.recipes.filter { $0.preservesOriginal != true }.map(\.id))
-                    if composed != composedProfileIDs { composedProfileIDs = composed }
-                    if snapshot != configurationLibrary { configurationLibrary = snapshot }
-                }
-            }
+            rereadCenterLibrary()
         }
+         
+         
+         
+         
+         
+         
+        .onChange(of: model.libraryContentEpoch) { _ in rereadCenterLibrary() }
         .task(id: activeRevisionKey) {
             await loadAdaptationNoticeCount()
         }
@@ -287,6 +318,30 @@ struct ProfileCenterAdapter: View {
               case .subscription = record.origin else { return nil }
         return .init(intervalHours: record.updateIntervalHours ?? 0, sourceID: record.id,
                      sharedBy: configurationLibrary.recipes.filter { $0.sources.contains { $0.id == record.id } }.count)
+    }
+
+     
+     
+     
+     
+     
+    private func rereadCenterLibrary() {
+        let before = centerLibraryRead
+        centerLibraryReadsAsked &+= 1
+        let asked = centerLibraryReadsAsked
+        centerLibraryRead = Task { @MainActor in
+            await before?.value
+             
+             
+            guard asked == centerLibraryReadsAsked else { return }
+            guard let store = model.configurationLibraryStore else { return }
+            if let snapshot = try? await Task.detached(operation: { try store.snapshot() }).value {
+                guard snapshot.generation >= configurationLibrary.generation else { return }
+                let composed = Set(snapshot.recipes.filter { $0.preservesOriginal != true }.map(\.id))
+                if composed != composedProfileIDs { composedProfileIDs = composed }
+                if snapshot != configurationLibrary { configurationLibrary = snapshot }
+            }
+        }
     }
 
     private func applyCenterLibrary(_ snapshot: ConfigurationLibrarySnapshot) {
@@ -388,10 +443,12 @@ struct ProfileCenterAdapter: View {
                                            statusIdentifier: "profile-center.quick-add.status"),
                         onFirstProfileCreated: ownsNavigationContainer ? { centerDismiss() } : nil)
                          
-                        .disabled(model.isUpdatingNodeLibrary)) }
+                         
+                        .disabled(model.isNodeLibraryHeld)) }
                     : nil,
                 quickAddLeads: !ProfileCenterPolicy.hasUserProfile(model.profiles),
                 configurationPage: configurationPage,
+                libraries: centreLibraries,
                 capabilityInterceptor: capabilityInterceptor,
                 icon: { symbol in
                     ClashSymbolImage(symbol: symbol)
@@ -435,6 +492,47 @@ struct ProfileCenterAdapter: View {
         nil
 #endif
     }
+
+     
+     
+     
+     
+    private var centreLibraries: ClashConfigurationCentreLibraries? {
+#if os(iOS)
+        let library = configurationLibrary
+        let scripts = scriptCount
+        return ClashConfigurationCentreLibraries(value: { which in
+            switch which {
+            case .nodes:
+                return .format("%@ in the Node Library", ["\(library.availableSources.filter(\.suppliesNodes).count)"])
+            case .rules:
+                return .format("%@ in the Rule Library", ["\(library.visibleRuleSchemes.count)"])
+            case .scripts:
+                return .format("%@ in the Override Library", ["\(scripts)"])
+            }
+        }, page: { which in AnyView(libraryPage(which)) })
+#else
+        nil
+#endif
+    }
+
+#if os(iOS)
+    @ViewBuilder
+    private func libraryPage(_ which: ClashConfigurationCentreLibrary) -> some View {
+        switch which {
+        case .nodes:
+            ConfigurationSourceLibraryAdapter(model: model, library: configurationLibrary,
+                changed: applyNodeLibraryChange, close: { centerDismiss() },
+                embedded: true, showsClose: false, browseCache: $libraryBrowseCache)
+        case .rules:
+            ConfigurationRuleLibraryAdapter(model: model, library: configurationLibrary,
+                changed: applyCenterLibrary, close: { centerDismiss() },
+                embedded: true, showsClose: false, browseCache: $libraryBrowseCache)
+        case .scripts:
+            ScriptLibraryView(model: model)
+        }
+    }
+#endif
 
     private var initialProfileID: ClashClientKit.Profile.ID? {
         guard case .profileDetail(let rawID) = initialDestination else {
@@ -945,10 +1043,18 @@ struct ProfileCenterAdapter: View {
                  
                  
                  
+#if os(iOS)
                 ProfileOverrideView(profile: profile, rawYAML: model.cachedUIProjectedYAML(for: profile),
                     configurationCenter: true, loadRawYAML: { await model.loadUIProjectedYAML(for: profile) }) {
                     try model.updateOverrideSettings(from: $0)
                 }
+                .overrideLibrary(model)
+#else
+                ProfileOverrideView(profile: profile, rawYAML: model.cachedUIProjectedYAML(for: profile),
+                    configurationCenter: true, loadRawYAML: { await model.loadUIProjectedYAML(for: profile) }) {
+                    try model.updateOverrideSettings(from: $0)
+                }
+#endif
             } else {
                 ClashOpeningCancelButton()
             }
@@ -1102,6 +1208,12 @@ struct ProfileCenterAdapter: View {
                 case .unchanged?:
                     feedback?.show(.information(title: ClashFeedbackCopy.upToDate(profile.label),
                                                 accessibilityIdentifier: "feedback.profile.update"),
+                                   operation: "profile.update.\(profile.id)")
+                case .putBack?:
+                     
+                     
+                    feedback?.show(.warning(title: .copy(ProfilesViewModel.putBackKey),
+                                            accessibilityIdentifier: "feedback.profile.update"),
                                    operation: "profile.update.\(profile.id)")
                 case .failed?, nil:
                     break
@@ -2138,6 +2250,48 @@ struct ProfileSourceEditorLoader: View {
     }
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ProfilesFailureSaying: Equatable {
+    case say(ConfigurationFailure)
+    case dismiss
+
+     
+    struct Record: Equatable {
+        var failure: ConfigurationFailure?
+        var serial: Int
+    }
+
+     
+     
+    static func next(after previous: Record?, _ now: Record) -> ProfilesFailureSaying? {
+        guard let previous else { return now.failure.map(Self.say) ?? .dismiss }
+        if now.serial != previous.serial { return now.failure.map(Self.say) }
+        if now.failure == nil, previous.failure != nil { return .dismiss }
+        return nil
+    }
+
+    static func sayings(failures: AnyPublisher<ConfigurationFailure?, Never>,
+                        serials: AnyPublisher<Int, Never>) -> AnyPublisher<ProfilesFailureSaying, Never> {
+        failures.combineLatest(serials)
+            .map { Record(failure: $0, serial: $1) }
+            .scan((record: Record?.none, saying: ProfilesFailureSaying?.none)) { state, now in
+                (now, next(after: state.record, now))
+            }
+            .compactMap(\.saying)
+            .eraseToAnyPublisher()
+    }
+
+    @MainActor
+    static func sayings(of model: ProfilesViewModel) -> AnyPublisher<ProfilesFailureSaying, Never> {
+        sayings(failures: model.$lastFailure, serials: model.$failureSerial)
+    }
+}
 
  
  
@@ -2155,7 +2309,8 @@ final class ProfileCenterFacts: ObservableObject {
         var isBatchSyncing: Bool
         var libraryHasFetchableSource: Bool
         var lastFailure: ConfigurationFailure?
-        var isUpdatingNodeLibrary: Bool
+         
+        var isNodeLibraryHeld: Bool
          
          
          
@@ -2170,12 +2325,16 @@ final class ProfileCenterFacts: ObservableObject {
             isBatchSyncing = model.isBatchSyncing
             libraryHasFetchableSource = model.libraryHasFetchableSource
             lastFailure = model.lastFailure
-            isUpdatingNodeLibrary = model.isUpdatingNodeLibrary
+            isNodeLibraryHeld = model.isNodeLibraryHeld
             editableSourceIDs = Set(model.profiles.filter { model.hasEditableSource(for: $0) }.map(\.id))
         }
     }
 
     @Published private(set) var snapshot: Snapshot
+     
+     
+     
+    let failureSayings: AnyPublisher<ProfilesFailureSaying, Never>
     private let model: ProfilesViewModel
     private var watching: AnyCancellable?
     private var readScheduled = false
@@ -2183,6 +2342,7 @@ final class ProfileCenterFacts: ObservableObject {
     init(model: ProfilesViewModel) {
         self.model = model
         snapshot = Snapshot(model)
+        failureSayings = ProfilesFailureSaying.sayings(of: model)
          
          
         watching = model.objectWillChange.sink { [weak self] _ in self?.scheduleRead() }
@@ -2197,5 +2357,35 @@ final class ProfileCenterFacts: ObservableObject {
             let next = Snapshot(self.model)
             if next != self.snapshot { self.snapshot = next }
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum CentreHandoffNotice {
+    static let operation = "profiles.handoff-added"
+
+     
+     
+    static func makesAConfiguration(_ request: ProfileImportRequest, among profiles: [Profile]) -> Bool {
+        guard case let .subscription(link, _) = request else { return true }
+        return !profiles.contains { profile in
+            if case let .url(url) = profile.source { return url == link }
+            return false
+        }
+    }
+
+     
+    static func presentation(for profile: Profile, listOnScreen: Bool) -> ClashFeedbackPresentation? {
+        guard !listOnScreen else { return nil }
+         
+         
+        return .success(title: ClashFeedbackCopy.added(profile.label),
+                        accessibilityIdentifier: "feedback.profiles.handoff-added")
     }
 }

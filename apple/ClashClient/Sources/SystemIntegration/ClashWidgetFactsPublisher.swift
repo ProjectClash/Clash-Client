@@ -12,6 +12,8 @@ import WidgetKit
  
  
  
+ 
+ 
 enum ClashWidgetFactsPublisher {
      
      
@@ -51,6 +53,16 @@ enum ClashWidgetFactsPublisher {
             ProxiesOverviewModel.canonicalAdapterType($0.type) == "selector"
         }?.name
         let manualGroups = declared.filter { ProxiesOverviewModel.canonicalAdapterType($0.type) == "selector" }.map(\.name)
+         
+         
+         
+         
+         
+         
+         
+         
+        let finalRuleGroup = HomeNamedRoute.finalRuleTarget(of: RulesOverviewModel.make(sourceYAML: effectiveYAML))
+            .flatMap { groups.contains($0) ? $0 : nil }
         let globalVerdict = storedGlobal.map { ClashTunnelOutboundMode.storedGlobalVerdict($0.reading(manualGroups: manualGroups)) }
          
          
@@ -73,13 +85,14 @@ enum ClashWidgetFactsPublisher {
         }
         return ClashWidgetAppFacts(
             profile: activeLabel,
-            firstGroup: firstSelector ?? groups.first,
+            firstGroup: finalRuleGroup ?? firstSelector ?? groups.first,
             groups: groups,
             members: members,
             selections: selections,
             mode: mode,
             countsWired: countsWired,
             globalVerdict: globalVerdict,
+            selectors: manualGroups,
             writtenAt: now
         )
     }

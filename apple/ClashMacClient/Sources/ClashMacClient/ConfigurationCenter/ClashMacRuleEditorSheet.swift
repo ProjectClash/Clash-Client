@@ -1,5 +1,6 @@
 import ClashClientKit
 import ClashClientUI
+import Combine
 import SwiftUI
 
  
@@ -65,6 +66,17 @@ public struct ClashMacRuleEditorActions {
      
      
     public var rulesHaveSwitches = true
+     
+     
+     
+     
+    public var deleted: (@MainActor (String, @escaping @MainActor () async -> Bool) -> Void)? = nil
+     
+     
+     
+     
+     
+    public var deleteLocalRestorably: (@MainActor (String) async throws -> ClashMacLocalRuleSetDeletion)? = nil
     public var documentFromText: (@Sendable (String) throws -> String)? = nil
      
      
@@ -74,6 +86,20 @@ public struct ClashMacRuleEditorActions {
      
      
     public var keptRulesNote: ClashDisplayText? = nil
+     
+     
+     
+    public var groupExcludes: ClashMacGroupExcludesHook? = nil
+     
+     
+     
+    public var groupDeleted: (@MainActor (ConfigurationRuleGroupDeletion) -> Void)? = nil
+     
+     
+     
+     
+     
+    public var changeNote: (@MainActor () -> String?)? = nil
 
     public init(
         load: @escaping @MainActor () async throws -> ClashMacRuleEditorState,
@@ -101,6 +127,41 @@ public struct ClashMacRuleEditorActions {
             download: { _ in throw ConfigurationLibraryError.unreadable }
         )
     }
+}
+
+ 
+ 
+public struct ClashMacLocalRuleSetDeletion {
+     
+     
+    public let state: ClashMacRuleEditorState?
+    public let undo: @MainActor () async -> Bool
+
+    public init(state: ClashMacRuleEditorState?, undo: @escaping @MainActor () async -> Bool) {
+        self.state = state
+        self.undo = undo
+    }
+
+     
+     
+     
+     
+     
+    @MainActor
+    public static func done(reading read: @MainActor () async throws -> ClashMacRuleEditorState,
+                            undo: @escaping @MainActor () async -> Bool) async throws -> ClashMacLocalRuleSetDeletion {
+        ClashMacLocalRuleSetDeletion(state: try? await read(), undo: undo)
+    }
+}
+
+ 
+ 
+ 
+@MainActor
+final class ClashMacRuleEditorUndone: ObservableObject {
+    @Published private(set) var count = 0
+
+    func restored() { count += 1 }
 }
 
  
@@ -170,6 +231,38 @@ public struct ClashMacRuleEditorSheet: View {
      
     public enum Presentation: Equatable, Sendable { case sheet, page }
 
+     
+     
+     
+     
+     
+     
+     
+    public struct RulesPage {
+         
+        public var leading: AnyView
+         
+        public var title: ClashDisplayText?
+         
+        public var addRequests: Int
+         
+        public var saveAsScheme: (@MainActor (String) -> Void)?
+         
+        public var schemeName: String
+         
+        public var offersRestore: Bool
+
+        public init(leading: AnyView, title: ClashDisplayText?, addRequests: Int,
+                    saveAsScheme: (@MainActor (String) -> Void)?, schemeName: String, offersRestore: Bool) {
+            self.leading = leading
+            self.title = title
+            self.addRequests = addRequests
+            self.saveAsScheme = saveAsScheme
+            self.schemeName = schemeName
+            self.offersRestore = offersRestore
+        }
+    }
+
     private let actions: ClashMacRuleEditorActions
     private let presentation: Presentation
     private let saved: () -> Void
@@ -178,6 +271,8 @@ public struct ClashMacRuleEditorSheet: View {
      
      
     @StateObject private var dismiss = ClashDismissHandle()
+     
+    @StateObject private var undone = ClashMacRuleEditorUndone()
     @Environment(\.locale) private var locale
     @Environment(\.configurationFieldCopy) private var copy
     @State private var state: ClashMacRuleEditorState?
@@ -206,6 +301,12 @@ public struct ClashMacRuleEditorSheet: View {
     @State private var pane: Pane = .rules
      
      
+    @State private var groupPageReverts = 0
+     
+     
+    @State private var singleGroupID: UUID?
+     
+     
      
     @State private var ruleSelection = Set<ConfigurationRuleDraft.Row.ID>()
     @State private var nodeCandidates = ConfigurationRuleTargetCandidates(sections: [])
@@ -231,14 +332,36 @@ public struct ClashMacRuleEditorSheet: View {
      
     @State private var focus: Focus?
 
+     
+     
+    private let singleGroup: String?
+     
+    private let rulesPage: RulesPage?
+     
+     
+     
+    private let relatedPage: ClashMacRelatedPage?
+     
+    @Environment(\.clashRulesEditQuery) private var rulesPageQuery
+     
+    @State private var rulesPageMatched: (query: String, raws: Set<String>)?
+    @State private var confirmsRestoreInitialRules = false
+    @State private var namesScheme = false
+    @State private var schemeName = ""
+
     public init(
         actions: ClashMacRuleEditorActions, initialPane: Pane = .rules,
-        presentation: Presentation = .sheet, focus: Focus? = nil, saved: @escaping () -> Void = {}
+        presentation: Presentation = .sheet, focus: Focus? = nil, singleGroup: String? = nil,
+        rulesPage: RulesPage? = nil, relatedPage: ClashMacRelatedPage? = nil, saved: @escaping () -> Void = {}
     ) {
+        self.singleGroup = singleGroup
+        self.rulesPage = rulesPage
+        self.relatedPage = relatedPage
         self.actions = actions
-        self.presentation = presentation
+         
+        self.presentation = rulesPage == nil ? presentation : .page
         self.saved = saved
-        _pane = State(initialValue: initialPane)
+        _pane = State(initialValue: rulesPage == nil ? initialPane : .rules)
         _focus = State(initialValue: focus)
     }
 
@@ -253,6 +376,36 @@ public struct ClashMacRuleEditorSheet: View {
         .task {
             if state == nil { await load() }
             await loadCandidates()
+        }
+         
+         
+        .onReceive(undone.$count.dropFirst()) { _ in Task { await readAgainAfterUndo() } }
+         
+         
+        .onChange(of: rulesPage?.addRequests ?? 0) { _ in
+            if rulesPage != nil, state != nil, !busy { sheet = .rule(nil) }
+        }
+        .task(id: rulesPageSearchKey) {
+            guard rulesPage != nil else { return }
+            let raws = state?.draft.rows.map(\.raw) ?? []
+            rulesPageMatched = await ClashMacRulesPageSearch.search(rulesPageQuery.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                                     in: raws, locale: locale, copy: copy, names: ruleSetNames)
+        }
+        .alert(Text(clash: .copy("Restore Initial Rules?")), isPresented: $confirmsRestoreInitialRules) {
+            Button(role: .destructive) { reset() } label: { Text(clash: .copy("Restore Initial Rules")) }
+            Button(role: .cancel) {} label: { Text(clash: .copy("Cancel")) }
+        } message: {
+            Text(clash: .copy("Removes the rules, renames and reordering added after the scheme was created. My Rule Sets stay."))
+        }
+         
+        .alert(Text(clash: .copy("Save as Rule Scheme")), isPresented: $namesScheme) {
+            TextField(text: $schemeName) { Text(clash: .copy("Name")) }
+                .accessibilityIdentifier("rules.overview.edit.save-as-scheme.name")
+            Button(role: .cancel) {} label: { Text(clash: .copy("Cancel")) }
+            Button {
+                let name = schemeName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty { rulesPage?.saveAsScheme?(name) }
+            } label: { Text(clash: .copy("Save")) }
         }
         .sheet(item: $sheet) { item in
             Group {
@@ -381,7 +534,8 @@ public struct ClashMacRuleEditorSheet: View {
 
     private var sheetFrame: some View {
         ClashMacSheetFrame(
-            title: .verbatim(state?.draft.label ?? ""),
+             
+            title: .verbatim(state?.draft.labelAsRead(locale: locale) ?? ""),
             subtitle: state.map { ClashDisplayText.count($0.draft.rows.count, one: "%@ rule", other: "%@ rules") },
             width: 680,
             height: 640
@@ -430,7 +584,35 @@ public struct ClashMacRuleEditorSheet: View {
      
      
      
-    private var pageFrame: some View {
+     
+    @ViewBuilder private var pageFrame: some View {
+        if rulesPage != nil {
+            pageBody
+                .clashFrameWatch("configuration-rule-page")
+                .accessibilityIdentifier("rules.overview.edit.list")
+        } else {
+            pageBody
+                .toolbar {
+                    if let title = addTitle {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button(action: add) {
+                                Label { Text(clash: title) } icon: { Image(systemName: "plus") }
+                            }
+                            .help(Text(clash: title))
+                            .disabled(busy || state == nil || (pane == .subRules && state?.draft.subRulesEditable == false))
+                            .accessibilityIdentifier("configuration-center.rule-editor.add")
+                        }
+                    }
+                }
+                .navigationTitle(Text(clash: singleGroup.map { name in
+                    .verbatim(state.flatMap { pageGroup(in: $0.draft, named: name)?.name } ?? name)
+                } ?? pane.title))
+                .clashFrameWatch("configuration-rule-page")
+                .accessibilityIdentifier("configuration-center.rule-page.\(pane.rawValue)")
+        }
+    }
+
+    private var pageBody: some View {
         VStack(spacing: 0) {
             if let error {
                 Text(verbatim: error)
@@ -447,28 +629,33 @@ public struct ClashMacRuleEditorSheet: View {
             } else {
                 placeholder
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .toolbar {
-            if let title = addTitle {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: add) {
-                        Label { Text(clash: title) } icon: { Image(systemName: "plus") }
-                    }
-                    .help(Text(clash: title))
-                    .disabled(busy || state == nil || (pane == .subRules && state?.draft.subRulesEditable == false))
-                    .accessibilityIdentifier("configuration-center.rule-editor.add")
-                }
+            if rulesPage == nil, let note = Self.changeNote(actions, pane: pane, presentation: presentation) {
+                Divider()
+                Text(verbatim: note)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .accessibilityIdentifier("configuration-center.rule-editor.change-note")
             }
         }
-        .navigationTitle(Text(clash: pane.title))
-        .clashFrameWatch("configuration-rule-page")
-        .accessibilityIdentifier("configuration-center.rule-page.\(pane.rawValue)")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+     
+     
+     
+     
+    static func changeNote(_ actions: ClashMacRuleEditorActions, pane: Pane, presentation: Presentation) -> String? {
+        guard presentation == .page, [Pane.rules, .ruleSets, .subRules].contains(pane) else { return nil }
+        return actions.changeNote?()
     }
 
      
      
     private var addTitle: ClashDisplayText? {
+        if singleGroup != nil { return nil }
         if state?.keptRuleCount != nil, Self.keptPanes.contains(pane) { return nil }
         return switch pane {
         case .rules: .copy("Add Rule")
@@ -519,9 +706,117 @@ public struct ClashMacRuleEditorSheet: View {
     }
 
     @ViewBuilder private func editablePane(_ state: ClashMacRuleEditorState) -> some View {
+        if presentation == .page, pane == .groups, let singleGroup {
+            singleGroupPage(state, named: singleGroup)
+        } else {
+            panes(state)
+        }
+    }
+
+     
+     
+     
+     
+     
+    private func pageGroup(in draft: ConfigurationRuleDraft, named name: String) -> ConfigurationRuleDraft.Group? {
+        singleGroupID.flatMap { id in draft.groups.first { $0.id == id } } ?? draft.groups.first { $0.name == name }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    @ViewBuilder private func singleGroupPage(_ state: ClashMacRuleEditorState, named name: String) -> some View {
+        singleGroupContent(state, named: name)
+            .clashMacPopsWhenGone(pageGroup(in: state.draft, named: name) == nil
+                                  && baseline.map { pageGroup(in: $0, named: name) == nil } == true)
+    }
+
+    @ViewBuilder private func singleGroupContent(_ state: ClashMacRuleEditorState, named name: String) -> some View {
+        if let group = pageGroup(in: state.draft, named: name) {
+            ClashMacRuleGroupEditor(
+                group: group, all: state.draft.groups, nodeCandidates: nodeCandidates,
+                commit: { document in
+                    try mutateThrowing { try $0 = ClashMacPolicyGroupPage.applying(document, to: group.id, in: $0) }
+                },
+                close: {},
+                presentation: .page,
+                groupExcludes: actions.groupExcludes,
+                writeKey: { key, value in
+                     
+                    do {
+                        try mutateThrowing { draft in
+                            guard let current = draft.groups.first(where: { $0.id == group.id }) else { return }
+                            let document = value.map { current.document.settingTopLevel(key, to: $0) } ?? current.document.removingTopLevel(key)
+                            draft = try ClashMacPolicyGroupPage.applying(document, to: group.id, in: draft)
+                        }
+                        return nil
+                    } catch {
+                        return Self.refusal(error, locale: locale)
+                    }
+                },
+                pageFooter: { AnyView(groupDeletion(group, state: state)) }
+            )
+             
+            .id(groupPageReverts)
+            .onAppear { singleGroupID = group.id }
+        } else {
+            ClashMacSheetPlaceholder(title: .copy("Policy Groups"), message: nil)
+        }
+    }
+
+     
+     
+     
+     
+     
+    @ViewBuilder private func groupDeletion(_ group: ConfigurationRuleDraft.Group, state: ClashMacRuleEditorState) -> some View {
+        let refusal = ClashMacPolicyGroupPage.refusal(deleting: group.id, in: state.draft, locale: locale)
+        Section {
+            Button(role: .destructive) {
+                var deletion: ConfigurationRuleGroupDeletion?
+                try? mutateThrowing { deletion = try $0.deleteRoutingGroupRestorably(group.id) }
+                if let deletion { actions.groupDeleted?(deletion) }
+            } label: {
+                 
+                Text(clash: .copy("Delete Policy Group")).clashMacDestructiveLabel()
+            }
+            .disabled(busy || refusal != nil)
+            .accessibilityIdentifier("configuration-center.rule-editor.group.delete")
+        } footer: {
+            if let refusal {
+                Text(verbatim: refusal)
+            } else {
+                Text(clash: .copy(ClashTowerGroupDeletionCopy.consequence))
+            }
+        }
+    }
+
+    @ViewBuilder private func panes(_ state: ClashMacRuleEditorState) -> some View {
         switch pane {
         case .rules:
-            List(selection: $ruleSelection) { rulesSection(state.draft) }
+            List(selection: $ruleSelection) {
+                if let rulesPage { rulesPage.leading }
+                rulesSection(state.draft)
+                if let rulesPage, rulesPageQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    rulesPageFoot(rulesPage)
+                }
+                 
+                if presentation == .page, rulesPage == nil, let relatedPage {
+                    Section {
+                        ClashRoutedViewLink { relatedPage.open() } label: {
+                            Text(clash: relatedPage.title)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityIdentifier("configuration-center.rule-editor.rules.rules-page")
+                    }
+                }
+            }
                 .listStyle(.inset)
                 .clashMacRuleListRows()
                  
@@ -532,7 +827,22 @@ public struct ClashMacRuleEditorSheet: View {
                         ruleMenu(row, draft: state.draft)
                     }
                 }
-        case .groups: List { groupsSection(state.draft) }.listStyle(.inset)
+        case .groups:
+            List {
+                groupsSection(state.draft)
+                 
+                if presentation == .page, let relatedPage {
+                    Section {
+                        ClashRoutedViewLink { relatedPage.open() } label: {
+                            Text(clash: relatedPage.title)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityIdentifier("configuration-center.rule-editor.groups.proxies-page")
+                    }
+                }
+            }
+            .listStyle(.inset)
         case .ruleSets: List { ruleSetsSection(state) }.listStyle(.inset)
         case .subRules: List { subRulesSections(state.draft) }.listStyle(.inset)
         case .source: sourcePane(state)
@@ -637,19 +947,76 @@ public struct ClashMacRuleEditorSheet: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("configuration-center.rule-editor.rules.empty")
             }
-            ForEach(draft.rows) { row in
+             
+             
+             
+            let filtering = rulesPageFiltering
+             
+             
+            let shown = filtering ? ClashMacRulesPageSearch.shown(draft.rows.map(\.raw), query: trimmedRulesPageQuery,
+                                                                  matched: rulesPageMatched) : nil
+            ForEach(shown.map { shown in draft.rows.filter { shown.contains($0.raw) } } ?? draft.rows) { row in
                 ruleRow(row, draft: draft)
                      
                      
-                    .moveDisabled(row.isFinal)
+                    .moveDisabled(row.isFinal || filtering)
             }
              
              
             .onMove { offsets, destination in
+                guard !filtering else { return }
                 mutate { $0.moveRows(fromOffsets: offsets, toOffset: destination) }
             }
         } header: {
-            Text(clash: .copy("Rules"))
+            Text(clash: rulesPage.map { $0.title ?? .copy("Rules") } ?? .copy("Rules"))
+        } footer: {
+             
+            if rulesPage != nil, let note = Self.changeNote(actions, pane: pane, presentation: presentation) {
+                Text(verbatim: note)
+                    .accessibilityIdentifier("configuration-center.rule-editor.change-note")
+            }
+        }
+    }
+
+    private var trimmedRulesPageQuery: String { rulesPageQuery.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+     
+    private var rulesPageFiltering: Bool { rulesPage != nil && !trimmedRulesPageQuery.isEmpty }
+
+     
+    private var rulesPageSearchKey: String {
+        guard rulesPage != nil else { return "" }
+        return ClashMacRulesPageSearch.key(trimmedRulesPageQuery, state?.draft.rows.map(\.raw) ?? [])
+    }
+
+     
+     
+    public static func finalRuleLine(_ raw: String, locale: Locale) -> String {
+        ClashCopy.format("All Other Traffic → %@", locale: locale, ClashStructuredRule.parse(raw)?.target ?? "")
+    }
+
+     
+     
+     
+    @ViewBuilder private func rulesPageFoot(_ page: RulesPage) -> some View {
+        if page.saveAsScheme != nil || page.offersRestore {
+            Section {
+                if page.saveAsScheme != nil {
+                    Button {
+                        schemeName = page.schemeName
+                        namesScheme = true
+                    } label: { Text(clash: .copy("Save as Rule Scheme…")) }
+                    .disabled(busy || state == nil)
+                    .accessibilityIdentifier("rules.overview.edit.save-as-scheme")
+                }
+                if page.offersRestore {
+                    Button(role: .destructive) { confirmsRestoreInitialRules = true } label: {
+                        Text(clash: .copy("Restore Initial Rules…")).clashMacDestructiveLabel()
+                    }
+                    .disabled(busy || state == nil)
+                    .accessibilityIdentifier("rules.overview.edit.restore")
+                }
+            }
         }
     }
 
@@ -686,21 +1053,55 @@ public struct ClashMacRuleEditorSheet: View {
              
              
              
-            Button { sheet = .rule(row.id) } label: {
-                VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
-                    ConfigurationRuleRow(row.raw, ruleSetNames: ruleSetNames)
-                        .opacity(enabled ? 1 : 0.5)
-                    if !note.isEmpty {
-                        Text(verbatim: note).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                    }
+            if presentation == .page {
+                 
+                 
+                ClashRoutedViewLink(showsDisclosureIndicator: false) { ruleDetailPage(row, draft: draft) } label: {
+                    ruleLabel(row, enabled: enabled, note: note)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                .accessibilityIdentifier("configuration-center.rule-editor.rule.\(row.id.uuidString)")
+            } else {
+                Button { sheet = .rule(row.id) } label: { ruleLabel(row, enabled: enabled, note: note) }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("configuration-center.rule-editor.rule.\(row.id.uuidString)")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("configuration-center.rule-editor.rule.\(row.id.uuidString)")
         }
         .disabled(busy)
+    }
+
+     
+     
+    private func ruleLabel(_ row: ConfigurationRuleDraft.Row, enabled: Bool, note: String) -> some View {
+        VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
+             
+            if rulesPage != nil, row.isFinal {
+                Text(verbatim: Self.finalRuleLine(row.raw, locale: locale))
+                    .opacity(enabled ? 1 : 0.5)
+            } else {
+                ConfigurationRuleRow(row.raw, ruleSetNames: ruleSetNames)
+                    .opacity(enabled ? 1 : 0.5)
+            }
+            if !note.isEmpty {
+                Text(verbatim: note).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+     
+    private func ruleDetailPage(_ row: ConfigurationRuleDraft.Row, draft: ConfigurationRuleDraft) -> some View {
+        ClashMacRuleRowEditor(
+            draft: draft, rowID: row.id, hasSwitches: actions.rulesHaveSwitches,
+            judgesRuleSets: actions.rulesHaveSwitches,
+            nodeCandidates: nodeCandidates,
+            createGroup: { document in try mutateThrowing { draft in try draft.setGroup(document, groupID: nil) } },
+            geoValues: actions.geoValues,
+            presentation: .page,
+            commit: { raw, enabled, note in mutate { $0.setRule(raw, enabled: enabled, note: note, rowID: row.id) } },
+            close: {}
+        )
+        .navigationTitle(Text(clash: .copy("Rule")))
     }
 
      
@@ -723,10 +1124,17 @@ public struct ClashMacRuleEditorSheet: View {
          
         Button { mutate { $0.moveRow(row.id, offset: -1) } } label: { Text(clash: .copy("Move Up")) }
             .disabled(busy || row.isFinal || draft.rows.first?.id == row.id)
+             
+            .disabled(rulesPageFiltering)
         Button { mutate { $0.moveRow(row.id, offset: 1) } } label: { Text(clash: .copy("Move Down")) }
             .disabled(busy || row.isFinal || Self.isRowAboveFinal(row, in: draft))
+            .disabled(rulesPageFiltering)
         Divider()
-        Button(role: .destructive) { mutate { $0.remove([row.id]) } } label: { Text(clash: .copy("Delete")) }
+        Button(role: .destructive) {
+            let restore = Self.restoring(rule: row.id, in: draft)
+            mutate { $0.remove([row.id]) }
+            offerUndo(of: row.raw) { draft in restore(&draft) }
+        } label: { Text(clash: .copy("Delete")) }
             .disabled(busy)
     }
 
@@ -857,7 +1265,20 @@ public struct ClashMacRuleEditorSheet: View {
                          
                         Button { sheet = .ruleSet(set.id) } label: { Text(clash: .copy("Edit")) }
                         Button(role: .destructive) {
-                            Task { await run { let next = try await actions.deleteLocal(set.id); adopt(next, keepDraft: true) } }
+                            Task {
+                                await run {
+                                     
+                                     
+                                    if presentation == .page, actions.deleted != nil, let restorably = actions.deleteLocalRestorably {
+                                        let deletion = try await restorably(set.id)
+                                        adopt(deletion, of: set)
+                                        offerUndo(of: set.name, undo: deletion.undo)
+                                    } else {
+                                        let next = try await actions.deleteLocal(set.id)
+                                        adopt(next, keepDraft: true)
+                                    }
+                                }
+                            }
                         } label: {
                             Text(clash: .copy("Delete"))
                         }
@@ -954,7 +1375,11 @@ public struct ClashMacRuleEditorSheet: View {
                 Button { sheet = .subRuleName(subRule.id) } label: { Text(clash: .copy("Rename…")) }
                 Divider()
                 Button(role: .destructive) {
-                    try? mutateThrowing { try $0.removeSubRule(subRule.id) }
+                    guard let draft = state?.draft else { return }
+                    let restoreSubRule = Self.restoring(subRule: subRule.id, in: draft)
+                     
+                    guard (try? mutateThrowing { try $0.removeSubRule(subRule.id) }) != nil else { return }
+                    offerUndo(of: subRule.name) { draft in try restoreSubRule(&draft) }
                 } label: {
                     Text(clash: .copy("Delete"))
                 }
@@ -990,7 +1415,12 @@ public struct ClashMacRuleEditorSheet: View {
             Button { mutate { $0.moveSubRuleRow(row.id, offset: 1, in: subRule.id) } } label: { Text(clash: .copy("Move Down")) }
                 .disabled(pinned || index >= lastMovable)
             Divider()
-            Button(role: .destructive) { mutate { $0.removeSubRuleRows([row.id], in: subRule.id) } } label: { Text(clash: .copy("Delete")) }
+            Button(role: .destructive) {
+                guard let draft = state?.draft else { return }
+                let restoreRow = Self.restoring(subRuleRow: row.id, in: subRule.id, of: draft)
+                mutate { $0.removeSubRuleRows([row.id], in: subRule.id) }
+                offerUndo(of: row.raw) { draft in restoreRow(&draft) }
+            } label: { Text(clash: .copy("Delete")) }
         }
         .accessibilityIdentifier("configuration-center.rule-editor.sub-rule.row.\(row.id.uuidString)")
     }
@@ -1034,6 +1464,100 @@ public struct ClashMacRuleEditorSheet: View {
         edited = true
         error = nil
         saveOnPage()
+    }
+
+     
+     
+     
+     
+     
+    private func offerUndo(of label: String, _ restore: @escaping (inout ConfigurationRuleDraft) throws -> Void) {
+        guard presentation == .page, let deleted = actions.deleted else { return }
+        let actions = self.actions, undone = self.undone
+        deleted(label) { [weak undone] in await Self.undo(restore, actions: actions, told: undone) }
+    }
+
+     
+     
+    private func offerUndo(of label: String, undo: @escaping @MainActor () async -> Bool) {
+        guard presentation == .page, let deleted = actions.deleted else { return }
+        let undone = self.undone
+        deleted(label) { [weak undone] in
+            guard await undo() else { return false }
+            undone?.restored()
+            return true
+        }
+    }
+
+     
+     
+     
+    static func undo(_ restore: @escaping (inout ConfigurationRuleDraft) throws -> Void, actions: ClashMacRuleEditorActions,
+                     told: ClashMacRuleEditorUndone?) async -> Bool {
+        do {
+            var draft = try await actions.load().draft
+            let before = draft
+            try restore(&draft)
+            guard draft != before else { return false }
+            _ = try await actions.save(draft)
+            told?.restored()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+     
+     
+    private func readAgainAfterUndo() async {
+        while saving { try? await Task.sleep(nanoseconds: 50_000_000) }
+        guard let next = try? await actions.load() else { return }
+        adopt(next, keepDraft: false)
+         
+         
+        error = nil
+    }
+
+     
+     
+     
+    static func restoring(rule id: UUID, in draft: ConfigurationRuleDraft) -> (inout ConfigurationRuleDraft) -> Void {
+        guard let index = draft.rows.firstIndex(where: { $0.id == id }) else { return { _ in } }
+        let raw = draft.rows[index].raw, enabled = draft.isEnabled(raw), note = draft.note(for: raw)
+        let next = draft.rows.dropFirst(index + 1).first?.raw
+        return { draft in
+            guard !draft.rows.contains(where: { $0.raw == raw }) else { return }
+            draft.insertRuleFirst(raw)
+            guard let first = draft.rows.first else { return }
+            draft.setRule(raw, enabled: enabled, note: note, rowID: first.id)
+            let before = next.flatMap { next in draft.rows.dropFirst().first { $0.raw == next }?.id }
+                ?? draft.rows.last { $0.isFinal }?.id
+            if let before { draft.move([first.id], before: before) }
+        }
+    }
+
+     
+     
+    static func restoring(subRuleRow id: UUID, in subRuleID: UUID,
+                          of draft: ConfigurationRuleDraft) -> (inout ConfigurationRuleDraft) -> Void {
+        guard let subRule = draft.subRules.first(where: { $0.id == subRuleID }),
+              let index = subRule.rows.firstIndex(where: { $0.id == id }) else { return { _ in } }
+        let raw = subRule.rows[index].raw, name = subRule.name
+        return { draft in
+            guard let now = draft.subRules.first(where: { $0.name == name }), !now.rows.contains(where: { $0.raw == raw }),
+                  (try? draft.setSubRuleRow(raw, rowID: nil, in: now.id)) != nil,
+                  let added = draft.subRules.first(where: { $0.name == name })?.rows.lastIndex(where: { $0.raw == raw })
+            else { return }
+            draft.moveSubRuleRows(fromOffsets: IndexSet(integer: added), toOffset: index, in: now.id)
+        }
+    }
+
+     
+     
+    static func restoring(subRule id: UUID, in draft: ConfigurationRuleDraft) -> (inout ConfigurationRuleDraft) throws -> Void {
+        guard let index = draft.subRules.firstIndex(where: { $0.id == id }) else { return { _ in } }
+        let saved = draft.subRules[index]
+        return { draft in try draft.insertSubRule(saved, at: index) }
     }
 
      
@@ -1096,6 +1620,7 @@ public struct ClashMacRuleEditorSheet: View {
                 savesAgain = false
                 let message = Self.refusal(error, locale: locale)
                 if let stored = try? await actions.load() { adopt(stored, keepDraft: false) }
+                groupPageReverts += 1
                 if resetPending {
                      
                     resetPending = false
@@ -1215,12 +1740,29 @@ public struct ClashMacRuleEditorSheet: View {
      
      
      
+    private func adopt(_ deletion: ClashMacLocalRuleSetDeletion, of set: ConfigurationLocalRuleSet) {
+        if let next = deletion.state { adopt(next, keepDraft: true) } else { state?.localSets.removeAll { $0.id == set.id } }
+    }
+
+     
+     
+     
+     
+    static func leftOutNames(_ keys: [String], before: [ConfigurationLocalRuleSet],
+                             after: [ConfigurationLocalRuleSet]) -> [String] {
+        keys.map { key in (after + before).first { "local-" + $0.id == key }?.name ?? key }
+    }
+
+     
+     
+     
     private func adopt(_ next: ClashMacRuleEditorState, keepDraft: Bool) {
         if keepDraft, var current = state {
              
              
              
              
+            let before = current.localSets
             let rebased = current.draft.rebased(onto: next.draft)
             current.draft = rebased.draft
             current.localSets = next.localSets
@@ -1229,9 +1771,7 @@ public struct ClashMacRuleEditorSheet: View {
             baseline = next.draft
             installedRuleSets = Self.installedRuleSets(in: rebased.draft)
             if !rebased.droppedRuleSets.isEmpty {
-                let names = rebased.droppedRuleSets.map { key in
-                    next.localSets.first { "local-" + $0.id == key }?.name ?? key
-                }
+                let names = Self.leftOutNames(rebased.droppedRuleSets, before: before, after: next.localSets)
                 error = ClashCopy.format("Rules on removed rule sets were left out: %@", locale: locale, names.joined(separator: ", "))
             }
         } else {
@@ -1301,6 +1841,31 @@ public struct ClashMacRuleEditorSheet: View {
  
  
 struct ClashMacRuleRowEditor: View {
+     
+     
+     
+     
+    enum Closing: Equatable { case asksFirst, closes }
+    static func closing(changed: Bool) -> Closing { changed ? .asksFirst : .closes }
+
+     
+     
+    static let incompleteNote = "Takes effect once it has a value."
+
+     
+     
+     
+    static func writes(opened: Opened?, now: Opened, canSave: Bool) -> Bool {
+        canSave && now != opened
+    }
+
+     
+     
+    struct Opened: Equatable {
+        let raw: String
+        let enabled: Bool
+        let note: String
+    }
     let draft: ConfigurationRuleDraft
      
      
@@ -1313,6 +1878,11 @@ struct ClashMacRuleRowEditor: View {
     let subRuleID: UUID?
      
     var hasSwitches = true
+     
+     
+     
+     
+    var presentation: ClashMacRuleEditorSheet.Presentation = .sheet
      
      
      
@@ -1366,13 +1936,29 @@ struct ClashMacRuleRowEditor: View {
      
      
     private let ruleSets: [String]
+     
+    @State private var opened: Opened?
+     
+    @State private var confirmsDiscard = false
+     
+    private var hasChanges: Bool { opened.map { $0 != Opened(raw: raw, enabled: enabled, note: note) } ?? false }
+
+     
+    private func cancel() {
+        switch Self.closing(changed: hasChanges) {
+        case .asksFirst: confirmsDiscard = true
+        case .closes: close()
+        }
+    }
 
     init(draft: ConfigurationRuleDraft, rowID: UUID?, subRuleID: UUID? = nil, hasSwitches: Bool = true,
          judgesRuleSets: Bool = true,
          nodeCandidates: ConfigurationRuleTargetCandidates = .init(sections: []),
          createGroup: ((OrderedJSON) throws -> Void)? = nil,
          geoValues: ClashMacGeoValueLoader? = nil,
+         presentation: ClashMacRuleEditorSheet.Presentation = .sheet,
          commit: @escaping (String, Bool, String) -> Void, close: @escaping () -> Void) {
+        self.presentation = presentation
         self.draft = draft
         self.nodeCandidates = nodeCandidates
         self.rowID = rowID
@@ -1508,11 +2094,7 @@ struct ClashMacRuleRowEditor: View {
     }
 
     var body: some View {
-        ClashMacSheetFrame(
-            title: rowID == nil ? .copy("Add Rule") : .copy("Rule"),
-            width: 560,
-            height: pickingGeo ? 520 : (structured ? 480 : 340)
-        ) {
+        chrome {
             if pickingGeo, let resource = action.clashMacGeoResource, let geoValues {
                 ClashMacGeoValuePickerPage(
                     resource: resource, current: content, load: geoValues,
@@ -1599,6 +2181,12 @@ struct ClashMacRuleRowEditor: View {
                             Toggle(isOn: $src) { Text(verbatim: optionName("src")) }
                                 .accessibilityIdentifier("configuration-center.rule-editor.rule.src")
                         }
+                    } footer: {
+                        if presentation == .page, !canSave {
+                            Text(clash: .copy(Self.incompleteNote))
+                                .foregroundStyle(.orange)
+                                .accessibilityIdentifier("configuration-center.rule-editor.rule.incomplete")
+                        }
                     }
                     .onChange(of: action) { changed in
                          
@@ -1636,33 +2224,21 @@ struct ClashMacRuleRowEditor: View {
             }
             .accessibilityIdentifier("configuration-center.rule-editor.rule-sheet")
             }
-        } leading: {
-            if pickingGeo {
-                Button { pickingGeo = false } label: { Text(clash: .copy("Back")) }
-                    .accessibilityIdentifier("configuration-center.rule-editor.rule.geo.back")
-            } else if pickingTarget {
-                Button { pickingTarget = false } label: { Text(clash: .copy("Back")) }
-                    .accessibilityIdentifier("configuration-center.rule-editor.rule.target.back")
-            } else if pickingRuleSet {
-                Button { pickingRuleSet = false } label: { Text(clash: .copy("Back")) }
-                    .accessibilityIdentifier("configuration-center.rule-editor.rule.rule-set.back")
-            }
-        } trailing: {
-            if !pickingGeo {
-            ClashMacSheetButtons(
-                closeIdentifier: "configuration-center.rule-editor.rule.cancel",
-                primaryTitle: .copy("Done"),
-                primaryIdentifier: "configuration-center.rule-editor.rule.done",
-                primaryDisabled: !canSave,
-                onClose: close,
-                onPrimary: { commit(raw.trimmingCharacters(in: .whitespacesAndNewlines), enabled, note); close() }
-            )
-            }
         }
          
          
          
-        .onAppear { if rowID == nil { raw = assembled } }
+        .onAppear {
+            let start = rowID == nil ? assembled : raw
+            if rowID == nil { raw = start }
+            if opened == nil { opened = Opened(raw: start, enabled: enabled, note: note) }
+        }
+         
+        .alert(Text(clash: .copy("Discard Changes?")), isPresented: $confirmsDiscard) {
+            Button(role: .destructive) { close() } label: { Text(clash: .copy("Discard Changes")) }
+                .accessibilityIdentifier("configuration-center.rule-editor.rule.discard")
+            Button(role: .cancel) {} label: { Text(clash: .copy("Keep Editing")) }
+        }
          
          
          
@@ -1685,6 +2261,67 @@ struct ClashMacRuleRowEditor: View {
             )
         }
     }
+
+     
+     
+     
+    @ViewBuilder
+    private func chrome<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let form = content()
+        if presentation == .page {
+            form
+                .toolbar {
+                    ToolbarItem(placement: .navigation) { sheetLeading }
+                }
+                .onChange(of: Opened(raw: raw.trimmingCharacters(in: .whitespacesAndNewlines), enabled: enabled, note: note)) { now in
+                    guard Self.writes(opened: opened, now: now, canSave: canSave) else { return }
+                    commit(now.raw, now.enabled, now.note)
+                    opened = now
+                }
+        } else {
+            ClashMacSheetFrame(
+                title: rowID == nil ? .copy("Add Rule") : .copy("Rule"),
+                width: 560,
+                height: pickingGeo ? 520 : (structured ? 480 : 340)
+            ) {
+                form
+            } leading: {
+                sheetLeading
+            } trailing: {
+                sheetTrailing
+            }
+        }
+    }
+
+     
+    @ViewBuilder
+    private var sheetLeading: some View {
+            if pickingGeo {
+                Button { pickingGeo = false } label: { Text(clash: .copy("Back")) }
+                    .accessibilityIdentifier("configuration-center.rule-editor.rule.geo.back")
+            } else if pickingTarget {
+                Button { pickingTarget = false } label: { Text(clash: .copy("Back")) }
+                    .accessibilityIdentifier("configuration-center.rule-editor.rule.target.back")
+            } else if pickingRuleSet {
+                Button { pickingRuleSet = false } label: { Text(clash: .copy("Back")) }
+                    .accessibilityIdentifier("configuration-center.rule-editor.rule.rule-set.back")
+            }
+    }
+
+     
+    @ViewBuilder
+    private var sheetTrailing: some View {
+            if !pickingGeo {
+            ClashMacSheetButtons(
+                closeIdentifier: "configuration-center.rule-editor.rule.cancel",
+                primaryTitle: .copy("Done"),
+                primaryIdentifier: "configuration-center.rule-editor.rule.done",
+                primaryDisabled: !canSave,
+                onClose: cancel,
+                onPrimary: { commit(raw.trimmingCharacters(in: .whitespacesAndNewlines), enabled, note); close() }
+            )
+            }
+    }
 }
 
  
@@ -1705,6 +2342,19 @@ struct ClashMacRuleGroupEditor: View {
     let nodeCandidates: ConfigurationRuleTargetCandidates
     let commit: (OrderedJSON) throws -> Void
     let close: () -> Void
+     
+     
+    var presentation: ClashMacRuleEditorSheet.Presentation = .sheet
+     
+    var groupExcludes: ClashMacGroupExcludesHook? = nil
+     
+    var pageFooter: (() -> AnyView)? = nil
+     
+     
+    var writeKey: (@MainActor (String, OrderedJSON?) async -> String?)? = nil
+     
+     
+    @State private var committedName: String
      
     @State private var addingMembers = false
      
@@ -1740,7 +2390,15 @@ struct ClashMacRuleGroupEditor: View {
     @Environment(\.configurationFieldCopy) private var copy
 
     init(group: ConfigurationRuleDraft.Group?, all: [ConfigurationRuleDraft.Group], nodeCandidates: ConfigurationRuleTargetCandidates = .init(sections: []),
-         commit: @escaping (OrderedJSON) throws -> Void, close: @escaping () -> Void) {
+         commit: @escaping (OrderedJSON) throws -> Void, close: @escaping () -> Void,
+         presentation: ClashMacRuleEditorSheet.Presentation = .sheet, groupExcludes: ClashMacGroupExcludesHook? = nil,
+         writeKey: (@MainActor (String, OrderedJSON?) async -> String?)? = nil,
+         pageFooter: (() -> AnyView)? = nil) {
+        self.presentation = presentation
+        self.writeKey = writeKey
+        self.groupExcludes = groupExcludes
+        self.pageFooter = pageFooter
+        _committedName = State(initialValue: group?.name ?? "")
         self.group = group
         self.nodeCandidates = nodeCandidates
         self.all = all
@@ -1810,7 +2468,7 @@ struct ClashMacRuleGroupEditor: View {
      
      
      
-    static func document(base: OrderedJSON?, fields: Fields) -> OrderedJSON {
+    static func document(base: OrderedJSON?, fields: Fields, writesIncludeAll: Bool = true) -> OrderedJSON {
         var document = (base ?? .object([])).settingTopLevel("name", to: .string(fields.name))
          
         document = ClashTowerGroupIcon.apply(fields.icon, to: document)
@@ -1823,7 +2481,7 @@ struct ClashMacRuleGroupEditor: View {
          
          
          
-        if fields.includeAll || base?.topLevelValue(fields.includeAllKey) != nil {
+        if writesIncludeAll, fields.includeAll || base?.topLevelValue(fields.includeAllKey) != nil {
             document = document.settingTopLevel(fields.includeAllKey, to: .scalar(fields.includeAll ? "true" : "false"))
         }
          
@@ -1834,7 +2492,7 @@ struct ClashMacRuleGroupEditor: View {
          
          
          
-        if !fields.includeAll {
+        if writesIncludeAll, !fields.includeAll {
             for other in ["include-all", "include-all-proxies"] where other != fields.includeAllKey && document.topLevelValue(other) != nil {
                 document = document.settingTopLevel(other, to: .scalar("false"))
             }
@@ -2080,12 +2738,88 @@ struct ClashMacRuleGroupEditor: View {
         .buttonStyle(.borderless)
     }
 
-    var body: some View {
-        ClashMacSheetFrame(
-            title: group == nil ? .copy("Add Group") : .copy("Group"),
-            subtitle: .copy("Policy Groups"),
-            width: 560, height: 640
-        ) {
+     
+     
+     
+    @ViewBuilder private var framed: some View {
+        if presentation == .page {
+            formContent
+                .toolbar {
+                    if showsSubList {
+                        ToolbarItem(placement: .cancellationAction) { backButtons }
+                    }
+                }
+                .onChange(of: fields) { _ in commitOnPage() }
+                .onChange(of: extra) { _ in commitOnPage() }
+                .onDisappear {
+                    committedName = name
+                    commitOnPage()
+                }
+        } else {
+            ClashMacSheetFrame(
+                title: group == nil ? .copy("Add Group") : .copy("Group"),
+                subtitle: .copy("Policy Groups"),
+                width: 560, height: 640
+            ) {
+                formContent
+            } leading: {
+                backButtons
+            } trailing: {
+            ClashMacSheetButtons(
+                closeIdentifier: "configuration-center.rule-editor.group.cancel",
+                primaryTitle: .copy("Done"),
+                primaryIdentifier: "configuration-center.rule-editor.group.done",
+                primaryDisabled: !canCommit || !dirty,
+                onClose: close,
+                onPrimary: {
+                    do {
+                        try commit(Self.document(base: extra, fields: fields))
+                        close()
+                    } catch {
+                        self.error = ClashErrorCopy.message(error, locale: locale)
+                    }
+                }
+            )
+            }
+        }
+    }
+
+     
+     
+     
+     
+    private func nodeNameMatchFields(_ arranged: [(section: ConfigurationFieldCopy.ArrangedSection, fields: [ConfigurationField])]) -> [ConfigurationField] {
+        let fields = arranged.first { $0.section.id == "members" }?.fields ?? []
+        var excluded: Set<String> = groupExcludes == nil ? [] : ["exclude-filter", "exclude-type"]
+         
+        if presentation == .page { excluded.formUnion(ClashMacGroupIncludeAll.keys) }
+        let shown = fields.filter { !excluded.contains(Self.key(of: $0)) }
+        return shown.filter { Self.key(of: $0) == "include-all-providers" } + shown.filter { Self.key(of: $0) != "include-all-providers" }
+    }
+
+     
+    private var showsSubList: Bool { listingAllMembers || addingMembers || addingProviders }
+
+     
+     
+    private func commitOnPage() {
+        guard presentation == .page else { return }
+        var shown = fields
+        shown.name = committedName
+         
+        shown.includeAll = ClashMacGroupIncludeAll.keys.contains { ClashMacGroupIncludeAll.isOn($0, in: extra) }
+        let document = Self.document(base: extra, fields: shown, writesIncludeAll: false)
+        guard !committedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, Self.hasMembers(shown),
+              document != group?.document else { return }
+        do {
+            try commit(document)
+            error = nil
+        } catch {
+            self.error = ClashErrorCopy.message(error, locale: locale)
+        }
+    }
+
+    @ViewBuilder private var formContent: some View {
             if listingAllMembers {
                 let shown = shownMembers
                 List {
@@ -2105,6 +2839,8 @@ struct ClashMacRuleGroupEditor: View {
                  
                 Section {
                     TextField(text: $name, prompt: Text(clash: .copy("e.g. 🎬 Netflix"))) { Text(clash: .copy("Group Name")) }
+                         
+                        .onSubmit { committedName = name }
                         .accessibilityIdentifier("configuration-center.rule-editor.group.name")
                     TextField(text: $icon, prompt: Text(verbatim: "https://…")) { Text(clash: .copy("Icon URL")) }
                         .autocorrectionDisabled()
@@ -2152,6 +2888,14 @@ struct ClashMacRuleGroupEditor: View {
                      
                      
                     ForEach(shown.prefix(Self.membersShownAtMost), id: \.self) { memberRow($0, shown: shown) }
+                         
+                        .onMove { offsets, destination in
+                            guard offsets.allSatisfy({ shown.indices.contains($0) && selected.contains(shown[$0]) }) else { return }
+                            var ordered = selected
+                            ordered.move(fromOffsets: IndexSet(offsets.compactMap { ordered.firstIndex(of: shown[$0]) }),
+                                         toOffset: destination < shown.count ? (ordered.firstIndex(of: shown[destination]) ?? ordered.count) : ordered.count)
+                            selected = ordered
+                        }
                     if shown.count > Self.membersShownAtMost {
                         Button { listingAllMembers = true } label: {
                             Text(clash: .format("All %@", [shown.count.formatted(.number.locale(locale))]))
@@ -2188,12 +2932,40 @@ struct ClashMacRuleGroupEditor: View {
                     }
                 }
                 Section {
+                    if presentation == .page {
+                         
+                         
+                        ForEach(ClashMacGroupIncludeAll.keys, id: \.self) { key in
+                            Toggle(isOn: Binding(get: { ClashMacGroupIncludeAll.isOn(key, in: extra) },
+                                                 set: { on in extra = ClashMacGroupIncludeAll.setting(key, on: on, in: extra) })) {
+                                Text(verbatim: copy.entry(forPath: "proxy-groups[*]." + key, language: .init(locale: locale))?.title ?? key)
+                            }
+                            .accessibilityIdentifier("configuration-center.rule-editor.group.include.\(key)")
+                        }
+                    } else {
                     Toggle(isOn: $includeAll) { Text(clash: .copy("Include all proxies")) }
                         .accessibilityIdentifier("configuration-center.rule-editor.group.include-all")
+                    }
                     TextField(text: $filter, prompt: Text(verbatim: "(HK|SG)")) { Text(clash: .copy("Include filter")) }
                         .accessibilityIdentifier("configuration-center.rule-editor.group.filter")
                      
-                    ForEach(arranged.first { $0.section.id == "members" }?.fields ?? [], id: \.path) { field in catalogRow(field) }
+                    ForEach(nodeNameMatchFields(arranged), id: \.path) { field in catalogRow(field) }
+                     
+                     
+                    if let excludes = groupExcludes {
+                        ClashRoutedViewLink {
+                            excludes.page(name, extra, { key, value in
+                                guard let writeKey else { return "" }
+                                let refusal = await writeKey(key, value)
+                                 
+                                if refusal == nil { extra = ClashMacGroupExcludesSync.extra(extra, writing: key, value) }
+                                return refusal
+                            })
+                        } label: {
+                            LabeledContent { Text(clash: excludes.summary(extra)) } label: { Text(clash: excludes.title()) }
+                        }
+                        .accessibilityIdentifier("configuration-center.rule-editor.group.excludes")
+                    }
                 } header: {
                     Text(clash: .copy("Node Name Match"))
                 }
@@ -2214,9 +2986,13 @@ struct ClashMacRuleGroupEditor: View {
                             .accessibilityIdentifier("configuration-center.rule-editor.group.error")
                     }
                 }
+                 
+                if let pageFooter { pageFooter() }
             }
             }
-        } leading: {
+    }
+
+    @ViewBuilder private var backButtons: some View {
             if listingAllMembers {
                 Button { listingAllMembers = false } label: { Text(clash: .copy("Back")) }
                     .accessibilityIdentifier("configuration-center.rule-editor.group.members.all.back")
@@ -2227,23 +3003,10 @@ struct ClashMacRuleGroupEditor: View {
                 Button { addingProviders = false } label: { Text(clash: .copy("Back")) }
                     .accessibilityIdentifier("configuration-center.rule-editor.group.providers.back")
             }
-        } trailing: {
-            ClashMacSheetButtons(
-                closeIdentifier: "configuration-center.rule-editor.group.cancel",
-                primaryTitle: .copy("Done"),
-                primaryIdentifier: "configuration-center.rule-editor.group.done",
-                primaryDisabled: !canCommit || !dirty,
-                onClose: close,
-                onPrimary: {
-                    do {
-                        try commit(Self.document(base: extra, fields: fields))
-                        close()
-                    } catch {
-                        self.error = ClashErrorCopy.message(error, locale: locale)
-                    }
-                }
-            )
-        }
+    }
+
+    var body: some View {
+        framed
          
          
         .onChange(of: kind) { newKind in

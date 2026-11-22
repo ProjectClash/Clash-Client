@@ -36,7 +36,9 @@ struct ConfigurationRefusalReason: Equatable, Sendable {
         static let missingSubRule = "A rule uses the sub-rule %@, which doesn’t exist."
         static let ruleFormat = "This rule isn’t written correctly: %@"
         static let ruleError = "This rule has an error: %@"
-        static let groupMissingMember = "The group %1$@ uses %2$@, which doesn’t exist."
+         
+         
+        static let groupMissingMember = "The group %@ uses %@, which doesn’t exist."
         static let groupError = "The group %@ isn’t set up correctly."
         static let unknownGroupType = "Group type not recognized: %@"
         static let duplicateGroup = "More than one group is named %@."
@@ -63,6 +65,44 @@ struct ConfigurationRefusalReason: Equatable, Sendable {
         pattern: #"(?:^|: )proxy (.+) is the duplicate name$"#)
     private static let yaml = try! NSRegularExpression(pattern: #"(?:^|: )yaml: "#)
 
+     
+     
+     
+     
+    func alertMessage(locale: Locale) -> String {
+        let said = ClashCopy.string(for: summary, locale: locale)
+        let words = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty, !said.contains(words) else { return said }
+        return said + "\n\n" + original
+    }
+
+     
+     
+     
+     
+    var isRecognized: Bool { summary != .copy(Copy.unknown) && summary != .copy(Copy.yaml) }
+
+     
+     
+     
+    var isAboutRules: Bool {
+        guard case .format(let key, _) = summary else { return false }
+        return [Copy.unknownRuleType, Copy.missingPolicy, Copy.missingRuleSet, Copy.missingSubRule,
+                Copy.ruleFormat, Copy.ruleError].contains(key)
+    }
+
+     
+     
+    var isRuleSyntax: Bool {
+        if case .format(let key, _) = summary {
+             
+             
+             
+            return [Copy.unknownRuleType, Copy.ruleFormat].contains(key)
+        }
+        return false
+    }
+
     static func reading(_ sentence: String) -> ConfigurationRefusalReason {
         let text = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
         return ConfigurationRefusalReason(summary: summary(of: text), original: sentence)
@@ -86,7 +126,13 @@ struct ConfigurationRefusalReason: Equatable, Sendable {
         case .evaluationFailed(let message), .threw(let message):
              
              
-            summary = .format(Copy.scriptFailed, [message])
+             
+             
+             
+             
+             
+             
+            return ConfigurationRefusalReason(summary: .format(Copy.scriptFailed, [message]), original: message)
         case .missingMain: summary = .copy(Copy.scriptNoMain)
         case .invalidResult: summary = .copy(Copy.scriptNoResult)
         case .timedOut: summary = .copy(Copy.scriptTimedOut)
@@ -260,6 +306,27 @@ struct ScriptSaveRefusal: Identifiable {
      
     let saveAnyway: (() -> Void)?
     let keepEditing: () -> Void
+     
+     
+     
+     
+     
+    var aftermath: ScriptRefusalAftermath? = nil
+     
+     
+    var editScript: (() -> Void)? = nil
+}
+
+ 
+enum ScriptRefusalAftermath: String, CaseIterable {
+     
+    case handWritten = "This configuration isn't using it. Fix the script, then choose it again."
+     
+    case fromLink = "This configuration isn't using it. The script comes from a link. Once it's fixed there, update it and choose it again."
+     
+    case addedFromLink = "The script was added to Overrides, but this configuration isn't using it. Once it's fixed at the link, update it and choose it again."
+
+    func line(locale: Locale) -> String { ClashCopy.string(rawValue, locale: locale) }
 }
 
  
@@ -275,17 +342,47 @@ private struct ScriptSaveRefusalAlert: ViewModifier {
             isPresented: Binding(get: { refusal != nil }, set: { if !$0 { refusal = nil } }),
             presenting: refusal
         ) { refusal in
-            if let saveAnyway = refusal.saveAnyway {
-                Button("Save Anyway") { saveAnyway() }
-                    .accessibilityIdentifier("scripts.refusal.save-anyway")
+            if refusal.aftermath == nil {
+                 
+                if let saveAnyway = refusal.saveAnyway {
+                    Button("Save Anyway") { saveAnyway() }
+                        .accessibilityIdentifier("scripts.refusal.save-anyway")
+                }
+                Button("Keep Editing", role: .cancel) { refusal.keepEditing() }
+                    .accessibilityIdentifier("scripts.refusal.keep-editing")
+            } else {
+                 
+                 
+                 
+                 
+                if let editScript = refusal.editScript {
+                    Button("Edit Script") { editScript() }
+                        .accessibilityIdentifier("scripts.refusal.edit-script")
+                }
+                if let saveAnyway = refusal.saveAnyway {
+                    Button("Use Anyway") { saveAnyway() }
+                        .accessibilityIdentifier("scripts.refusal.use-anyway")
+                    Button("Cancel", role: .cancel) { refusal.keepEditing() }
+                        .accessibilityIdentifier("scripts.refusal.cancel")
+                } else {
+                    Button("OK", role: .cancel) { refusal.keepEditing() }
+                        .accessibilityIdentifier("scripts.refusal.ok")
+                }
             }
-            Button("Keep Editing", role: .cancel) { refusal.keepEditing() }
-                .accessibilityIdentifier("scripts.refusal.keep-editing")
         } message: { refusal in
              
-            Text(verbatim: ClashCopy.string(for: refusal.reason.summary, locale: locale)
-                + "\n\n" + refusal.reason.original)
+             
+             
+            Text(verbatim: refusal.message(locale: locale))
         }
+    }
+}
+
+extension ScriptSaveRefusal {
+     
+    func message(locale: Locale) -> String {
+        [reason.alertMessage(locale: locale), aftermath?.line(locale: locale)]
+            .compactMap { $0 }.joined(separator: "\n\n")
     }
 }
 
@@ -330,3 +427,105 @@ extension ConfigTransformsError: ClashAuthoredError {
         }
     }
 }
+
+ 
+ 
+ 
+ 
+enum ConfigurationRuleSourceCheck {
+     
+    struct Refusal: Error, Equatable {
+         
+         
+         
+        let line: Int?
+        let reason: ConfigurationRefusalReason
+
+         
+        func message(locale: Locale) -> String {
+            let said = ClashCopy.string(for: reason.summary, locale: locale)
+            guard let line else { return said }
+            return ClashCopy.format("Line %1$@: %2$@", locale: locale, String(line), said)
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func refusal(text: String, document root: OrderedJSON,
+                        previous: Set<String> = []) throws -> Refusal? {
+        guard case .array(let items)? = root.topLevelValue("rules") else { return nil }
+        let lines = ruleLines(in: text)
+        for (index, item) in items.enumerated() {
+            guard case .string(let rule) = item, !previous.contains(rule) else { continue }
+            let fields = rule.split(separator: ",", omittingEmptySubsequences: false).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            let names = Array(Set(fields.dropFirst()))
+            let context: [String: Any] = ["proxies": [String](), "groups": names, "ruleProviders": names,
+                                          "subRules": names, "section": "rules"]
+            let contextJSON = String(decoding: (try? JSONSerialization.data(withJSONObject: context, options: [.sortedKeys]))
+                                     ?? Data("{}".utf8), as: UTF8.self)
+            let item = String(decoding: try JSONSerialization.data(withJSONObject: rule, options: [.fragmentsAllowed]),
+                              as: UTF8.self)
+             
+             
+             
+            guard let sentence = try? ConfigurationTextEditing.check(kind: "rule", itemJSON: item, contextJSON: contextJSON)
+            else { continue }
+            let reason = ConfigurationRefusalReason.reading(sentence)
+            guard reason.isRuleSyntax else { continue }
+            return Refusal(line: lines.count == items.count ? lines[index] : nil, reason: reason)
+        }
+        return nil
+    }
+
+     
+    static func rules(of root: OrderedJSON) -> Set<String> {
+        guard case .array(let items)? = root.topLevelValue("rules") else { return [] }
+        return Set(items.compactMap { if case .string(let rule) = $0 { return rule } else { return nil } })
+    }
+
+     
+     
+    static func ruleLines(in text: String) -> [Int] {
+        var found: [Int] = []
+        var inRules = false
+        for (offset, raw) in text.components(separatedBy: "\n").enumerated() {
+            let line = raw.replacingOccurrences(of: "\r", with: "")
+            if !line.hasPrefix(" "), !line.hasPrefix("\t"), !line.hasPrefix("-"), !line.isEmpty, !line.hasPrefix("#") {
+                inRules = line.hasPrefix("rules:")
+                continue
+            }
+            guard inRules else { continue }
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("- ") { found.append(offset + 1) }
+        }
+        return found
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+enum RuleSchemeRefusalNotice {
+    static let notInUse = "The new rules in “%@” aren’t in use. The previous rules are still running."
+    static let fixAtLink = "Once it’s fixed at the link, update it again."
+     
+     
+    static let fixTheLine = "Fix that line, then save again."
+
+    static func lines(for failure: ConfigurationFailure, schemeName: String, fromLink: Bool) -> [ClashDisplayText]? {
+        let reason = ConfigurationRefusalReason.reading(failure.kernelSentence)
+        guard reason.isAboutRules else { return nil }
+        return [.format(notInUse, [schemeName]), reason.summary] + (fromLink ? [.copy(fixAtLink)] : [])
+    }
+}
+

@@ -11,6 +11,7 @@ import Foundation
  
  
  
+ 
 public struct ProviderRefreshState: Decodable, Equatable, Sendable {
      
      
@@ -69,10 +70,16 @@ public struct ProviderRefreshState: Decodable, Equatable, Sendable {
         public let countBefore: Int?
         public let countAfter: Int?
         public let subscriptionInfo: String?
+         
+         
+         
+         
+        public let sourceSHA256: String?
 
         private enum CodingKeys: String, CodingKey {
             case kind, url, interval, lastCheckedAt, lastChangedAt, nextDueAt, lastAttemptAt, result, error,
-                 pendingReason, pendingSHA256, pendingWait, pendingCheckedAt, countBefore, countAfter, subscriptionInfo
+                 pendingReason, pendingSHA256, pendingWait, pendingCheckedAt, countBefore, countAfter, subscriptionInfo,
+                 sourceSHA256
         }
 
         public init(from decoder: Decoder) throws {
@@ -93,6 +100,7 @@ public struct ProviderRefreshState: Decodable, Equatable, Sendable {
             countBefore = try c.decodeIfPresent(Int.self, forKey: .countBefore)
             countAfter = try c.decodeIfPresent(Int.self, forKey: .countAfter)
             subscriptionInfo = Self.nonEmpty(try c.decodeIfPresent(String.self, forKey: .subscriptionInfo))
+            sourceSHA256 = Self.nonEmpty(try c.decodeIfPresent(String.self, forKey: .sourceSHA256))
         }
 
         private static func nonEmpty(_ value: String?) -> String? {
@@ -141,6 +149,27 @@ public struct ProviderRefreshState: Decodable, Equatable, Sendable {
      
     public func requestKey(kind: String, name: String) -> String? {
         running?.providers[Self.key(kind: kind, name: name)]
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    public static let cacheDirectoryName = "cache"
+    public static let sourceFileName = "source"
+    public static let pendingFileName = "pending"
+
+     
+     
+    public static func cacheFile(_ fileName: String, requestKey: String, workingDirectory: URL) -> URL? {
+        guard !requestKey.isEmpty, requestKey != ".", requestKey != "..", !requestKey.contains("/") else { return nil }
+        return workingDirectory.appendingPathComponent(directoryName, isDirectory: true)
+            .appendingPathComponent(cacheDirectoryName, isDirectory: true)
+            .appendingPathComponent(requestKey, isDirectory: true)
+            .appendingPathComponent(fileName)
     }
 
      

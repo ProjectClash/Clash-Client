@@ -25,6 +25,11 @@ import SwiftUI
  
  
  
+ 
+ 
+ 
+ 
+ 
 struct ClashMacTunnelSettingsView: View {
     @ObservedObject var vpn: VPNController
      
@@ -87,12 +92,17 @@ struct ClashMacTunnelSettingsView: View {
 
             Section {
                 Toggle("Hide VPN Icon", isOn: binding(\.hideVPNIcon))
+                    .disabled(!shown.hideVPNIconSwitchIsEnabled(moduleNotes: moduleSets))
                     .accessibilityIdentifier("tunnel.hideVPNIcon")
             } header: {
                 Text("Hide VPN Icon")
             } footer: {
                 VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
                     Text("If YES, the VPN badge stays off the status bar: the tunnel leaves 0.0.0.0/31 and ::/127 outside its routes. Takes effect on the next connection.")
+                    if !shown.hideVPNIconSwitchIsEnabled(moduleNotes: moduleSets) {
+                        Text("Has no effect while Include All Networks is on: the system doesn't support both together, and some apps fail to load.")
+                            .accessibilityIdentifier("tunnel.hideVPNIcon.include-all-networks-note")
+                    }
                     moduleNote(.hideVPNIcon)
                 }
             }

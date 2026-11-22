@@ -54,6 +54,23 @@ struct ProfileQuickAddState: Equatable {
      
      
     private(set) var failure: ConfigurationFailure?
+#if os(iOS)
+     
+     
+     
+    private(set) var addedALink = false
+#endif
+
+     
+     
+     
+    func failureText(locale: Locale) -> String? {
+        guard let failure else { return nil }
+#if os(iOS)
+        if addedALink { return LinkAddFailureText.text(for: failure, locale: locale) }
+#endif
+        return ProfileSwitchFailureText.cardText(for: failure, locale: locale)
+    }
 
     var isBusy: Bool {
         switch phase {
@@ -95,6 +112,9 @@ struct ProfileQuickAddState: Equatable {
         pending = nil
         nodesOnly = nil
         failure = nil
+#if os(iOS)
+        addedALink = false
+#endif
         switch input {
         case .link(let url, _):
             text = url
@@ -115,6 +135,9 @@ struct ProfileQuickAddState: Equatable {
         text = ""
         nodesOnly = nil
         failure = nil
+#if os(iOS)
+        addedALink = false
+#endif
     }
 
      
@@ -122,7 +145,18 @@ struct ProfileQuickAddState: Equatable {
         phase = .failed(message)
         failure = classified
         nodesOnly = offer
+#if os(iOS)
+        addedALink = false
+#endif
     }
+
+#if os(iOS)
+     
+     
+    mutating func failedAddingALink() {
+        addedALink = true
+    }
+#endif
 }
 
  
@@ -157,6 +191,13 @@ final class ProfileQuickAddController: ObservableObject {
     var onFirstProfileCreated: (() -> Void)?
      
     var onSourceAdded: ((ConfigurationLibrarySnapshot) -> Void)?
+     
+     
+    var onNodeSourceAdded: ((AddedNodeSource) -> Void)?
+     
+     
+     
+    var onRulesAdded: ((ConfigurationLibrarySnapshot, ProfileQuickAddInput) -> Void)?
      
     var onScriptAdded: ((ConfigScript) -> Void)?
      
@@ -298,6 +339,19 @@ final class ProfileQuickAddController: ObservableObject {
         return AddProfileDraft.refusedNodeCount(for: error).map { .init(input: input, nodes: $0) }
     }
 
+#if os(iOS)
+     
+     
+     
+    nonisolated static func addsALink(_ input: ProfileQuickAddInput, target: Target) -> Bool {
+        guard case .link = input else { return false }
+        switch target {
+        case .profile, .source, .rules: return true
+        case .scripts: return false
+        }
+    }
+#endif
+
      
     func importNodesOnly() {
         guard let offer = state.nodesOnly else { return }
@@ -321,13 +375,15 @@ final class ProfileQuickAddController: ObservableObject {
                      
                     if outcome.isFirstUserProfile { onFirstProfileCreated?() }
                 case .source:
-                    let snapshot = try await model.quickAddSource(input, nodesOnly: nodesOnly)
+                    let added = try await model.quickAddNodeSource(input, nodesOnly: nodesOnly)
                     state.succeed()
-                    onSourceAdded?(snapshot)
+                    onSourceAdded?(added.library)
+                    onNodeSourceAdded?(added)
                 case .rules:
                     let snapshot = try await model.quickAddRules(input)
                     state.succeed()
                     onSourceAdded?(snapshot)
+                    onRulesAdded?(snapshot, input)
                 case .scripts:
                      
                      
@@ -352,6 +408,9 @@ final class ProfileQuickAddController: ObservableObject {
                     failure: classified,
                     nodesOnly: Self.nodesOnly(for: error, input: input, target: target)
                 )
+#if os(iOS)
+                if Self.addsALink(input, target: target) { state.failedAddingALink() }
+#endif
             }
         }
     }
@@ -384,28 +443,79 @@ struct ProfileQuickAddCard: View {
     var onFirstProfileCreated: (() -> Void)? = nil
      
     var manual: (() -> Void)? = nil
+     
+     
+    var showsScan = true
+     
+     
+     
+    var header: String? = nil
+     
+     
+     
+    var footer: ClashDisplayText? = nil
+     
+     
+    var manualKey: String? = nil
+     
+     
+     
+    var footerView: AnyView? = nil
+     
+     
+    var moreRows: AnyView? = nil
 
     var body: some View {
-        Section {
-             
-             
-            HStack(spacing: ClashTheme.Spacing.standard) {
-                linkField
-                ClashPasteControl(style: .square) { pasted in
-                    controller.acceptPasted(pasted)
+        Group {
+            if let footer {
+                Section {
+                    fields
+                } header: {
+                    heading
+                } footer: {
+                    Text(clash: footer)
                 }
-                .disabled(controller.state.isBusy)
+            } else if let footerView {
+                Section {
+                    fields
+                } header: {
+                    heading
+                } footer: {
+                    footerView
+                }
+            } else {
+                Section {
+                    fields
+                } header: {
+                    heading
+                }
             }
-            statusRow
-            actionRows
-        } header: {
-             
-             
-            ClashConfigurationLibraryHeader(title: .copy(controller.headerKey))
         }
         .onAppear {
             controller.onFirstProfileCreated = onFirstProfileCreated
         }
+    }
+
+    @ViewBuilder
+    private var fields: some View {
+         
+         
+        HStack(spacing: ClashTheme.Spacing.standard) {
+            linkField
+            ClashPasteControl(style: .square) { pasted in
+                controller.acceptPasted(pasted)
+            }
+            .disabled(controller.state.isBusy)
+        }
+        statusRow
+        actionRows
+        if let moreRows { moreRows }
+    }
+
+     
+     
+    private var heading: some View {
+        ClashConfigurationLibraryHeader(title: .copy(header ?? controller.headerKey))
     }
 
      
@@ -418,13 +528,15 @@ struct ProfileQuickAddCard: View {
      
     @ViewBuilder
     private var actionRows: some View {
-        Button {
-            controller.showsQRCapture = true
-        } label: {
-            Label(ClashCopy.key("Scan QR Code"), systemImage: ClashSymbol.qrcodeViewfinder.name)
+        if showsScan {
+            Button {
+                controller.showsQRCapture = true
+            } label: {
+                Label(ClashCopy.key("Scan QR Code"), systemImage: ClashSymbol.qrcodeViewfinder.name)
+            }
+            .disabled(controller.state.isBusy)
+            .accessibilityIdentifier(identifiers.scanIdentifier)
         }
-        .disabled(controller.state.isBusy)
-        .accessibilityIdentifier(identifiers.scanIdentifier)
         Button {
             controller.showsImporter = true
         } label: {
@@ -435,7 +547,11 @@ struct ProfileQuickAddCard: View {
         if let manual {
             Button(action: manual) {
                  
-                Label(ClashCopy.key(controller.target == .rules ? "quick-add.new.rules" : "quick-add.new.node"),
+                 
+                 
+                 
+                Label(ClashCopy.key(manualKey ?? (controller.target == .scripts ? "New Script"
+                                    : controller.target == .rules ? "quick-add.new.rules" : "quick-add.new.node")),
                       systemImage: ClashSymbol.docBadgePlus.name)
             }
             .disabled(controller.state.isBusy)
@@ -478,7 +594,7 @@ struct ProfileQuickAddCard: View {
             busyRow(ConfigurationSourceRecord.displayLabel(ConfigurationBuiltins.customNodesName, origin: .customNodes, locale: locale))
         case .failed(let message):
             ClashStatusMessage(
-                text: .verbatim(controller.state.failure.map { ProfileSwitchFailureText.cardText(for: $0, locale: locale) } ?? message),
+                text: .verbatim(controller.state.failureText(locale: locale) ?? message),
                 kind: .error
             )
                 .accessibilityIdentifier(identifiers.statusIdentifier)

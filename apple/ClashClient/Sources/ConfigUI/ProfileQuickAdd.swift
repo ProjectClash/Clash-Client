@@ -15,6 +15,14 @@ struct ProfileQuickAddOutcome: Equatable {
     var runsAsOriginal = false
 }
 
+ 
+ 
+ 
+struct AddedNodeSource {
+    let id: String
+    let library: ConfigurationLibrarySnapshot
+}
+
 enum ProfileQuickAddInput: Equatable {
      
      

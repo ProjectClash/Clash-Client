@@ -70,6 +70,10 @@ public struct ClashTowerRulesLibraryView: View {
      
      
      
+    public var ruleSetsRow: (() -> AnyView)?
+     
+     
+     
     public var deletionUndoable = false
     public func deletingWithUndo(_ undoable: Bool = true) -> Self { var copy = self; copy.deletionUndoable = undoable; return copy }
     @State private var deleting: ConfigurationRuleScheme?
@@ -95,7 +99,8 @@ public struct ClashTowerRulesLibraryView: View {
         updateCollection: ((ConfigurationCollectionEntry) -> Void)? = nil,
         updateFailed: Bool = false, dismissUpdate: (() -> Void)? = nil, refreshingSchemes: Set<String> = [],
         deleteSource: ((String) -> Void)? = nil, copyLink: ((String) -> Void)? = nil,
-        refreshAll: (() async -> Void)? = nil) {
+        refreshAll: (() async -> Void)? = nil, ruleSetsRow: (() -> AnyView)? = nil) {
+        self.ruleSetsRow = ruleSetsRow
         self.updateFailed = updateFailed; self.dismissUpdate = dismissUpdate; self.refreshingSchemes = refreshingSchemes
         self.deleteSource = deleteSource; self.copyLink = copyLink; self.refreshAll = refreshAll
         self.updateAll = updateAll; self.updateProgress = updateProgress; self.updateStatus = updateStatus
@@ -123,12 +128,14 @@ public struct ClashTowerRulesLibraryView: View {
         }
         return library.sources.first { $0.id == scheme.sourceID } ?? ConfigurationBuiltins.records.first { $0.id == scheme.sourceID }
     }
-    private func displayLabel(_ scheme: ConfigurationRuleScheme) -> String {
+    private func displayLabel(_ scheme: ConfigurationRuleScheme) -> String { Self.displayLabel(scheme, locale: locale) }
+     
+    public static func displayLabel(_ scheme: ConfigurationRuleScheme, locale: Locale) -> String {
         let id = scheme.id
         if id == ConfigurationBuiltins.basicRuleID { return ClashCopy.string("Default Configuration", locale: locale) }
         if id == ConfigurationBuiltins.lazyRuleID { return ClashCopy.string("Lazy Configuration", locale: locale) }
         if scheme.baseSchemeID.map(ConfigurationBuiltins.isNative) == true {
-            return scheme.label + " · " + ClashCopy.string("Custom", locale: locale)
+            return ClashCopy.format("%@ (Modified)", locale: locale, scheme.labelAsRead(locale: locale))
         }
         return scheme.label
     }
@@ -197,8 +204,11 @@ public struct ClashTowerRulesLibraryView: View {
                     let items = schemes.filter { group.contains($0, library: library) }
                     let entries = Self.sectionEntries(group, collections: collections, schemes: schemes, library: library)
                     if !items.isEmpty || !entries.isEmpty {
-                        section(group.title, items: items, entries: entries)
+                        section(group.title, items: items, entries: entries).id("\(group)-\(refusedRound)")
                     }
+                }
+                if let ruleSetsRow {
+                    Section { ruleSetsRow() }
                 }
                 if let updateAll {
                     Section {
@@ -283,7 +293,7 @@ public struct ClashTowerRulesLibraryView: View {
         .overlay {
             if busy && schemes.isEmpty { ProgressView().allowsHitTesting(false) }
         }
-        .modifier(ClashLibraryTabTitle(isCenterSection: isCenterSection, standalone: .copy("Manage Rule Schemes")))
+        .modifier(ClashLibraryTabTitle(isCenterSection: isCenterSection, standalone: pageTitle ?? .copy("Manage Rule Schemes")))
         .clashToolbarUnlessInPanel {
             ToolbarItem(placement: .cancellationAction) { if showsClose { ClashSheetCloseButton(dismiss: close) } }
             ToolbarItem(placement: .primaryAction) {
@@ -321,10 +331,28 @@ public struct ClashTowerRulesLibraryView: View {
                              presenting: renaming, text: $renameText,
                              field: ClashTextFieldAlertField(placeholder: "Name",
                                                              identifier: "configuration.rules.library.rename.name")) { renaming, typed in
-            let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !name.isEmpty, name != renaming.label { rename?(renaming.id, name) }
+            if let name = renaming.newName(typed: typed, locale: locale) { rename?(renaming.id, name) }
         }
     }
+     
+     
+     
+    public var pageTitle: ClashDisplayText?
+     
+     
+    public var usage: ((String) -> ClashDisplayText?)?
+    public func titled(_ title: ClashDisplayText?, usage: ((String) -> ClashDisplayText?)?) -> Self {
+        var copy = self; copy.pageTitle = title; copy.usage = usage; return copy
+    }
+     
+     
+     
+     
+    public var refusedRound = 0
+    public func refused(_ round: Int) -> Self {
+        var copy = self; copy.refusedRound = round; return copy
+    }
+
      
      
      
@@ -397,6 +425,7 @@ public struct ClashTowerRulesLibraryView: View {
                         collectionRows(children)
                     } label: {
                         schemeRow(scheme, showsInfo: false)
+                            .clashOutlineToggle(isExpanded: expansion(scheme.id))
                     }
                 }
             }
@@ -420,7 +449,8 @@ public struct ClashTowerRulesLibraryView: View {
         return Button { open(scheme.id) } label: {
             HStack(spacing: 8) {
                 ClashConfigurationLibraryRow(title: displayLabel(scheme),
-                    count: ClashConfigurationSourceCopy.ruleSummary(record(scheme), locale: locale), showsInfo: showsInfo)
+                    count: ClashConfigurationSourceCopy.ruleSummary(record(scheme), locale: locale), showsInfo: showsInfo,
+                    inUse: usage?(scheme.id))
                 if refreshing { ProgressView().controlSize(.small) }
             }
         }.buttonStyle(.plain)
@@ -445,7 +475,7 @@ public struct ClashTowerRulesLibraryView: View {
                     .accessibilityIdentifier("configuration.rules.library.copy-link")
                 }
                 if rename != nil, Self.canRename(scheme) {
-                    Button { renameText = scheme.label; renaming = scheme } label: {
+                    Button { renameText = scheme.labelAsRead(locale: locale); renaming = scheme } label: {
                         Label("Rename…", systemImage: ClashSymbol.pencil.rawValue)
                     }
                     .accessibilityIdentifier("configuration.rules.library.rename")
@@ -560,9 +590,155 @@ public struct ClashTowerGroupPageRequest {
     public let all: [ConfigurationRuleDraft.Group]
     public let nodeSections: [ConfigurationRuleTargetCandidates.Section]
     public let save: (OrderedJSON) async throws -> Void
+     
+     
+     
+    public var mode: ClashTowerGroupPageMode = .editing
+     
+     
+    public var deletion: ClashTowerGroupPageDeletion? = nil
+     
+     
+    public var close: (() -> Void)? = nil
+     
+     
+     
+     
+    public var targetSearch: ClashRuleTargetSearchHook? = nil
     public init(group: ConfigurationRuleDraft.Group, index: Int, all: [ConfigurationRuleDraft.Group],
                 nodeSections: [ConfigurationRuleTargetCandidates.Section], save: @escaping (OrderedJSON) async throws -> Void) {
         self.group = group; self.index = index; self.all = all; self.nodeSections = nodeSections; self.save = save
+    }
+}
+
+ 
+ 
+public enum ClashTowerGroupPageMode {
+     
+    case editing
+     
+     
+     
+    case adding(cancel: () -> Void)
+     
+     
+    case reading
+
+    public var isAdding: Bool { if case .adding = self { return true }; return false }
+    public var isReading: Bool { if case .reading = self { return true }; return false }
+}
+
+ 
+ 
+ 
+public struct ClashTowerGroupPageDeletion {
+     
+    public let users: ConfigurationRuleGroupUsers
+    public let delete: () -> Void
+     
+     
+    public var dismissesPage = true
+    public init(users: ConfigurationRuleGroupUsers, delete: @escaping () -> Void) {
+        self.users = users; self.delete = delete
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+public struct ClashTowerGroupDeletionReport {
+    public let deletion: ConfigurationRuleGroupDeletion
+    public let restore: @MainActor () async throws -> Void
+    public init(deletion: ConfigurationRuleGroupDeletion, restore: @escaping @MainActor () async throws -> Void) {
+        self.deletion = deletion; self.restore = restore
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+public struct ClashTowerGroupUndoUnavailable: ClashAuthoredError {
+    public init() {}
+    public var displayText: ClashDisplayText {
+        .copy("The rule scheme’s page is closed and the deletion is saved. To change it back, open the scheme in the rule library.")
+    }
+}
+
+ 
+ 
+ 
+ 
+public enum ClashTowerGroupDeletionCopy {
+     
+     
+     
+    public static func refusal(_ users: ConfigurationRuleGroupUsers, group: String, locale: Locale) -> String? {
+        if !users.groups.isEmpty {
+             
+            guard users.groups.count > shownGroups else {
+                return ClashCopy.format("Can’t delete: it’s in %@. Remove it from those groups first.", locale: locale,
+                                        quoted(users.groups, locale: locale, closing: true))
+            }
+            return ClashCopy.format("Can’t delete: it’s in %@ and more, %@ policy groups in all. Remove it from those groups first.",
+                                    locale: locale, quoted(Array(users.groups.prefix(shownGroups)), locale: locale, closing: false),
+                                    ClashCopy.count(users.groups.count, locale: locale))
+        }
+        if users.finalRule {
+            return ClashCopy.string("Can’t delete: the final rule points to it. Point the final rule elsewhere first.", locale: locale)
+        }
+        if users.elsewhere { return ClashCopy.format("Change references to this group before deleting it: %@", locale: locale, group) }
+        return nil
+    }
+
+     
+    static let shownGroups = 3
+
+     
+    public static let consequence = "Rules that point to it are deleted with it."
+
+     
+     
+    public static func deleted(_ deletion: ConfigurationRuleGroupDeletion) -> ClashDisplayText {
+        switch deletion.rules.count {
+        case 0: return ClashFeedbackCopy.deleted(deletion.name)
+        case 1: return .format("Deleted “%@” and the rule that used it", [deletion.name])
+        default: return .format("Deleted “%@” and the %@ rules that used it", [deletion.name, String(deletion.rules.count)])
+        }
+    }
+
+     
+     
+     
+     
+    static func quoted(_ names: [String], locale: Locale, closing: Bool) -> String {
+        guard !locale.identifier.hasPrefix("zh") else { return names.map { "「" + $0 + "」" }.joined() }
+        let quoted = names.map { "“" + $0 + "”" }
+        return closing ? quoted.formatted(.list(type: .and).locale(locale)) : quoted.joined(separator: ", ")
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public enum ClashTowerRowRefusal {
+     
+     
+     
+     
+    @MainActor @discardableResult
+    public static func say(_ sentence: String, in feedback: ClashFeedbackCenter?, operation: String, identifier: String) -> Bool {
+        guard let feedback else { return false }
+        feedback.show(.error(title: .verbatim(sentence), accessibilityIdentifier: identifier), operation: operation)
+        return true
     }
 }
 
@@ -615,8 +791,10 @@ public struct ClashTowerRuleEditorRequest {
  
  
  
+ 
+ 
 public enum ClashTowerRuleFocus: String, Sendable {
-    case all, rules, groups, ruleSets, subRules
+    case all, rules, groups
 }
 
  
@@ -626,6 +804,10 @@ public enum ClashTowerRuleFocus: String, Sendable {
 public enum ClashTowerSingleObject: Equatable, Sendable {
      
     case group(String)
+     
+     
+     
+    case newGroup
 }
 
  
@@ -637,8 +819,10 @@ public enum ClashTowerListOpening: Equatable, Sendable {
 
  
  
-final class ClashTowerSubRulesBox: ObservableObject {
-    @Published var subRules: [ConfigurationRuleDraft.SubRule] = []
+ 
+@MainActor
+final class ClashTowerGroupUndoChannel: ObservableObject {
+    var restore: (@MainActor (ConfigurationRuleGroupDeletion) async throws -> Void)?
 }
 
 public struct ClashTowerRuleCustomizationView: View {
@@ -657,6 +841,15 @@ public struct ClashTowerRuleCustomizationView: View {
     @State private var busy = false
     @State private var error: String?
      
+    @Environment(\.clashFeedback) private var feedback
+     
+     
+     
+     
+     
+     
+    @State private var refusedRound = 0
+     
      
     @State private var notice: ClashDisplayText?
     @State private var modal: Modal?
@@ -667,8 +860,18 @@ public struct ClashTowerRuleCustomizationView: View {
     @State private var renameText = ""
     @Environment(\.locale) private var locale
     @State private var deletingLocal: ConfigurationLocalRuleSet?
-    @State private var deletingGroup: UUID?
     @State private var confirmsLeave = false
+     
+     
+    private let groupDeleted: ((ClashTowerGroupDeletionReport) -> Void)?
+     
+     
+    private let restoreGroupDeletion: (@MainActor (ConfigurationRuleGroupDeletion, String) async throws -> Void)?
+     
+    @StateObject private var groupUndo = ClashTowerGroupUndoChannel()
+     
+     
+    @Environment(\.clashRuleTargetSearch) private var memberSearch
     private let pushed: Bool
     private let focus: ClashTowerRuleFocus
      
@@ -676,6 +879,16 @@ public struct ClashTowerRuleCustomizationView: View {
      
      
     private let savesEachChange: Bool
+     
+     
+     
+     
+     
+     
+    private let readOnly: Bool
+     
+     
+    private let takenSchemeNames: Set<String>
      
      
     private let groupTypes: [String]
@@ -703,7 +916,16 @@ public struct ClashTowerRuleCustomizationView: View {
     @State private var changeCount = 0
     @State private var autosaving = false
     @State private var autosaveAgain = false
-    @AppStorage("clash.configuration.ruleGroupEmoji") private var emojis = true
+    @AppStorage(ClashTowerRuleCustomizationView.groupIconsPreferenceKey) private var emojis = true
+     
+     
+     
+    public static let groupIconsPreferenceKey = "clash.configuration.ruleGroupEmoji"
+     
+     
+     
+     
+    private let offersGroupIcons: Bool
     private let save: (ConfigurationRuleDraft) async throws -> ConfigurationRuleDraft
     private let download: (String) async throws -> ConfigurationRuleSetContent
     private let saveLocal: (ConfigurationLocalRuleSet) async throws -> (ConfigurationRuleDraft, [ConfigurationLocalRuleSet])
@@ -727,8 +949,7 @@ public struct ClashTowerRuleCustomizationView: View {
      
     private let nodeCandidates: (() async -> [ConfigurationRuleTargetCandidates.Section])?
     @State private var nodeSections: [ConfigurationRuleTargetCandidates.Section] = []
-    private enum Modal: String, Identifiable { case identity, group, local, copy, manual, rule, subRule; var id: String { rawValue } }
-    @StateObject private var subRulesBox = ClashTowerSubRulesBox()
+    private enum Modal: String, Identifiable { case identity, group, local, copy, manual, rule; var id: String { rawValue } }
     @State private var groupID: UUID?
     @State private var localID: String?
      
@@ -745,8 +966,16 @@ public struct ClashTowerRuleCustomizationView: View {
         focus: ClashTowerRuleFocus = .all, savesEachChange: Bool = false,
         groupTypes: [String] = [], groupPage: ((ClashTowerGroupPageRequest) -> AnyView)? = nil,
         single: ClashTowerSingleObject? = nil, opening: ClashTowerListOpening = .list,
-        rename: ((String, String) async throws -> Void)? = nil) {
+        rename: ((String, String) async throws -> Void)? = nil,
+        takenSchemeNames: Set<String> = [], readOnly: Bool = false, offersGroupIcons: Bool = true,
+        groupDeleted: ((ClashTowerGroupDeletionReport) -> Void)? = nil,
+        restoreGroupDeletion: (@MainActor (ConfigurationRuleGroupDeletion, String) async throws -> Void)? = nil) {
+        self.offersGroupIcons = offersGroupIcons
+        self.groupDeleted = groupDeleted
+        self.restoreGroupDeletion = restoreGroupDeletion
         self.rename = rename
+        self.takenSchemeNames = takenSchemeNames
+        self.readOnly = readOnly
         self.nodeCandidates = nodeCandidates
         self.groupTypes = groupTypes
         self.groupPage = groupPage
@@ -817,13 +1046,130 @@ public struct ClashTowerRuleCustomizationView: View {
      
      
      
+     
     private func groupCreator(_ done: @escaping (String?) -> Void) -> AnyView {
-        AnyView(ClashTowerGroupEditor(group: ClashTowerGroupEditor.blankGroup, all: draft.groups, identityOnly: false, nodeSections: nodeSections, save: { value in
+         
+        guard let groupPage else { return AnyView(EmptyView()) }
+        return groupPage(newGroupRequest(sections: nodeSections, save: { value in
             try await apply { snapshot in var changed = snapshot; try changed.setGroup(value, groupID: nil); return changed }
-            var name = ""
-            if case .string(let value) = value.topLevelValue("name") { name = value }
-            done(name.isEmpty ? nil : name)
-        }, close: { done(nil) }))
+            done(Self.groupName(value))
+        }, cancel: { done(nil) }))
+    }
+
+     
+    private static func groupName(_ document: OrderedJSON) -> String? {
+        if case .string(let value)? = document.topLevelValue("name"), !value.isEmpty { return value }
+        return nil
+    }
+
+     
+     
+    public static var blankGroup: ConfigurationRuleDraft.Group {
+        .init(document: .object([("name", .string("")), ("type", .string("select")), ("proxies", .array([]))]))
+    }
+
+     
+     
+    private func pageRequest(for group: ConfigurationRuleDraft.Group, index: Int,
+                             sections: [ConfigurationRuleTargetCandidates.Section]) -> ClashTowerGroupPageRequest {
+        var request = ClashTowerGroupPageRequest(group: group, index: index, all: draft.groups, nodeSections: sections,
+                                                 save: { value in try await saveGroup(value, id: group.id) })
+        request.targetSearch = memberSearch
+        if readOnly {
+            request.mode = .reading
+        } else {
+            var deletion = ClashTowerGroupPageDeletion(users: draft.groupUsers(group.id)) { deleteGroup(group.id) }
+             
+            deletion.dismissesPage = single == nil
+            request.deletion = deletion
+        }
+        return request
+    }
+
+     
+     
+    private func newGroupRequest(sections: [ConfigurationRuleTargetCandidates.Section],
+                                 save: @escaping (OrderedJSON) async throws -> Void,
+                                 cancel: @escaping () -> Void) -> ClashTowerGroupPageRequest {
+        var request = ClashTowerGroupPageRequest(group: Self.blankGroup, index: draft.groups.count, all: draft.groups,
+                                                 nodeSections: sections, save: save)
+        request.mode = .adding(cancel: cancel)
+        request.targetSearch = memberSearch
+        return request
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    private func deleteGroup(_ id: UUID) {
+        guard !readOnly, let group = draft.groups.first(where: { $0.id == id }) else { return }
+        let users = draft.groupUsers(id)
+        if let refused = ClashTowerGroupDeletionCopy.refusal(users, group: group.name, locale: locale) {
+            sayRefusal(refused)
+            return
+        }
+        var changed = draft
+        let deletion: ConfigurationRuleGroupDeletion?
+        do { deletion = try changed.deleteRoutingGroupRestorably(id) } catch {
+             
+             
+             
+            sayRefusal(ClashConfigurationRuleGroupCopy.message(error, locale: locale))
+            return
+        }
+        guard let deletion else { return }
+        if modal != nil { modal = nil }
+        if single != nil {
+             
+             
+            perform {
+                let saved = try await save(changed)
+                groupUndo.restore = nil
+                close()
+                report(deletion, schemeID: saved.schemeID)
+            }
+            return
+        }
+         
+         
+         
+         
+         
+        Task { @MainActor in
+            do { try await apply { snapshot in var value = snapshot; try value.deleteRoutingGroup(id); return value } } catch {
+                sayRefusal(ClashTowerGroupDeletionCopy.refusal(draft.groupUsers(id), group: group.name, locale: locale)
+                           ?? ClashConfigurationRuleGroupCopy.message(error, locale: locale))
+            }
+        }
+        report(deletion, schemeID: draft.schemeID)
+    }
+
+     
+     
+     
+    private func report(_ deletion: ConfigurationRuleGroupDeletion, schemeID: String) {
+        guard let groupDeleted else { return }
+        let channel = groupUndo
+        let fallback = savesEachChange ? restoreGroupDeletion : nil
+        groupDeleted(ClashTowerGroupDeletionReport(deletion: deletion) { [weak channel] in
+            if let restore = channel?.restore {
+                try await restore(deletion)
+            } else if let fallback {
+                try await fallback(deletion, schemeID)
+            } else {
+                throw ClashTowerGroupUndoUnavailable()
+            }
+        })
+    }
+
+     
+     
+    private func restoreIntoList(_ deletion: ConfigurationRuleGroupDeletion) async throws {
+        try await apply { snapshot in var value = snapshot; try value.restoreGroupDeletion(deletion); return value }
     }
      
      
@@ -834,23 +1180,28 @@ public struct ClashTowerRuleCustomizationView: View {
             if autosaving {
                 ProgressView().accessibilityIdentifier("configuration.rules.focus.saving")
             }
-            Button { addToFocus() } label: { Image(systemName: ClashSymbol.plus.rawValue) }
-                .accessibilityLabel(Text(ClashCopy.key(addTitle)))
-                .accessibilityIdentifier("configuration.rules.focus.add")
-                .disabled(busy)
+             
+            if !readOnly {
+                Button { addToFocus() } label: { Image(systemName: ClashSymbol.plus.rawValue) }
+                    .accessibilityLabel(Text(ClashCopy.key(addTitle)))
+                    .accessibilityIdentifier("configuration.rules.focus.add")
+                    .disabled(busy)
+            }
         }
-        if focus == .all {
-            Button {
-                var transaction = Transaction(); transaction.disablesAnimations = true
-                withTransaction(transaction) { reordering.toggle() }
-            } label: { ClashActionProgressLabel(.copy(reordering ? "Done" : "Edit"), isBusy: busy && pushed) }.foregroundStyle(.tint).disabled(busy)
-        } else if focus != .ruleSets {
-             
-             
-             
-            #if os(iOS)
-            ClashTowerReorderButton(identifier: "configuration.rules.focus.reorder")
-            #endif
+        if !readOnly {
+            if focus == .all {
+                Button {
+                    var transaction = Transaction(); transaction.disablesAnimations = true
+                    withTransaction(transaction) { reordering.toggle() }
+                } label: { ClashActionProgressLabel(.copy(reordering ? "Done" : "Edit"), isBusy: busy && pushed) }.foregroundStyle(.tint).disabled(busy)
+            } else {
+                 
+                 
+                 
+                #if os(iOS)
+                ClashTowerReorderButton(identifier: "configuration.rules.focus.reorder")
+                #endif
+            }
         }
          
          
@@ -882,15 +1233,37 @@ public struct ClashTowerRuleCustomizationView: View {
                  
                  
                 ClashTowerNodeSectionsLoader(sections: nodeSections, load: nodesLoaded ? nil : nodeCandidates) { sections in
-                    groupPage(ClashTowerGroupPageRequest(group: group, index: index, all: draft.groups, nodeSections: sections,
-                                                        save: { value in try await saveGroup(value, id: group.id) }))
+                    groupPage(pageRequest(for: group, index: index, sections: sections))
                 }
                     .clashPushedDetailPage()
                     .clashNativePushBoundary()
             } label: { label() }
         } else {
-            Button { groupID = group.id; modal = .group } label: { label() }.buttonStyle(.plain)
+             
+            label()
         }
+    }
+     
+     
+    private func groupLabel(_ group: ConfigurationRuleDraft.Group) -> some View {
+        HStack(spacing: 10) {
+            if emojis {
+                ClashTowerGroupIconView(icon: ClashTowerGroupIcon.read(group.document), size: ClashTheme.Layout.proxyGroupIconSize) {
+                    if let symbol = emoji(group.name) { Text(verbatim: symbol).font(.title3) }
+                    else { Image(systemName: "rectangle.3.group").font(.body).foregroundStyle(.secondary) }
+                }.frame(width: 28, height: 28)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                    .accessibilityIdentifier("configuration.rules.group.row.icon")
+            }
+            Text(verbatim: displayName(group.name)).foregroundStyle(Color.primary)
+                .lineLimit(1).truncationMode(.tail).layoutPriority(1)
+            Spacer(minLength: 12)
+            Text(clash: summary(group)).font(.subheadline).foregroundStyle(Color.secondary)
+                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 140, alignment: .trailing)
+            if groupPage == nil {
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+            }
+        }.frame(minHeight: 36).contentShape(Rectangle())
     }
      
      
@@ -900,16 +1273,12 @@ public struct ClashTowerRuleCustomizationView: View {
         case .all: "Rule Customization"
         case .rules: "Rules"
         case .groups: "Policy Groups"
-        case .ruleSets: "Rule Sets"
-        case .subRules: "Sub-rules"
         }
     }
     private var addTitle: String {
         switch focus {
         case .rules: "Add Rule"
         case .groups: "Add Policy Group"
-        case .ruleSets: "New Rule Set"
-        case .subRules: "Add Sub-rule"
         case .all: "Add"
         }
     }
@@ -918,61 +1287,8 @@ public struct ClashTowerRuleCustomizationView: View {
         switch focus {
         case .rules: ruleID = nil; open(.rule)
         case .groups: groupID = nil; modal = .group
-        case .ruleSets: localID = nil; open(.local)
-        case .subRules: modal = .subRule
         case .all: break
         }
-    }
-     
-     
-     
-    private func changeSubRules(_ transform: @escaping @Sendable (inout ConfigurationRuleDraft) throws -> Void) {
-        Task { @MainActor in
-            do {
-                try await apply { current in var value = current; try transform(&value); return value }
-            } catch {
-                self.error = ClashConfigurationSubRuleCopy.message(error, locale: locale)
-            }
-        }
-    }
-     
-     
-    @ViewBuilder
-    private var subRulesSection: some View {
-        if !draft.subRulesEditable {
-            Section { Text(clash: .copy("These sub-rules can only be changed in the source.")).foregroundStyle(.secondary) }
-        }
-        Section {
-            ForEach(draft.subRules) { subRule in
-                NavigationLink {
-                    subRulePage(subRule.id)
-                        .clashPushedDetailPage()
-                        .clashNativePushBoundary()
-                } label: {
-                    HStack {
-                        Text(verbatim: subRule.name)
-                        Spacer()
-                        Text(verbatim: String(subRule.rows.count)).foregroundStyle(.secondary)
-                    }
-                }
-                .accessibilityIdentifier("configuration.rules.subrule.row")
-            }
-            .onDelete(perform: reorderingAList ? nil : { offsets in
-                let ids = offsets.map { draft.subRules[$0].id }
-                changeSubRules { value in for id in ids { try value.removeSubRule(id) } }
-            })
-            .onMove { from, to in changeSubRules { $0.moveSubRules(fromOffsets: from, toOffset: to) } }
-        }
-    }
-    private func subRulePage(_ id: UUID) -> ClashTowerSubRulePage {
-        ClashTowerSubRulePage(box: subRulesBox, subRuleID: id, palette: palette, ruleSetNames: ruleSetNames,
-            builder: { editing, accept in
-                ruleEditor(.init(editing: editing, draft: draft, options: sheetOptions, showsTarget: true, createGroup: nil), accept)
-            },
-            rename: { name in changeSubRules { try $0.renameSubRule(id, to: name) } },
-            setRow: { raw, rowID in changeSubRules { try $0.setSubRuleRow(raw, rowID: rowID, in: id) } },
-            delete: { rows in changeSubRules { $0.removeSubRuleRows(rows, in: id) } },
-            move: { from, to in changeSubRules { $0.moveSubRuleRows(fromOffsets: from, toOffset: to, in: id) } })
     }
     private var visibleGroups: [ConfigurationRuleDraft.Group] { draft.groups.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.type.localizedCaseInsensitiveContains(search) } }
     private var entries: [ConfigurationRuleCatalogEntry] { ConfigurationRuleCatalog.builtIn.entries.filter { (category == nil || $0.category == category) && $0.matches(search) } }
@@ -983,15 +1299,23 @@ public struct ClashTowerRuleCustomizationView: View {
                  
                 if single == nil {
                     Menu {
-                        Toggle("Show Group Icons", isOn: $emojis).accessibilityIdentifier("configuration.rules.emojis")
-                        if rename != nil {
-                            Button { renameText = draft.label; renaming = true } label: { Label("Rename…", systemImage: ClashSymbol.pencil.rawValue) }
+                        if offersGroupIcons {
+                            Toggle("Show Group Icons", isOn: $emojis).accessibilityIdentifier("configuration.rules.emojis")
+                        }
+                        if rename != nil, !readOnly {
+                            Button { renameText = draft.labelAsRead(locale: locale); renaming = true } label: { Label("Rename…", systemImage: ClashSymbol.pencil.rawValue) }
                                 .accessibilityIdentifier("configuration.rules.rename")
                         }
-                        Button("Edit Rules Source") { modal = .manual }
+                         
+                         
+                        if !readOnly {
+                            Button("Edit Rules Source") { modal = .manual }
+                        }
                         Button("Save as New Scheme") { modal = .copy }
-                        Divider()
-                        Button("Restore Initial Rules", role: .destructive) { confirmsReset = true }
+                        if !readOnly {
+                            Divider()
+                            Button("Restore Initial Rules", role: .destructive) { confirmsReset = true }
+                        }
                     } label: { Label("More", systemImage: "ellipsis").foregroundStyle(.tint) }.disabled(busy)
                 }
             }
@@ -1022,18 +1346,24 @@ public struct ClashTowerRuleCustomizationView: View {
         .interactiveDismissDisabled(holdsUnsaved || busy || !loadingRuleSets.isEmpty)
          
         .onChange(of: changeCount) { _ in if single == nil { saveLatest() } }
-        .onChange(of: draft.subRules) { subRulesBox.subRules = $0 }
+         
+         
+         
+         
+        .onChange(of: changeCount) { _ in feedback?.dismiss(operation: "configuration.rules.refusal") }
+        .clashOnScreen { onScreen in if !onScreen { feedback?.dismiss(operation: "configuration.rules.refusal") } }
         .onAppear {
-            subRulesBox.subRules = draft.subRules
+             
+            if single == nil { groupUndo.restore = { deletion in try await restoreIntoList(deletion) } }
              
              
-            guard focus != .all, !opened else { return }
+            guard focus != .all, !opened, !readOnly else { return }
             opened = true
             switch opening {
             case .adding: addToFocus()
             case .reordering:
                 #if os(iOS)
-                if focus != .ruleSets { listEditMode?.wrappedValue = .active }
+                listEditMode?.wrappedValue = .active
                 #endif
             case .list: break
             }
@@ -1061,28 +1391,23 @@ public struct ClashTowerRuleCustomizationView: View {
         .clashTextFieldAlert("Rename", isPresented: $renaming, text: $renameText,
                              field: ClashTextFieldAlertField(placeholder: "Name",
                                                              identifier: "configuration.rules.rename.name")) { typed in
-            let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let rename, !name.isEmpty, name != draft.label else { return }
+            guard let rename, let name = draft.newName(typed: typed, locale: locale) else { return }
             let id = draft.schemeID
             perform {
                 try await rename(id, name)
                 Self.takeRename(name, draft: &draft, baseline: &baseline)
             }
         }
-        .clashDeleteConfirmation(presenting: $deletingGroup, name: { id in draft.groups.first(where: { $0.id == id })?.name ?? "" },
-            actionTitle: .copy("Delete Rule Group"),
-            message: { _ in .copy("This group and its associated rules will be removed from the current scheme.") },
-            identifier: "configuration.rules.group.delete.confirm") { id in
-                mutate { snapshot in var value = snapshot; try value.deleteRoutingGroup(id); return value }
-            }
         .clashDeleteConfirmation(presenting: $deletingLocal, name: \.name,
             actionTitle: .copy("Delete Rule Set"),
             message: { _ in .copy("This local rule set will be deleted. Rule schemes in the library will also remove rules added from it.") },
-            identifier: "configuration.rules.local.delete.confirm") { item in
-                perform {
+            identifier: "configuration.rules.local.delete.confirm", cancel: { redrawRows() }) { item in
+                perform(fromRow: true) {
                     let updated = try await deleteLocal(item.id)
-                    try await receiveHostWrite(updated.0) { scheme in scheme.removeRuleSet("local-" + item.id) }
+                     
+                     
                     localSets = updated.1
+                    try await receiveHostWrite(updated.0) { scheme in scheme.removeRuleSet("local-" + item.id) }
                 }
             }
 
@@ -1121,11 +1446,22 @@ public struct ClashTowerRuleCustomizationView: View {
                 return AnyView(ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity))
             }
             let group = draft.groups[index]
-            return AnyView(groupPage(ClashTowerGroupPageRequest(group: group, index: index, all: draft.groups,
-                                                               nodeSections: nodeSections,
-                                                               save: { value in try await saveGroup(value, id: group.id) }))
+            return AnyView(groupPage(pageRequest(for: group, index: index, sections: nodeSections))
                 .id(group.id)
                 .onAppear { if singleGroupID == nil { singleGroupID = group.id } })
+        case .newGroup:
+            guard let groupPage else { return nil }
+            guard nodeCandidates == nil || nodesLoaded else {
+                return AnyView(ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity))
+            }
+             
+             
+            return AnyView(groupPage(newGroupRequest(sections: nodeSections, save: { value in
+                var changed = draft
+                try changed.setGroup(value, groupID: nil)
+                _ = try await save(changed)
+                close()
+            }, cancel: { close() })))
         }
     }
 
@@ -1142,6 +1478,12 @@ public struct ClashTowerRuleCustomizationView: View {
              
              
             if shows(.rules) {
+            if readOnly {
+                 
+                 
+                ClashTowerInlineRules(rows: draft.rows, version: draft.version, query: search, palette: palette,
+                                      ruleSetNames: ruleSetNames)
+            } else {
             ClashTowerInlineRules(rows: draft.rows, version: draft.version,
                  
                  
@@ -1160,29 +1502,12 @@ public struct ClashTowerRuleCustomizationView: View {
                 ruleSetNames: ruleSetNames, addRule: focus == .all ? { ruleID = nil; open(.rule) } : nil,
                 edit: { ruleID = $0; open(.rule) })
             }
+            }
             if shows(.groups) {
             Section {
+                if !readOnly {
                 ForEach(visibleGroups) { group in
-                    groupRow(group) {
-                        HStack(spacing: 10) {
-                            if emojis {
-                                ClashTowerGroupIconView(icon: ClashTowerGroupIcon.read(group.document), size: ClashTheme.Layout.proxyGroupIconSize) {
-                                    if let symbol = emoji(group.name) { Text(verbatim: symbol).font(.title3) }
-                                    else { Image(systemName: "rectangle.3.group").font(.body).foregroundStyle(.secondary) }
-                                }.frame(width: 28, height: 28)
-                                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
-                                    .accessibilityIdentifier("configuration.rules.group.row.icon")
-                            }
-                            Text(verbatim: displayName(group.name)).foregroundStyle(Color.primary)
-                                .lineLimit(1).truncationMode(.tail).layoutPriority(1)
-                            Spacer(minLength: 12)
-                            Text(clash: summary(group)).font(.subheadline).foregroundStyle(Color.secondary)
-                                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 140, alignment: .trailing)
-                            if groupPage == nil {
-                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                            }
-                        }.frame(minHeight: 36).contentShape(Rectangle())
-                    }
+                    groupRow(group) { groupLabel(group) }
                         .accessibilityIdentifier("configuration.rules.group.row")
                         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                         .moveDisabled(!search.isEmpty)
@@ -1190,18 +1515,18 @@ public struct ClashTowerRuleCustomizationView: View {
                             Button { groupID = group.id; modal = .identity } label: {
                                 Label { Text("Edit Name and Icon") } icon: { Image(systemName: ClashSymbol.pencil.rawValue) }
                             }
-                            Button(role: .destructive) { deletingGroup = group.id } label: {
+                            Button(role: .destructive) { deleteGroup(group.id) } label: {
                                 Label { Text("Delete") } icon: { Image(systemName: ClashSymbol.trash.rawValue) }
                             }
                         }
                          
                          
                          
-                        .clashSwipeToDelete(reorderingAList ? nil : { deletingGroup = group.id })
+                        .clashSwipeToDelete(reorderingAList ? nil : { deleteGroup(group.id) })
                         .accessibilityAction(named: Text("Edit Name and Icon")) { groupID = group.id; modal = .identity }
                 }.onDelete(perform: reorderingAList ? nil : { offsets in
                     guard let index = offsets.first, visibleGroups.indices.contains(index) else { return }
-                    deletingGroup = visibleGroups[index].id
+                    deleteGroup(visibleGroups[index].id)
                 }).onMove { offsets, destination in
                     var ids = draft.groups.map(\.id); ids.move(fromOffsets: offsets, toOffset: destination)
                     var changed = draft
@@ -1216,14 +1541,26 @@ public struct ClashTowerRuleCustomizationView: View {
                     ClashAddRow(Text(clash: .copy("Add Policy Group"))) { groupID = nil; modal = .group }
                         .accessibilityIdentifier("configuration.rules.group.add")
                 }
+                } else {
+                     
+                     
+                    ForEach(visibleGroups) { group in
+                        groupRow(group) { groupLabel(group) }
+                            .accessibilityIdentifier("configuration.rules.group.row")
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    }
+                }
             } header: { HStack { Text("Policy Groups"); Spacer(); Text(clash: .format("%@ groups", [String(visibleGroups.count)])) } }
+            .id("groups-\(refusedRound)")
             }
-            if focus == .subRules { subRulesSection }
+             
+             
+            if !readOnly {
              
              
              
-            if focus == .ruleSets || focus == .all { localRuleSetsSection }
-            if focus == .ruleSets || (focus == .all && reordering) {
+            if focus == .all { localRuleSetsSection }
+            if focus == .all && reordering {
                 Section {
                     ForEach(entries) { entry in
                         Button { toggleCatalog(entry) } label: {
@@ -1253,14 +1590,19 @@ public struct ClashTowerRuleCustomizationView: View {
                     }
                 }
             }
+            }
             if insideProductModal {
                  
                  
                 Section("More") {
                     Toggle("Show Group Icons", isOn: $emojis).accessibilityIdentifier("configuration.rules.emojis")
-                    Button("Edit Rules Source") { modal = .manual }
+                    if !readOnly {
+                        Button("Edit Rules Source") { modal = .manual }
+                    }
                     Button("Save as New Scheme") { modal = .copy }
-                    Button("Restore Initial Rules", role: .destructive) { confirmsReset = true }
+                    if !readOnly {
+                        Button("Restore Initial Rules", role: .destructive) { confirmsReset = true }
+                    }
                 }.disabled(busy)
             }
         }
@@ -1276,7 +1618,7 @@ public struct ClashTowerRuleCustomizationView: View {
         .clashProductModalRoot(
             title: .copy(pageTitle),
             actionTitle: reordering ? "Done" : "Edit",
-            actionDisabled: busy,
+            actionDisabled: busy || readOnly,
             action: {
                 var transaction = Transaction(); transaction.disablesAnimations = true
                 withTransaction(transaction) { reordering.toggle() }
@@ -1317,6 +1659,7 @@ public struct ClashTowerRuleCustomizationView: View {
                     .clashSwipeToDelete(identifier: "configuration.rules.local.delete") { deletingLocal = item }
                 }
             } header: { HStack { Text("My Rule Sets"); Spacer(); Text(clash: .format("%@ items", [String(localSets.count)])) } }
+            .id("rule-sets-\(refusedRound)")
 
     }
     @ViewBuilder
@@ -1364,7 +1707,7 @@ public struct ClashTowerRuleCustomizationView: View {
         let key = "catalog-" + entry.id
         guard !loadingRuleSets.contains(key) else { return }
         if installedRuleSets.contains(key) {
-            change { value in var value = value; value.removeRuleSet(key); return value }
+            change(fromRow: true) { value in var value = value; value.removeRuleSet(key); return value }
             return
         }
         loadingRuleSets.insert(key)
@@ -1378,13 +1721,13 @@ public struct ClashTowerRuleCustomizationView: View {
                                          defaultRoute: entry.defaultRoute.rawValue, link: content.link, behavior: content.behavior)
                     return value
                 }
-            } catch { self.error = ClashTowerRulesErrorText.describe(error) }
+            } catch { sayFailure(error, fromRow: true) }
         }
     }
     private func toggleLocal(_ item: ConfigurationLocalRuleSet) {
         let key = "local-" + item.id
         let removing = installedRuleSets.contains(key)
-        change { snapshot in
+        change(fromRow: true) { snapshot in
             var value = snapshot
             if removing { value.removeRuleSet(key) } else { try value.addRuleSet(key: key, name: item.name, rules: item.rules, defaultRoute: "proxy", link: item.link, behavior: item.behavior) }
             return value
@@ -1404,10 +1747,37 @@ public struct ClashTowerRuleCustomizationView: View {
             withAnimation { draft = value; installedRuleSets = keys; hasUnsavedChanges = true; changeCount += 1 }
         }
     }
-    private func change(_ transform: @escaping @Sendable (ConfigurationRuleDraft) throws -> ConfigurationRuleDraft) {
+     
+     
+    private func change(fromRow: Bool = false,
+                        _ transform: @escaping @Sendable (ConfigurationRuleDraft) throws -> ConfigurationRuleDraft) {
         Task { @MainActor in
-            do { try await apply(transform) } catch { self.error = ClashTowerRulesErrorText.describe(error) }
+            do { try await apply(transform) } catch { sayFailure(error, fromRow: fromRow) }
         }
+    }
+     
+     
+     
+    private func sayFailure(_ error: Error, fromRow: Bool) {
+        let text = ClashTowerRulesErrorText.describe(error)
+        if fromRow { sayRefusal(text, redraws: false) } else { self.error = text }
+    }
+     
+     
+     
+     
+    private func sayRefusal(_ sentence: String, redraws: Bool = true) {
+        let said = ClashTowerRowRefusal.say(sentence, in: feedback, operation: "configuration.rules.refusal",
+                                            identifier: "feedback.rules.refusal")
+        if !said { error = sentence }
+        if redraws { redrawRows() }
+    }
+     
+     
+     
+    private func redrawRows() {
+        var redraw = Transaction(); redraw.disablesAnimations = true
+        withTransaction(redraw) { refusedRound += 1 }
     }
     private func receiveSaved(_ value: ConfigurationRuleDraft) async {
         let keys = await Task.detached { value.referencedRuleSets }.value
@@ -1463,7 +1833,7 @@ public struct ClashTowerRuleCustomizationView: View {
     private func modalContent(_ kind: Modal) -> some View {
         switch kind {
         case .identity, .group:
-            groupEditor(identityOnly: kind == .identity, adding: kind == .group)
+            groupPageInModal(adding: kind == .group && groupID == nil)
         case .local:
             ClashTowerLocalRuleEditor(
                 value: localSets.first { $0.id == localID },
@@ -1497,15 +1867,10 @@ public struct ClashTowerRuleCustomizationView: View {
                     }
                     localSets = updated.1; modal = nil
                 }, close: { modal = nil })
-        case .subRule:
-            ClashTowerSubRuleNameForm(taken: Set(draft.subRules.map(\.name))) { name in
-                changeSubRules { _ = try $0.addSubRule(named: name) }
-                modal = nil
-            } close: { modal = nil }
         case .copy:
              
              
-            ClashTowerNameEditor(title: "Save as New Scheme", name: draft.label + " · " + ClashCopy.string("Custom", locale: locale), save: { name in try await copy(draft, name); modal = nil; hasUnsavedChanges = false; close() }, close: { modal = nil })
+            ClashTowerNameEditor(title: "Save as New Scheme", name: Self.newSchemeName(draft, locale: locale, taken: takenSchemeNames), save: { name in try await copy(draft, name); modal = nil; hasUnsavedChanges = false; close() }, close: { modal = nil })
         case .manual:
             manualEditor(draft, saveManual)
         case .rule:
@@ -1538,16 +1903,22 @@ public struct ClashTowerRuleCustomizationView: View {
     }
      
      
+     
     @ViewBuilder
-    private func groupEditor(identityOnly: Bool, adding: Bool) -> some View {
-        if let id = groupID, let group = draft.groups.first(where: { $0.id == id }) {
-            ClashTowerGroupEditor(group: group, all: draft.groups, identityOnly: identityOnly, nodeSections: nodeSections,
-                save: { (value: OrderedJSON) async throws -> Void in try await saveGroup(value, id: id) },
-                close: { modal = nil }, savesEachChange: savesEachChange, groupTypes: groupTypes)
-        } else if adding {
-            ClashTowerGroupEditor(group: ClashTowerGroupEditor.blankGroup, all: draft.groups, identityOnly: false, nodeSections: nodeSections,
-                save: { (value: OrderedJSON) async throws -> Void in try await saveGroup(value, id: nil) },
-                close: { modal = nil }, groupTypes: groupTypes)
+    private func groupPageInModal(adding: Bool) -> some View {
+        if let groupPage {
+            if adding {
+                groupPage(newGroupRequest(sections: nodeSections, save: { value in try await saveGroup(value, id: nil) },
+                                          cancel: { modal = nil }))
+            } else if let id = groupID, let index = draft.groups.firstIndex(where: { $0.id == id }) {
+                groupPage({
+                    var request = pageRequest(for: draft.groups[index], index: index, sections: nodeSections)
+                    request.close = { modal = nil }
+                     
+                    request.deletion?.dismissesPage = false
+                    return request
+                }())
+            }
         }
     }
      
@@ -1639,9 +2010,50 @@ public struct ClashTowerRuleCustomizationView: View {
         draft.label = name
         baseline.label = name
     }
-    private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
-        guard !busy else { return }; busy = true; error = nil
-        Task { @MainActor in defer { busy = false }; do { try await operation() } catch { self.error = ClashTowerRulesErrorText.describe(error) } }
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func newSchemeName(_ draft: ConfigurationRuleDraft, locale: Locale, taken: Set<String> = []) -> String {
+        nextFreeName(draft.labelAsRead(locale: locale) + ClashCopy.string(" Copy", locale: locale), taken: taken)
+    }
+     
+     
+     
+     
+     
+     
+    public static func nextFreeName(_ root: String, taken: Set<String>) -> String {
+        let existing = Set(taken.map(\.localizedLowercase))
+        guard existing.contains(root.localizedLowercase) else { return root }
+        var index = 2
+        while existing.contains("\(root) \(index)".localizedLowercase) { index += 1 }
+        return "\(root) \(index)"
+    }
+     
+     
+     
+     
+     
+    public static func takenSchemeNames(in library: ConfigurationLibrarySnapshot, locale: Locale) -> Set<String> {
+        var names = Set(ConfigurationBuiltins.schemes.map { ClashTowerRulesLibraryView.displayLabel($0, locale: locale) })
+        for scheme in library.availableRules {
+            names.insert(scheme.label)
+            names.insert(ClashTowerRulesLibraryView.displayLabel(scheme, locale: locale))
+        }
+        return names
+    }
+     
+     
+    private func perform(fromRow: Bool = false, _ operation: @escaping @MainActor () async throws -> Void) {
+        guard !busy else { if fromRow { redrawRows() }; return }; busy = true; error = nil
+        Task { @MainActor in defer { busy = false }; do { try await operation() } catch { sayFailure(error, fromRow: fromRow); if fromRow { redrawRows() } } }
     }
 }
 
@@ -1649,118 +2061,28 @@ public struct ClashTowerRuleCustomizationView: View {
  
  
  
-struct ClashTowerSubRulePage: View {
-    @ObservedObject var box: ClashTowerSubRulesBox
-    let subRuleID: UUID
-    let palette: ClashProductPalette
-    let ruleSetNames: [String: String]
-    let builder: (ClashTowerRuleEditing?, @escaping (String, Bool, String) -> Void) -> AnyView
-    let rename: (String) -> Void
-    let setRow: (String, UUID?) -> Void
-    let delete: (Set<UUID>) -> Void
-    let move: (IndexSet, Int) -> Void
-    @State private var name = ""
-    @State private var editing: Editing?
-    #if os(iOS)
+ 
+public extension ConfigurationRuleScheme {
+    func labelAsRead(locale: Locale) -> String {
+        builtinNamedAfter == nil ? label : ClashCopy.string(label, locale: locale)
+    }
      
-    @Environment(\.editMode) private var listEditMode
-    #endif
-
      
-    private var reordering: Bool {
-        #if os(iOS)
-        return listEditMode?.wrappedValue.isEditing == true
-        #else
-        return false
-        #endif
-    }
-
-    struct Editing: Identifiable {
-        let id = UUID()
-        let rowID: UUID?
-    }
-
-    private var subRule: ConfigurationRuleDraft.SubRule? { box.subRules.first { $0.id == subRuleID } }
-
-    var body: some View {
-        List {
-            Section {
-                TextField("Name", text: $name)
-                    .onSubmit { commitName() }
-                    .accessibilityIdentifier("configuration.rules.subrule.name")
-            }
-            Section {
-                ForEach(subRule?.rows ?? []) { row in
-                    Button { editing = Editing(rowID: row.id) } label: {
-                        ClashTowerRuleSummary(row: row, palette: palette, ruleSetNames: ruleSetNames)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("configuration.rules.subrule.rule.row")
-                }
-                .onDelete(perform: reordering ? nil : { offsets in
-                    let rows = subRule?.rows ?? []
-                    delete(Set(offsets.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }))
-                })
-                .onMove { move($0, $1) }
-            }
-        }
-        .navigationTitle(Text(verbatim: subRule?.name ?? name))
-        .clashToolbarUnlessInPanel {
-            ToolbarItemGroup(placement: .confirmationAction) {
-                Button { editing = Editing(rowID: nil) } label: { Image(systemName: ClashSymbol.plus.rawValue) }
-                    .accessibilityLabel(Text(ClashCopy.key("Add Rule")))
-                    .accessibilityIdentifier("configuration.rules.subrule.rule.add")
-                #if os(iOS)
-                if (subRule?.rows.count ?? 0) > 1 {
-                    ClashTowerReorderButton(identifier: "configuration.rules.subrule.reorder")
-                }
-                #endif
-            }
-        }
-        .clashProductModal(item: $editing, role: .form) { edit in
-            ClashSingleColumnNavigationContainer {
-                let row = edit.rowID.flatMap { id in subRule?.rows.first { $0.id == id } }
-                builder(row.map { ClashTowerRuleEditing(raw: $0.raw, isEnabled: true, note: "") }) { raw, _, _ in
-                    setRow(raw, edit.rowID)
-                    editing = nil
-                }
-            }.environment(\.clashProductModalDismiss, { editing = nil })
-        }
-        .onAppear { if name.isEmpty { name = subRule?.name ?? "" } }
-        .onDisappear { commitName() }
-    }
-
-    private func commitName() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != subRule?.name else { return }
-        rename(trimmed)
+     
+    func newName(typed: String, locale: Locale) -> String? {
+        let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name == label || name == labelAsRead(locale: locale) ? nil : name
     }
 }
 
- 
-private struct ClashTowerSubRuleNameForm: View {
-    let taken: Set<String>
-    let add: (String) -> Void
-    let close: () -> Void
-    @State private var name = ""
-
-    private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-    var body: some View {
-        Form {
-            Section {
-                TextField("Name", text: $name).accessibilityIdentifier("configuration.rules.subrule.new-name")
-            }
-        }
-        .clashPageTitle("Add Sub-rule")
-        .clashToolbarUnlessInPanel {
-            ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: close) }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Add") { add(trimmed) }
-                    .disabled(trimmed.isEmpty || taken.contains(trimmed))
-                    .accessibilityIdentifier("configuration.rules.subrule.new-add")
-            }
-        }
+public extension ConfigurationRuleDraft {
+     
+    func labelAsRead(locale: Locale) -> String {
+        label == builtinsName ? ClashCopy.string(label, locale: locale) : label
+    }
+    func newName(typed: String, locale: Locale) -> String? {
+        let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name == label || name == labelAsRead(locale: locale) ? nil : name
     }
 }
 
@@ -1799,7 +2121,13 @@ private struct ClashTowerNameEditor: View {
     }
 }
 
-private struct ClashTowerLocalRuleEditor: View {
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashTowerLocalRuleEditor: View {
      
     enum Kind: String, CaseIterable, Identifiable { case link, manual; var id: String { rawValue } }
     let value: ConfigurationLocalRuleSet?
@@ -1814,6 +2142,10 @@ private struct ClashTowerLocalRuleEditor: View {
     let createGroup: ((@escaping (String?) -> Void) -> AnyView)?
     let save: (String, String, String) async throws -> Void
     let close: () -> Void
+     
+    let confirmTitle: String
+     
+    let attaches: Bool
     @State private var name: String
     @State private var kind: Kind
      
@@ -1831,17 +2163,19 @@ private struct ClashTowerLocalRuleEditor: View {
     @State private var error: String?
     @Environment(\.clashInsideProductModalPresentation) private var insideProductModal
     private let initialPolicy: String
-    init(value: ConfigurationLocalRuleSet?, policy: String, options: ClashRulePolicyOptions, palette: ClashProductPalette,
-         buildRule: @escaping (String?, @escaping (String) -> Void) -> AnyView,
-         createGroup: ((@escaping (String?) -> Void) -> AnyView)? = nil,
-         save: @escaping (String, String, String) async throws -> Void, close: @escaping () -> Void) {
+    public init(value: ConfigurationLocalRuleSet?, policy: String, options: ClashRulePolicyOptions, palette: ClashProductPalette,
+                buildRule: @escaping (String?, @escaping (String) -> Void) -> AnyView,
+                createGroup: ((@escaping (String?) -> Void) -> AnyView)? = nil,
+                confirmTitle: String = "Save", attaches: Bool = true, prefill: (name: String, link: String)? = nil,
+                save: @escaping (String, String, String) async throws -> Void, close: @escaping () -> Void) {
         self.value = value; self.options = options; self.palette = palette; self.buildRule = buildRule; self.createGroup = createGroup; self.save = save; self.close = close
+        self.confirmTitle = confirmTitle; self.attaches = attaches
         self.initialPolicy = policy
         let stored = value?.input ?? ""
         let link = Self.looksLikeLink(stored)
-        _name = State(initialValue: value?.name ?? ""); _policy = State(initialValue: policy)
-        _kind = State(initialValue: link ? .link : .manual)
-        _input = State(initialValue: link ? stored : "")
+        _name = State(initialValue: prefill?.name ?? value?.name ?? ""); _policy = State(initialValue: policy)
+        _kind = State(initialValue: prefill != nil || link ? .link : .manual)
+        _input = State(initialValue: prefill?.link ?? (link ? stored : ""))
         _lines = State(initialValue: link ? [] : Self.lines(of: stored))
     }
     static func looksLikeLink(_ input: String) -> Bool {
@@ -1856,7 +2190,7 @@ private struct ClashTowerLocalRuleEditor: View {
     }
     private var contents: String { kind == .link ? input : lines.joined(separator: "\n") }
     private var ready: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !policy.isEmpty
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!attaches || !policy.isEmpty)
             && (kind == .link ? Self.looksLikeLink(input) : !lines.isEmpty)
     }
     private func commit(_ completion: @escaping (Bool) -> Void = { _ in }) {
@@ -1864,7 +2198,7 @@ private struct ClashTowerLocalRuleEditor: View {
         busy = true; error = nil
         Task { @MainActor in defer { busy = false }; do { try await save(name, contents, policy); completion(true) } catch { self.error = ClashTowerRulesErrorText.describe(error); completion(false) } }
     }
-    var body: some View {
+    public var body: some View {
         Form {
             Section { TextField("Name", text: $name, prompt: Text(clash: .copy("e.g. 🎬 Netflix"))).accessibilityIdentifier("configuration.rules.set.name") }
             Section {
@@ -1903,6 +2237,7 @@ private struct ClashTowerLocalRuleEditor: View {
                     ? "A text, YAML or MRS rule set the app downloads and keeps updated."
                     : "Add the rules this set matches. The policy is chosen below, not written on each rule.")
             }
+            if attaches {
             Section {
                 Button { pickingPolicy = true } label: {
                     HStack {
@@ -1913,11 +2248,18 @@ private struct ClashTowerLocalRuleEditor: View {
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityIdentifier("configuration.rules.set.policy")
             } footer: { Text("Traffic matching these rules goes to this policy. Saving adds the rule set to the current rules.") }
+            }
             if let error { Text(verbatim: error).foregroundStyle(.orange) }
         }.disabled(busy).clashPageTitle(.copy(value == nil ? "New Rule Set" : "Edit Rule Set"))
             .clashToolbarUnlessInPanel {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: close).disabled(busy) }
-                ToolbarItem(placement: .confirmationAction) { Button { commit() } label: { ClashActionProgressLabel(.copy("Save"), isBusy: busy) }.disabled(busy || !ready) }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: close).disabled(busy).accessibilityIdentifier("configuration.rules.set.cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button { commit() } label: { ClashActionProgressLabel(.copy(confirmTitle), isBusy: busy) }
+                        .disabled(busy || !ready)
+                        .accessibilityIdentifier("configuration.rules.set.confirm")
+                }
             }
              
              
@@ -1935,7 +2277,7 @@ private struct ClashTowerLocalRuleEditor: View {
             )
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if insideProductModal {
-                    ClashModalActionBar(primaryTitle: "Save", primaryDisabled: !ready, isBusy: busy, onPrimary: { commit() })
+                    ClashModalActionBar(primaryTitle: confirmTitle, primaryDisabled: !ready, isBusy: busy, onPrimary: { commit() })
                 }
             }
             .background {
@@ -1973,7 +2315,7 @@ private struct ClashTowerLocalRuleEditor: View {
  
 enum ClashTowerRulesUXTestSeams {
     static func looksLikeLink(_ input: String) -> Bool { ClashTowerLocalRuleEditor.looksLikeLink(input) }
-    static var blankGroup: ConfigurationRuleDraft.Group { ClashTowerGroupEditor.blankGroup }
+    static var blankGroup: ConfigurationRuleDraft.Group { ClashTowerRuleCustomizationView.blankGroup }
 }
 
 private extension View {
@@ -1985,59 +2327,6 @@ private extension View {
         #else
         self.autocorrectionDisabled()
         #endif
-    }
-
-     
-     
-     
-     
-    @ViewBuilder
-    func clashPatternInput() -> some View {
-        #if os(iOS)
-        textInputAutocapitalization(.never).autocorrectionDisabled()
-        #else
-        self.autocorrectionDisabled()
-        #endif
-    }
-}
-
- 
- 
- 
- 
- 
- 
- 
- 
-enum ClashTowerGroupCandidates {
-    static let builtinMembers = ["DIRECT", "REJECT"]
-
-     
-     
-    static func offersSearch(_ nodeSections: [ConfigurationRuleTargetCandidates.Section]) -> Bool {
-        nodeSections.contains { $0.kind != .providers }
-    }
-
-    static func available(
-        groups: [String], excludingGroup: String,
-        nodeSections: [ConfigurationRuleTargetCandidates.Section],
-        selected: [String], query: String
-    ) -> [ConfigurationRuleTargetCandidates.Section] {
-        let taken = Set(selected)
-        var sections = [
-            ConfigurationRuleTargetCandidates.Section(id: "builtin", kind: .builtin, names: builtinMembers),
-            ConfigurationRuleTargetCandidates.Section(id: "groups", kind: .groups, names: groups.filter { $0 != excludingGroup }),
-        ]
-         
-        sections.append(contentsOf: nodeSections.filter { $0.kind != .providers })
-        let offered = sections.compactMap { section -> ConfigurationRuleTargetCandidates.Section? in
-            var seen = Set<String>()
-             
-            let names = section.names.filter { !taken.contains($0) && (section.kind == .builtin || !builtinMembers.contains($0)) }
-                .filter { seen.insert($0).inserted }
-            return names.isEmpty ? nil : ConfigurationRuleTargetCandidates.Section(id: section.id, kind: section.kind, sourceLabel: section.sourceLabel, names: names)
-        }
-        return ConfigurationRuleTargetCandidates(sections: offered).filtered(by: query).sections
     }
 }
 
@@ -2160,10 +2449,12 @@ public struct ClashTowerGroupIconView<Fallback: View>: View {
     }
 }
 
-struct ClashTowerGroupIconEchoRow: View {
+public struct ClashTowerGroupIconEchoRow: View {
     let icon: String
 
-    var body: some View {
+    public init(icon: String) { self.icon = icon }
+
+    public var body: some View {
         if let echo = ClashTowerGroupIconEcho.of(icon) {
             HStack {
                 Text(LocalizedStringKey(echo.label))
@@ -2186,90 +2477,17 @@ struct ClashTowerGroupIconEchoRow: View {
  
  
  
-enum ClashTowerGroupForm {
+ 
+ 
+public enum ClashGroupLeaveOutNodes {
      
      
      
-    static func isValid(name: String, identityOnly: Bool, selected: [String], includeAll: Bool, base: OrderedJSON) -> Bool {
-        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        if identityOnly || !selected.isEmpty || includeAll { return true }
-        if case .array(let use)? = base.topLevelValue("use") { return !use.isEmpty }
-        return false
-    }
+    public static let copyPath = "proxy-groups[*].exclude-filter"
 
      
      
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-    static func members(of base: OrderedJSON, kind: String, selected: [String], includeAll: Bool, filter: String,
-                        excludeFilter: String? = nil) -> OrderedJSON {
-        var document = base
-        let isOn: (String) -> Bool = { base.topLevelValue($0) == .scalar("true") }
-        let has: (String) -> Bool = { base.topLevelValue($0) != nil }
-        let flag: String
-        if isOn("include-all") { flag = "include-all" }
-        else if isOn("include-all-proxies") { flag = "include-all-proxies" }
-        else if has("include-all") || !has("include-all-proxies") { flag = "include-all" }
-        else { flag = "include-all-proxies" }
-        let other = flag == "include-all" ? "include-all-proxies" : "include-all"
-        document = document.settingTopLevel("type", to: .string(kind))
-        if !selected.isEmpty || has("proxies") { document = document.settingTopLevel("proxies", to: .array(selected.map(OrderedJSON.string))) }
-        if includeAll || has(flag) { document = document.settingTopLevel(flag, to: .scalar(includeAll ? "true" : "false")) }
-        if !includeAll, has(other) { document = document.settingTopLevel(other, to: .scalar("false")) }
-        if !filter.isEmpty || has("filter") { document = document.settingTopLevel("filter", to: .string(filter)) }
-        if let excludeFilter, !excludeFilter.isEmpty || has("exclude-filter") {
-            document = document.settingTopLevel("exclude-filter", to: .string(excludeFilter))
-        }
-        if kind == "url-test" || kind == "fallback", case .array(let use)? = document.topLevelValue("use"), !use.isEmpty,
-           document.topLevelValue("url") == nil {
-            document = document.settingTopLevel("url", to: .string("https://www.gstatic.com/generate_204"))
-            if document.topLevelValue("interval") == nil { document = document.settingTopLevel("interval", to: .scalar("300")) }
-        }
-        return document
-    }
-}
-
-extension ClashTowerGroupForm {
-     
-     
-    struct Fields: Equatable {
-        var name: String
-        var icon: String
-        var kind: String
-        var selected: [String]
-        var includeAll: Bool
-        var filter: String
-         
-        var excludeFilter: String = ""
-    }
-
-     
-     
-    static func excludeFilter(of document: OrderedJSON) -> String {
+    public static func pattern(of document: OrderedJSON) -> String {
         switch document.topLevelValue("exclude-filter") {
         case .string(let value)?, .scalar(let value)?: return value
         default: return ""
@@ -2277,15 +2495,10 @@ extension ClashTowerGroupForm {
     }
 
      
-     
-     
-    static let excludeFilterCopyPath = "proxy-groups[*].exclude-filter"
-
-     
     private static func pieces(_ field: String) -> [String] { field.components(separatedBy: "`") }
 
      
-    static func holdsInfoNodeExample(_ field: String) -> Bool { pieces(field).contains(infoNodeExample) }
+    public static func holdsInfoNodeExample(_ field: String) -> Bool { pieces(field).contains(infoNodeExample) }
 
      
      
@@ -2293,53 +2506,38 @@ extension ClashTowerGroupForm {
      
      
      
-    static func addingInfoNodeExample(to field: String) -> String {
+    public static func addingInfoNodeExample(to field: String) -> String {
         guard !holdsInfoNodeExample(field) else { return field }
         let kept = pieces(field).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         return (kept + [infoNodeExample]).joined(separator: "`")
     }
 
      
-     
-    struct PatternAnswer: Equatable {
-        let pattern: String
-        let refusal: String?
+    public struct Answer: Equatable, Sendable {
+        public let pattern: String
+        public let refusal: String?
+        public init(pattern: String, refusal: String?) { self.pattern = pattern; self.refusal = refusal }
     }
 
      
      
-    static func refuses(_ answer: PatternAnswer?, _ pattern: String) -> Bool {
+    public static func refuses(_ answer: Answer?, _ pattern: String) -> Bool {
         guard let answer, answer.pattern == pattern else { return false }
         return answer.refusal != nil
     }
 
      
      
-    static func leaveOutNodesRefusal(group: String) -> ClashDisplayText {
+    public static func refusal(group: String) -> ClashDisplayText {
         .format("“%@”: Leave Out Nodes is written in a form the core can't read.", [group])
     }
 
      
      
-    static func answer(_ pattern: String, known: PatternAnswer?, check: ClashGroupPatternCheck?) async -> PatternAnswer {
+    public static func answer(_ pattern: String, known: Answer?, check: ClashGroupPatternCheck?) async -> Answer {
         if let known, known.pattern == pattern { return known }
         guard let check, !pattern.isEmpty else { return .init(pattern: pattern, refusal: nil) }
         return .init(pattern: pattern, refusal: await check.check("exclude-filter", pattern))
-    }
-
-     
-     
-     
-    static func afterRefusal(sent: Fields, saved: Fields, current: Fields) -> Fields {
-        var back = current
-        func putBack<Value: Equatable>(_ field: WritableKeyPath<Fields, Value>) {
-            if sent[keyPath: field] != saved[keyPath: field], current[keyPath: field] == sent[keyPath: field] {
-                back[keyPath: field] = saved[keyPath: field]
-            }
-        }
-        putBack(\.name); putBack(\.icon); putBack(\.kind)
-        putBack(\.selected); putBack(\.includeAll); putBack(\.filter); putBack(\.excludeFilter)
-        return back
     }
 }
 
@@ -2352,413 +2550,6 @@ extension ClashTowerGroupForm {
 public struct ClashGroupPatternCheck: Sendable {
     public let check: @Sendable (_ key: String, _ pattern: String) async -> String?
     public init(_ check: @escaping @Sendable (_ key: String, _ pattern: String) async -> String?) { self.check = check }
-}
-
- 
-struct ClashTowerGroupPatternRefusal: ClashAuthoredError {
-    let displayText: ClashDisplayText
-}
-
-private struct ClashGroupPatternCheckKey: EnvironmentKey {
-    static let defaultValue: ClashGroupPatternCheck? = nil
-}
-
-public extension EnvironmentValues {
-    var clashGroupPatternCheck: ClashGroupPatternCheck? {
-        get { self[ClashGroupPatternCheckKey.self] }
-        set { self[ClashGroupPatternCheckKey.self] = newValue }
-    }
-}
-
- 
- 
- 
- 
-@MainActor
-final class ClashTowerGroupWrites: ObservableObject {
-    typealias Fields = ClashTowerGroupForm.Fields
-     
-    private(set) var saved: Fields
-    @Published private(set) var isWriting = false
-    private var owed = false
-    private var runner: Task<Void, Never>?
-     
-     
-     
-     
-     
-    private var changes = 0
-    private var refusedAt = -1
-
-     
-     
-     
-    private var closing: (() -> Void)?
-
-    init(saved: Fields) {
-        self.saved = saved
-    }
-
-     
-     
-     
-     
-     
-     
-    func change(current: @escaping () -> Fields, writable: @escaping (Fields) -> Bool,
-                write: @escaping (Fields) async throws -> Void, took: @escaping () -> Void,
-                refused: @escaping (Error, Fields) -> Void, closing close: (() -> Void)? = nil) {
-        if let close { closing = close }
-        changes += 1
-        start(current: current, writable: writable, write: write, took: took, refused: refused)
-    }
-
-    private func start(current: @escaping () -> Fields, writable: @escaping (Fields) -> Bool,
-                       write: @escaping (Fields) async throws -> Void, took: @escaping () -> Void,
-                       refused: @escaping (Error, Fields) -> Void) {
-        if runner != nil {
-            owed = true
-            return
-        }
-        let carries = changes
-        let sent = current()
-        guard writable(sent), sent != saved else { return closeIfAsked() }
-        isWriting = true
-        runner = Task { @MainActor [weak self] in
-            do {
-                try await write(sent)
-                guard let self else { return }
-                saved = sent
-                if carries > refusedAt { took() }
-            } catch {
-                guard let self else { return }
-                closing = nil
-                refusedAt = changes
-                refused(error, ClashTowerGroupForm.afterRefusal(sent: sent, saved: saved, current: current()))
-            }
-            guard let self else { return }
-            isWriting = false
-            runner = nil
-            if owed {
-                owed = false
-                start(current: current, writable: writable, write: write, took: took, refused: refused)
-            } else {
-                closeIfAsked()
-            }
-        }
-    }
-
-    private func closeIfAsked() {
-        guard runner == nil, let close = closing else { return }
-        closing = nil
-        close()
-    }
-
-     
-    func waitForWrites() async {
-        while let runner {
-            await runner.value
-        }
-    }
-}
-
-private struct ClashTowerGroupEditor: View {
-    let group: ConfigurationRuleDraft.Group
-    let all: [ConfigurationRuleDraft.Group]
-    let identityOnly: Bool
-
-     
-     
-    private var pageName: String { identityOnly ? "Edit Name and Icon" : group.name.isEmpty ? "New Policy Group" : group.name }
-     
-     
-     
-    private var pageTitle: ClashDisplayText { identityOnly || group.name.isEmpty ? .copy(pageName) : .verbatim(pageName) }
-     
-     
-    let nodeSections: [ConfigurationRuleTargetCandidates.Section]
-    let save: (OrderedJSON) async throws -> Void
-    let close: () -> Void
-     
-     
-     
-    let savesEachChange: Bool
-     
-    let groupTypes: [String]
-    @State private var query = ""
-    @State private var name: String
-    @State private var icon: String
-    @State private var kind: String
-    @State private var selected: [String]
-    @State private var includeAll: Bool
-    @State private var filter: String
-     
-    @State private var excludeFilter: String
-     
-    @State private var excludeCheck: ClashTowerGroupForm.PatternAnswer?
-    @Environment(\.clashGroupPatternCheck) private var patternCheck
-    @Environment(\.configurationFieldCopy) private var fieldCopy
-    @Environment(\.locale) private var locale
-     
-     
-    @State private var busy = false
-    @StateObject private var writes: ClashTowerGroupWrites
-    @State private var error: String?
-    @Environment(\.clashInsideProductModalPresentation) private var insideProductModal
-    @Environment(\.clashRuleTargetSearch) private var targetSearch
-     
-     
-    @State private var searched: [ConfigurationRuleTargetCandidates.Section] = []
-     
-     
-    static var blankGroup: ConfigurationRuleDraft.Group {
-        .init(id: UUID(), document: .object([("name", .string("")), ("type", .string("select")), ("proxies", .array([]))]))
-    }
-    init(group: ConfigurationRuleDraft.Group, all: [ConfigurationRuleDraft.Group], identityOnly: Bool,
-        nodeSections: [ConfigurationRuleTargetCandidates.Section] = [],
-        save: @escaping (OrderedJSON) async throws -> Void, close: @escaping () -> Void, savesEachChange: Bool = false,
-        groupTypes: [String] = []) {
-        self.group = group; self.all = all; self.identityOnly = identityOnly; self.nodeSections = nodeSections; self.save = save; self.close = close
-        self.savesEachChange = savesEachChange
-        self.groupTypes = groupTypes
-        _name = State(initialValue: group.name); _kind = State(initialValue: group.type)
-        _icon = State(initialValue: ClashTowerGroupIcon.read(group.document))
-        if case .array(let values) = group.document.topLevelValue("proxies") { _selected = State(initialValue: values.compactMap { if case .string(let value) = $0 { return value }; return nil }) }
-        else { _selected = State(initialValue: []) }
-        _includeAll = State(initialValue: group.document.topLevelValue("include-all") == .scalar("true") || group.document.topLevelValue("include-all-proxies") == .scalar("true"))
-        if case .string(let value) = group.document.topLevelValue("filter") { _filter = State(initialValue: value) } else { _filter = State(initialValue: "") }
-        _excludeFilter = State(initialValue: ClashTowerGroupForm.excludeFilter(of: group.document))
-        let opened = ClashTowerGroupForm.Fields(
-            name: _name.wrappedValue, icon: _icon.wrappedValue, kind: _kind.wrappedValue, selected: _selected.wrappedValue,
-            includeAll: _includeAll.wrappedValue, filter: _filter.wrappedValue, excludeFilter: _excludeFilter.wrappedValue)
-        _writes = StateObject(wrappedValue: ClashTowerGroupWrites(saved: opened))
-    }
-    private var fields: ClashTowerGroupForm.Fields {
-        .init(name: name, icon: icon, kind: kind, selected: selected, includeAll: includeAll, filter: filter, excludeFilter: excludeFilter)
-    }
-    private func show(_ fields: ClashTowerGroupForm.Fields) {
-        name = fields.name; icon = fields.icon; kind = fields.kind
-        selected = fields.selected; includeAll = fields.includeAll; filter = fields.filter; excludeFilter = fields.excludeFilter
-    }
-     
-    private func document(_ fields: ClashTowerGroupForm.Fields) -> OrderedJSON {
-        var document = ClashTowerGroupIcon.apply(fields.icon, to: group.document.settingTopLevel("name", to: .string(fields.name)))
-        if !identityOnly {
-            document = ClashTowerGroupForm.members(of: document, kind: fields.kind, selected: fields.selected,
-                                                   includeAll: fields.includeAll, filter: fields.filter,
-                                                   excludeFilter: fields.excludeFilter)
-        }
-        return document
-    }
-     
-     
-     
-    private func excludeRefusal(_ pattern: String) async -> String? {
-        guard !identityOnly else { return nil }
-        let answer = await ClashTowerGroupForm.answer(pattern, known: excludeCheck, check: patternCheck)
-         
-         
-        if answer.pattern == excludeFilter { excludeCheck = answer }
-        return answer.refusal
-    }
-     
-    private var excludeRefusalShown: ClashDisplayText? {
-        ClashTowerGroupForm.refuses(excludeCheck, excludeFilter)
-            ? ClashTowerGroupForm.leaveOutNodesRefusal(group: name.isEmpty ? group.name : name) : nil
-    }
-     
-     
-    private var excludeFilterCopy: ConfigurationFieldCopy.Entry? {
-        fieldCopy.entry(forPath: ClashTowerGroupForm.excludeFilterCopyPath, language: ConfigurationFieldCopy.Language(locale: locale))
-    }
-    private var excludeFilterTitle: String { excludeFilterCopy?.title ?? "exclude-filter" }
-    private var originalSelected: [String] {
-        guard case .array(let values) = group.document.topLevelValue("proxies") else { return [] }
-        return values.compactMap { if case .string(let name) = $0 { return name }; return nil }
-    }
-    private var originalIncludeAll: Bool { group.document.topLevelValue("include-all") == .scalar("true") || group.document.topLevelValue("include-all-proxies") == .scalar("true") }
-    private var originalFilter: String { if case .string(let value) = group.document.topLevelValue("filter") { return value }; return "" }
-    private var originalExcludeFilter: String { ClashTowerGroupForm.excludeFilter(of: group.document) }
-    private var dirty: Bool { name != group.name || icon != ClashTowerGroupIcon.read(group.document) || kind != group.type || selected != originalSelected || includeAll != originalIncludeAll || filter != originalFilter || excludeFilter != originalExcludeFilter }
-    private var availableSections: [ConfigurationRuleTargetCandidates.Section] {
-        ClashTowerGroupCandidates.available(
-            groups: all.filter { $0.id != group.id }.map(\.name), excludingGroup: group.name,
-            nodeSections: nodeSections + (query.isEmpty ? [] : searched), selected: selected, query: query
-        )
-    }
-     
-     
-    private var typeChoices: [String] {
-        groupTypes.contains(group.type) || group.type.isEmpty ? groupTypes : [group.type] + groupTypes
-    }
-    private var isNew: Bool { group.name.isEmpty }
-    private var savesAsItGoes: Bool { savesEachChange && !isNew }
-     
-     
-    private var valid: Bool {
-        ClashTowerGroupForm.isValid(name: name, identityOnly: identityOnly, selected: selected, includeAll: includeAll, base: group.document)
-            && (identityOnly || !ClashTowerGroupForm.refuses(excludeCheck, excludeFilter))
-    }
-     
-     
-     
-    private func saveAsItGoes(closing: (() -> Void)? = nil) {
-        guard savesAsItGoes else { return }
-        writes.change(current: { fields }, writable: { [group, identityOnly] fields in
-            ClashTowerGroupForm.isValid(name: fields.name, identityOnly: identityOnly, selected: fields.selected,
-                                        includeAll: fields.includeAll, base: group.document)
-                && (identityOnly || !ClashTowerGroupForm.refuses(excludeCheck, fields.excludeFilter))
-        }, write: { fields in
-             
-             
-            if await excludeRefusal(fields.excludeFilter) != nil {
-                throw ClashTowerGroupPatternRefusal(displayText: ClashTowerGroupForm.leaveOutNodesRefusal(group: fields.name))
-            }
-            try await save(document(fields))
-        }, took: {
-            error = nil
-        }, refused: { failure, back in
-            error = failure is ClashTowerGroupPatternRefusal
-                ? ClashErrorCopy.message(failure, locale: locale) : ClashTowerRulesErrorText.describe(failure)
-            show(back)
-        }, closing: closing)
-    }
-
-     
-     
-     
-    private func doneOnTheList() {
-        saveAsItGoes(closing: close)
-    }
-    private func sectionTitle(_ section: ConfigurationRuleTargetCandidates.Section) -> Text {
-        switch section.kind {
-        case .builtin: return Text("Built-in")
-        case .groups: return Text("Policy Groups")
-        case .source, .providers: return Text(verbatim: section.sourceLabel ?? section.id)
-        }
-    }
-    var body: some View {
-        Form {
-            if identityOnly {
-                Section("Name and Icon") {
-                    TextField("Group Name", text: $name).onSubmit { saveAsItGoes() }.accessibilityIdentifier("configuration.rules.group.name")
-                    TextField("Icon URL", text: $icon, prompt: Text(verbatim: "https://…")).autocorrectionDisabled().onSubmit { saveAsItGoes() }.accessibilityIdentifier("configuration.rules.group.icon")
-                    ClashTowerGroupIconEchoRow(icon: icon)
-                }
-            } else {
-                Section("Name and Icon") {
-                    TextField("Group Name", text: $name).onSubmit { saveAsItGoes() }.accessibilityIdentifier("configuration.rules.group.name")
-                    TextField("Icon URL", text: $icon, prompt: Text(verbatim: "https://…")).autocorrectionDisabled().onSubmit { saveAsItGoes() }.accessibilityIdentifier("configuration.rules.group.icon")
-                    ClashTowerGroupIconEchoRow(icon: icon)
-                }
-                Section {
-                    Picker("Group Type", selection: $kind) { ForEach(typeChoices, id: \.self) { Text(verbatim: $0).tag($0) } }.accessibilityIdentifier("configuration.rules.group.type")
-                } footer: { Text("Changing the group type changes how routes are chosen.") }
-                Section("Selected (in priority order)") {
-                    ForEach(selected, id: \.self) { item in
-                        HStack { Text(verbatim: item); Spacer(); Button { selected.removeAll { $0 == item } } label: { Image(systemName: "minus.circle").foregroundStyle(.red) }.buttonStyle(.borderless) }
-                    }.onMove { selected.move(fromOffsets: $0, toOffset: $1) }
-                }
-                if ClashTowerGroupCandidates.offersSearch(nodeSections) || targetSearch != nil {
-                    Section("Available") {
-                        TextField("Search nodes", text: $query).accessibilityIdentifier("configuration.rules.group.search")
-                    }
-                }
-                ForEach(availableSections) { section in
-                    Section {
-                        ForEach(section.names, id: \.self) { item in
-                            Button { targetSearch?.recordUse(item); selected.append(item) } label: { HStack { Text(verbatim: item).foregroundStyle(.primary); Spacer(); Image(systemName: "plus.circle") }.contentShape(Rectangle()) }.buttonStyle(.plain)
-                        }
-                    } header: { sectionTitle(section) }
-                }
-                Section("Node Name Match") {
-                    Toggle("Include all proxies", isOn: $includeAll).accessibilityIdentifier("configuration.rules.group.include-all")
-                    TextField("Include filter", text: $filter).clashPatternInput().onSubmit { saveAsItGoes() }.accessibilityIdentifier("configuration.rules.group.filter")
-                     
-                     
-                     
-                    HStack {
-                        Text(verbatim: excludeFilterTitle)
-                        Spacer(minLength: ClashTheme.Spacing.compact)
-                        TextField(text: $excludeFilter, prompt: excludeFilterCopy?.example.map { Text(verbatim: $0) }) { Text(verbatim: excludeFilterTitle) }.labelsHidden().clashPatternInput().multilineTextAlignment(.trailing).onSubmit { saveAsItGoes() }.accessibilityIdentifier("configuration.rules.group.exclude-filter")
-                    }
-                    if let refusal = excludeRefusalShown {
-                        Text(clash: refusal).font(.footnote).foregroundStyle(.red)
-                            .accessibilityIdentifier("configuration.rules.group.exclude-filter.refusal")
-                    }
-                    Button {
-                        excludeFilter = ClashTowerGroupForm.addingInfoNodeExample(to: excludeFilter)
-                        saveAsItGoes()
-                    } label: { Text(clash: .copy("Leave Out Info Nodes")) }
-                        .disabled(ClashTowerGroupForm.holdsInfoNodeExample(excludeFilter))
-                        .accessibilityIdentifier("configuration.rules.group.exclude-filter.example")
-                }
-            }
-            if let error { Text(verbatim: error).foregroundStyle(.orange) }
-        }
-        .modifier(ClashTowerReorderMode())
-        .task(id: query) {
-            guard let targetSearch, !query.isEmpty else { searched = []; return }
-            try? await Task.sleep(nanoseconds: ClashRuleTargetSearchHook.settle)
-            guard !Task.isCancelled else { return }
-            let found = await targetSearch.sections(query, selected)
-            if !Task.isCancelled { searched = found }
-        }
-         
-         
-        .task(id: excludeFilter) {
-            guard patternCheck != nil, !identityOnly, !excludeFilter.isEmpty else { return }
-            if excludeFilter != originalExcludeFilter {
-                try? await Task.sleep(nanoseconds: ClashRuleTargetSearchHook.settle)
-                guard !Task.isCancelled else { return }
-            }
-            _ = await excludeRefusal(excludeFilter)
-        }
-        .disabled(busy).clashPageTitle(pageTitle, watchAs: pageName)
-         
-        .onChange(of: kind) { _ in saveAsItGoes() }
-        .onChange(of: selected) { _ in saveAsItGoes() }
-        .onChange(of: includeAll) { _ in saveAsItGoes() }
-        .clashToolbarUnlessInPanel {
-            ToolbarItem(placement: .cancellationAction) {
-                if !savesAsItGoes { Button("Cancel", action: close).disabled(busy) }
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                if savesAsItGoes {
-                     
-                    Button { doneOnTheList() } label: { Text(clash: .copy("Done")) }
-                        .disabled(writes.isWriting || !valid)
-                        .accessibilityIdentifier("configuration.rules.group.done")
-                } else {
-                    Button { commit() } label: { ClashActionProgressLabel(.copy("Save"), isBusy: busy) }.disabled(busy || !valid)
-                }
-            }
-        }
-        .onDisappear { saveAsItGoes() }
-        .clashRegistersDeparture(isDirty: savesAsItGoes ? false : dirty, isBusy: busy || writes.isWriting, whySaveIsBlocked: { valid ? nil : ClashDepartureSaveAnswer.incomplete }, save: { commit($0) }, discard: { name = group.name; icon = ClashTowerGroupIcon.read(group.document); kind = group.type; selected = originalSelected; includeAll = originalIncludeAll; filter = originalFilter; excludeFilter = originalExcludeFilter })
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if insideProductModal {
-                 
-                 
-                ClashModalActionBar(primaryTitle: "Save", primaryDisabled: !valid || writes.isWriting, isBusy: busy || writes.isWriting,
-                                    onPrimary: { if savesAsItGoes { doneOnTheList() } else { commit() } })
-            }
-        }
-    }
-    private func commit(_ completion: @escaping (Bool) -> Void = { _ in }) {
-        guard !busy, valid else { completion(false); return }
-        busy = true; error = nil
-        let fields = fields
-        Task { @MainActor in
-            defer { busy = false }
-             
-             
-            if await excludeRefusal(fields.excludeFilter) != nil { completion(false); return }
-            do {
-                try await save(document(fields)); completion(true)
-            } catch { self.error = ClashTowerRulesErrorText.describe(error); completion(false) }
-        }
-    }
 }
 
  
@@ -2906,12 +2697,14 @@ private struct ClashTowerInlineRules: View {
             .onDelete(perform: remove.map { remove -> (IndexSet) -> Void in { offsets in
                 for index in offsets where visible.indices.contains(index) && !visible[index].isFinal { remove(visible[index].id) }
             } })
-            .onMove { offsets, destination in
+             
+             
+            .onMove(perform: move == nil ? nil : { offsets, destination in
                  
                  
                 guard let move, current.query.isEmpty else { return }
                 move(offsets, destination)
-            }
+            })
             if searching && results.query != current.query { ProgressView("Searching…") }
             else if !searching && visible.isEmpty { Text("No results").foregroundStyle(.secondary) }
             if let addRule, current.query.isEmpty {

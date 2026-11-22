@@ -1009,7 +1009,8 @@ private struct ProviderHeaderDraft: Identifiable, Equatable {
     }
 }
 
-private struct ProviderHeadersEditorView: View {
+ 
+struct ProviderHeadersEditorView: View {
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
     @Environment(\.clashPopRoute) private var popRoute
@@ -1052,14 +1053,20 @@ private struct ProviderHeadersEditorView: View {
                             .disableAutocorrection(true)
                             .textInputAutocapitalization(.never)
                         Divider()
+                         
+                         
+                         
+                         
+                         
                         ClashFieldRow(
                             "Header Value",
                             hint: "Required",
                             text: $row.value,
-                            secure: true,
                             identifier:
                                 "provider-definition.header.value"
                         )
+                            .disableAutocorrection(true)
+                            .textInputAutocapitalization(.never)
                     }
                     }
                 }
@@ -1072,8 +1079,6 @@ private struct ProviderHeadersEditorView: View {
                 .accessibilityIdentifier(
                     "provider-definition.headers.add"
                 )
-            } footer: {
-                Text("Header values are treated as credentials and are never shown in previews or diagnostics.")
             }
         }
         .clashInsetGroupedListStyle()

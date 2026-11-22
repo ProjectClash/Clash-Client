@@ -6,6 +6,8 @@ import SwiftUI
  
  
  
+ 
+ 
 struct ClashLibraryTabTitle: ViewModifier {
     let isCenterSection: Bool
     let standalone: ClashDisplayText
@@ -18,103 +20,6 @@ struct ClashLibraryTabTitle: ViewModifier {
                 .clashProductModalRoot(title: standalone)
         } else {
             content
-        }
-    }
-}
-
-public struct ClashConfigurationCenterSections<Profiles: View, Nodes: View, Rules: View>: View {
-    @Environment(\.clashShellDrawsRootHeading) private var railOwnsHeading
-    @State private var section = 0
-    @Environment(\.locale) private var locale
-    @Environment(\.clashRootDepartureGuard) private var departureGuard
-    private let profiles: () -> Profiles
-    private let nodes: () -> Nodes
-    private let rules: () -> Rules
-     
-     
-     
-     
-    private let revealsConfigurations: Int
-     
-     
-     
-     
-     
-     
-     
-     
-    @State private var addedElsewhere = false
-    public init(revealsConfigurations: Int = 0,
-                @ViewBuilder profiles: @escaping () -> Profiles,
-                @ViewBuilder nodes: @escaping () -> Nodes,
-                @ViewBuilder rules: @escaping () -> Rules) {
-        self.revealsConfigurations = revealsConfigurations
-        self.profiles = profiles; self.nodes = nodes; self.rules = rules
-    }
-    public var body: some View {
-         
-         
-         
-         
-         
-         
-         
-         
-         
-         
-         
-        Group {
-            switch section {
-            case 1: nodes()
-            case 2: rules()
-            default: profiles()
-            }
-        }
-        .clashRegularStripPage {
-            ClashFullWidthSegmentedPicker(selection: Binding(get: { section }, set: { next in
-                guard next != section else { return }
-                ClashDeparture.request(departureGuard) { section = next }
-            }), options: ["Configuration Library", "Node Library", "Rule Library"].enumerated().map { index, title in
-                ClashFullWidthSegmentedOption(selection: index, title: ClashCopy.string(title, locale: locale),
-                    accessibilityIdentifier: "configuration.center.tab.\(index)")
-            }, role: .pageStrip)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, ClashTheme.Spacing.standard)
-        }
-         
-         
-         
-         
-         
-        .clashRootHeading("Profile Center")
-        .clashToolbarUnlessInPanel {
-            ToolbarItem(placement: .principal) {
-                if !railOwnsHeading { Text("Profile Center").font(.headline) }
-            }
-        }
-        .onChange(of: revealsConfigurations) { _ in
-            if section != 0 { addedElsewhere = true }
-        }
-        .onChange(of: section) { next in
-            if next == 0 { addedElsewhere = false }
-        }
-         
-         
-         
-         
-        .safeAreaInset(edge: .bottom) {
-            if addedElsewhere {
-                Button {
-                    ClashDeparture.request(departureGuard) { section = 0 }
-                } label: {
-                    Text("View Added Configuration")
-                }
-                 
-                .clashPrimaryActionButtonStyle()
-                .controlSize(.large)
-                .padding(.bottom, ClashTheme.Spacing.standard)
-                .accessibilityIdentifier("configuration.center.view-added")
-            }
         }
     }
 }
@@ -864,7 +769,15 @@ public struct ClashConfigurationSourceLibraryView: View {
     @Environment(\.clashInsideProductModalPresentation) private var insideProductModal
     public let library: ConfigurationLibrarySnapshot
     public let isReady: Bool
+     
     public let isBusy: Bool
+     
+     
+     
+     
+     
+     
+    public let isUpdating: Bool
     public let error: String?
     public let palette: ClashProductPalette
     public let status: String?
@@ -895,13 +808,23 @@ public struct ClashConfigurationSourceLibraryView: View {
     public let updateSource: ((String) -> Void)?
     public let copySourceLink: ((String) -> Void)?
     public let deleteSource: ((String) -> Void)?
-    public init(library: ConfigurationLibrarySnapshot, palette: ClashProductPalette, isReady: Bool, isBusy: Bool, error: String?,
+     
+     
+     
+    public let pageTitle: ClashDisplayText?
+     
+     
+     
+    public let usage: ((String) -> ClashDisplayText?)?
+    public init(library: ConfigurationLibrarySnapshot, palette: ClashProductPalette, isReady: Bool, isBusy: Bool, isUpdating: Bool = false, error: String?,
                 add: @escaping (ClashConfigurationSourceKind) -> Void, open: @escaping (String) -> Void,
                 reload: @escaping () -> Void, close: @escaping () -> Void, updateAll: (() -> Void)? = nil, refreshAll: (() async -> Void)? = nil, status: String? = nil, updateProgress: String? = nil, isCenterSection: Bool = false, showsClose: Bool = true,
                 collections: [ConfigurationCollectionEntry] = [], openCollection: @escaping (ConfigurationCollectionEntry) -> Void = { _ in },
                 quickAdd: (() -> AnyView)? = nil, addMenu: (() -> AnyView)? = nil,
                 refusals: [String: String] = [:], updateSource: ((String) -> Void)? = nil,
-                copySourceLink: ((String) -> Void)? = nil, deleteSource: ((String) -> Void)? = nil) {
+                copySourceLink: ((String) -> Void)? = nil, deleteSource: ((String) -> Void)? = nil,
+                pageTitle: ClashDisplayText? = nil, usage: ((String) -> ClashDisplayText?)? = nil) {
+        self.pageTitle = pageTitle; self.usage = usage
         self.collections = collections; self.openCollection = openCollection; self.quickAdd = quickAdd
         self.addMenu = addMenu
         self.refusals = refusals
@@ -909,7 +832,7 @@ public struct ClashConfigurationSourceLibraryView: View {
         self.palette = palette
         self.updateAll = updateAll; self.refreshAll = refreshAll; self.status = status; self.updateProgress = updateProgress
         self.isCenterSection = isCenterSection; self.showsClose = showsClose
-        self.library = library; self.isReady = isReady; self.isBusy = isBusy; self.error = error
+        self.library = library; self.isReady = isReady; self.isBusy = isBusy; self.isUpdating = isUpdating; self.error = error
         self.add = add; self.open = open; self.reload = reload; self.close = close
     }
     public var body: some View {
@@ -917,7 +840,7 @@ public struct ClashConfigurationSourceLibraryView: View {
         ClashConfigurationLibraryList(palette: palette, accessibilityIdentifier: "configuration.library.sources.content") {
             if !isReady {
                 ClashConfigurationLibraryCard(palette: palette, nativeList: true) {
-                    if isBusy {
+                    if holdsControls {
                         ProgressView("Loading Sources…")
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     } else {
@@ -950,7 +873,7 @@ public struct ClashConfigurationSourceLibraryView: View {
                     Section {
                          
                          
-                        ClashConfigurationUpdateButton(title: "Update All", isUpdating: isBusy, disabled: false, action: updateAll)
+                        ClashConfigurationUpdateButton(title: "Update All", isUpdating: holdsControls, disabled: false, action: updateAll)
                             .accessibilityIdentifier("configuration.library.update-all")
                     } footer: {
                          
@@ -979,7 +902,7 @@ public struct ClashConfigurationSourceLibraryView: View {
                  
                 if let quickAdd { quickAdd() } else {
                     ClashConfigurationLibraryAddCard(kind: .nodes, palette: palette, nativeList: true,
-                        disabled: isBusy || !isReady, action: { add(.subscription) })
+                        disabled: holdsControls || !isReady, action: { add(.subscription) })
                         .accessibilityIdentifier("configuration.library.sources.add-card")
                 }
                 Section {} footer: {
@@ -993,7 +916,7 @@ public struct ClashConfigurationSourceLibraryView: View {
          
          
         .modifier(ClashLibraryPullToUpdate(action: isReady && hasUpdates ? (refreshAll ?? updateAll.map { run in { run() } }) : nil))
-        .modifier(ClashLibraryTabTitle(isCenterSection: isCenterSection, standalone: .copy("Manage Sources")))
+        .modifier(ClashLibraryTabTitle(isCenterSection: isCenterSection, standalone: pageTitle ?? .copy("Manage Sources")))
         .accessibilityIdentifier("configuration.library.sources")
         .clashToolbarUnlessInPanel {
             ToolbarItem(placement: .primaryAction) {
@@ -1001,8 +924,10 @@ public struct ClashConfigurationSourceLibraryView: View {
                  
                  
                 if let addMenu { addMenu() }
-                else { addButton.disabled(isBusy || !isReady) }
+                else { addButton.disabled(holdsControls || !isReady) }
             }
+             
+             
             ToolbarItem(placement: .cancellationAction) {
                 if showsClose { ClashSheetCloseButton(dismiss: close).disabled(isBusy) }
             }
@@ -1010,6 +935,9 @@ public struct ClashConfigurationSourceLibraryView: View {
         .clashRegistersDeparture(isDirty: false, isBusy: isBusy, save: { $0(false) }, discard: {})
         .interactiveDismissDisabled(isBusy)
     }
+     
+     
+    private var holdsControls: Bool { isBusy || isUpdating }
      
      
     private var hasUpdates: Bool {
@@ -1047,6 +975,7 @@ public struct ClashConfigurationSourceLibraryView: View {
                             }
                         } label: {
                             sourceRow(source, usage: usage, showsInfo: false)
+                                .clashOutlineToggle(isExpanded: expansion(source.id))
                         }
                     }
                 }
@@ -1055,13 +984,13 @@ public struct ClashConfigurationSourceLibraryView: View {
     }
 
     private func sourceRow(_ source: ConfigurationSourceRecord, usage: ConfigurationSubscriptionUsage?, showsInfo: Bool) -> some View {
-        Button { if !isBusy { open(source.id) } } label: {
+        Button { if !holdsControls { open(source.id) } } label: {
              
              
              
             ClashConfigurationLibraryRow(title: source.displayLabel(locale: locale),
                 count: .verbatim(ClashConfigurationSourceCopy.summary(source, locale: locale)),
-                showsInfo: showsInfo, usage: usage, failure: refusals[source.id])
+                showsInfo: showsInfo, usage: usage, failure: refusals[source.id], inUse: self.usage?(source.id))
         }
         .buttonStyle(.plain)
          
@@ -1071,7 +1000,7 @@ public struct ClashConfigurationSourceLibraryView: View {
         .contextMenu { sourceMenu(source) }
          
          
-        .clashSwipeToDelete(identifier: "configuration.library.source.swipe-delete", disabled: isBusy,
+        .clashSwipeToDelete(identifier: "configuration.library.source.swipe-delete", disabled: holdsControls,
                            deleteSource != nil && Self.rowActions(source).contains(.delete) ? { deleteSource?(source.id) } : nil)
     }
 
@@ -1103,7 +1032,7 @@ public struct ClashConfigurationSourceLibraryView: View {
             Button { updateSource(source.id) } label: {
                 Label { Text("Update") } icon: { Image(systemName: ClashSymbol.arrowClockwise.rawValue) }
             }
-            .disabled(isBusy)
+            .disabled(holdsControls)
             .accessibilityIdentifier("configuration.library.source.update")
         }
         if actions.contains(.copyLink), let copySourceLink {
@@ -1116,7 +1045,7 @@ public struct ClashConfigurationSourceLibraryView: View {
             Button(role: .destructive) { deleteSource(source.id) } label: {
                 Label { Text("Delete") } icon: { Image(systemName: ClashSymbol.trash.rawValue) }
             }
-            .disabled(isBusy)
+            .disabled(holdsControls)
             .accessibilityIdentifier("configuration.library.source.delete")
         }
     }
@@ -1140,7 +1069,7 @@ public struct ClashConfigurationSourceLibraryView: View {
 
     private var addButton: some View {
         Button { add(.subscription) } label: { Image(systemName: ClashSymbol.plusCircle.rawValue).clashToolbarGlyph() }
-        .disabled(isBusy || !isReady)
+        .disabled(holdsControls || !isReady)
         .accessibilityLabel(ClashCopy.key(ClashConfigurationAddition.nodes.entryTitle))
         .accessibilityIdentifier("configuration.library.add")
     }
@@ -2029,7 +1958,24 @@ public struct ClashConfigurationSubscriptionImportView: View {
 }
 
  
-struct ClashConfigurationLibraryRow: View {
+ 
+ 
+ 
+ 
+public enum ClashLibraryUsageCopy {
+    public static func text(_ usage: LibraryUsage) -> ClashDisplayText {
+        switch usage {
+        case .none: .copy("No configuration uses it")
+        case .one(let name): .format("“%@” uses it", [name])
+        case .many(let count): .format("Used by %@ configurations", ["\(count)"])
+        }
+    }
+}
+
+ 
+ 
+ 
+public struct ClashConfigurationLibraryRow: View {
     let title: String
     let count: ClashDisplayText
      
@@ -2044,15 +1990,30 @@ struct ClashConfigurationLibraryRow: View {
      
      
     var failure: String? = nil
+     
+     
+     
+    var inUse: ClashDisplayText? = nil
     @Environment(\.locale) private var locale
 
-    var body: some View {
+    public init(title: String, count: ClashDisplayText, showsInfo: Bool = true, usage: ConfigurationSubscriptionUsage? = nil,
+                failure: String? = nil, inUse: ClashDisplayText? = nil) {
+        self.title = title; self.count = count; self.showsInfo = showsInfo; self.usage = usage; self.failure = failure
+        self.inUse = inUse
+    }
+
+    public var body: some View {
         let _ = ClashPerf.count("library.row")
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(verbatim: title)
                     .font(.body).foregroundStyle(Color.primary)
                     .lineLimit(1).truncationMode(.tail)
+                if let inUse {
+                    Text(clash: inUse)
+                        .font(.caption).foregroundStyle(Color.secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                }
                 caption
                     .font(.caption).foregroundStyle(Color.secondary)
                     .lineLimit(1)
@@ -2082,10 +2043,12 @@ struct ClashConfigurationLibraryRow: View {
     }
 
     private var caption: Text {
-        guard let usage, usage.expire > 0 else { return Text(clash: count) }
-        let date = Date(timeIntervalSince1970: Double(usage.expire))
+         
+        guard let usage, let day = ClashSubscriptionUsageFormat.expiry(usage, locale: locale) else {
+            return Text(clash: count)
+        }
         let expired = usage.expire < Int64(Date().timeIntervalSince1970)
-        let expiry = Text(clash: .format("Expires %@", [date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(locale))]))
+        let expiry = Text(clash: day)
          
          
         return Text(clash: count) + Text(verbatim: " · ") + (expired ? expiry.foregroundColor(.red) : expiry)
@@ -2130,18 +2093,34 @@ struct ClashConfigurationLibraryCard<Content: View>: View {
      
      
     var systemRowInsets = false
+     
+    var footer: ClashDisplayText?
+    private var rows: some View {
+        content
+            .listRowInsets(ClashPlatformLayout.pageUsesSystemSettingsIdiom || systemRowInsets ? nil :
+                EdgeInsets(top: 0, leading: ClashTheme.Spacing.standard, bottom: 0, trailing: ClashTheme.Spacing.standard))
+    }
     init(title: ClashDisplayText? = nil, count: Int? = nil, palette: ClashProductPalette,
-         nativeList: Bool = false, systemRowInsets: Bool = false, @ViewBuilder content: () -> Content) {
+         nativeList: Bool = false, systemRowInsets: Bool = false, footer: ClashDisplayText? = nil,
+         @ViewBuilder content: () -> Content) {
         self.title = title; self.count = count; self.palette = palette; self.nativeList = nativeList
-        self.systemRowInsets = systemRowInsets; self.content = content()
+        self.systemRowInsets = systemRowInsets; self.footer = footer; self.content = content()
     }
     @ViewBuilder var body: some View {
         let _ = ClashPerf.count("library.card")
-        if nativeList || ClashPlatformLayout.pageUsesSystemSettingsIdiom {
+        if nativeList || ClashPlatformLayout.pageUsesSystemSettingsIdiom, let footer {
+             
+             
             Section {
-                content
-                    .listRowInsets(ClashPlatformLayout.pageUsesSystemSettingsIdiom || systemRowInsets ? nil :
-                        EdgeInsets(top: 0, leading: ClashTheme.Spacing.standard, bottom: 0, trailing: ClashTheme.Spacing.standard))
+                rows
+            } header: {
+                if let title { ClashConfigurationLibraryHeader(title: title, count: count) }
+            } footer: {
+                Text(clash: footer)
+            }
+        } else if nativeList || ClashPlatformLayout.pageUsesSystemSettingsIdiom {
+            Section {
+                rows
             } header: {
                 if let title { ClashConfigurationLibraryHeader(title: title, count: count) }
             }
@@ -2230,6 +2209,20 @@ public extension ConfigurationSourceRecord {
 }
 
 public enum ClashConfigurationSourceCopy {
+     
+     
+     
+     
+    public static func lastUpdated(_ record: ConfigurationSourceRecord, locale: Locale, now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = locale
+        formatter.unitsStyle = .full
+         
+        let updated = record.updatedAt.timeIntervalSince(now) > -1 ? now.addingTimeInterval(-1) : record.updatedAt
+        return ClashCopy.string(for: .format("Last updated %@", [formatter.localizedString(for: updated, relativeTo: now)]),
+                                locale: locale)
+    }
+
      
      
      
@@ -2326,9 +2319,17 @@ public struct ClashConfigurationSelectableNode: Identifiable, Sendable {
     public init(name: String, type: String) { self.name = name; self.type = type }
 }
 
+ 
+ 
+ 
+ 
+ 
 public struct ClashConfigurationNodeScopeView: View {
     private let source: ConfigurationSourceRecord
     private let initial: ConfigurationNodeScope?
+     
+     
+    private let configurationName: String?
     private let save: (ConfigurationNodeScope?) -> Void
     private let close: () -> Void
     private let collections: [ConfigurationCollection]
@@ -2348,14 +2349,14 @@ public struct ClashConfigurationNodeScopeView: View {
     @State private var confirmsDiscard = false
     public init(source: ConfigurationSourceRecord, collections: [ConfigurationCollection],
                 nodes: [ClashConfigurationSelectableNode], initial: ConfigurationNodeScope?,
+                configurationName: String? = nil,
                 save: @escaping (ConfigurationNodeScope?) -> Void, close: @escaping () -> Void) {
         self.source = source; self.initial = initial; self.save = save; self.close = close
+        self.configurationName = configurationName
         self.collections = collections; self.nodes = nodes
-        let selected = initial?.includesInlineNodes == false ? Set<String>()
-            : Set(initial?.inlineNodeNames ?? nodes.map(\.name))
-        let providers = Set(initial?.providerKeys ?? collections.map(\.name))
-        initialNodes = selected; initialProviders = providers
-        let choices = Set(selected.map(Choice.node) + providers.map(Choice.provider))
+        let seed = Self.initialSelection(initial, collections: collections, nodes: nodes)
+        initialNodes = seed.nodes; initialProviders = seed.collections
+        let choices = Set(seed.nodes.map(Choice.node) + seed.collections.map(Choice.provider))
         initialChoices = choices
         _selectedChoices = State(initialValue: choices)
     }
@@ -2363,12 +2364,56 @@ public struct ClashConfigurationNodeScopeView: View {
     private var dirty: Bool { selectedChoices != initialChoices }
     private var selection: ConfigurationNodeScope? {
         guard dirty else { return initial }
-        let allNodes = selectedNodes == Set(nodes.map(\.name))
-        if allNodes && selectedProviders == Set(collections.map(\.name)) { return nil }
-        return .init(includesInlineNodes: !selectedNodes.isEmpty, providerKeys: selectedProviders.sorted(),
-                     inlineNodeNames: allNodes ? nil : selectedNodes.sorted())
+        return Self.selection(nodes: selectedNodes, collections: selectedProviders, allNodes: nodes,
+                              allCollections: collections, before: initial)
     }
+
+     
+     
+     
+    static func initialSelection(_ scope: ConfigurationNodeScope?, collections: [ConfigurationCollection],
+                                 nodes: [ClashConfigurationSelectableNode]) -> (nodes: Set<String>, collections: Set<String>) {
+        (Set(nodes.map(\.name).filter { scope?.choosesNode(named: $0) ?? true }),
+         Set(scope?.providerKeys ?? collections.map(\.name)))
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    static func selection(nodes selected: Set<String>, collections selectedCollections: Set<String>,
+                          allNodes: [ClashConfigurationSelectableNode], allCollections: [ConfigurationCollection],
+                          before: ConfigurationNodeScope?) -> ConfigurationNodeScope? {
+        if selected.isEmpty && selectedCollections.isEmpty {
+            return ConfigurationNodeScope(includesInlineNodes: false, providerKeys: [], inlineNodeNames: nil)
+        }
+        let nodeSets = allCollections.map(\.name)
+        var scope = before ?? ConfigurationNodeScope(includesInlineNodes: true, providerKeys: nodeSets)
+        for node in allNodes where (before?.choosesNode(named: node.name) ?? true) != selected.contains(node.name) {
+            scope = scope.choosingNode(named: node.name, checked: selected.contains(node.name))
+        }
+        scope.providerKeys = selectedCollections.sorted()
+        return scope.settled(nodeSets: nodeSets)
+    }
+
+     
+     
+     
+    static func nodeDetail(_ node: ClashConfigurationSelectableNode, saving scope: ConfigurationNodeScope?,
+                           configurationName: String?) -> ClashDisplayText? {
+        if let configurationName, scope?.excludedNodeNames?.contains(node.name) == true {
+            return .format("Removed from “%@”", [configurationName])
+        }
+        return node.type.isEmpty ? nil : .verbatim(node.type)
+    }
+
     public var body: some View {
+         
+        let saving = selection
         List {
             if !collections.isEmpty {
                 Section("Node Collections") {
@@ -2380,7 +2425,8 @@ public struct ClashConfigurationNodeScopeView: View {
             }
             Section("Nodes") {
                 ForEach(nodes.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.type.localizedCaseInsensitiveContains(search) }) { node in
-                    choiceRow(.node(node.name), label: node.name, detail: node.type)
+                    choiceRow(.node(node.name), label: node.name,
+                              detail: Self.nodeDetail(node, saving: saving, configurationName: configurationName))
                         .accessibilityIdentifier("configuration.scope.node.\(node.name)")
                 }
             }
@@ -2408,7 +2454,7 @@ public struct ClashConfigurationNodeScopeView: View {
      
      
      
-    private func choiceRow(_ choice: Choice, label: String, detail: String?) -> some View {
+    private func choiceRow(_ choice: Choice, label: String, detail: ClashDisplayText?) -> some View {
         let chosen = selectedChoices.contains(choice)
         return Button {
             if chosen { selectedChoices.remove(choice) } else { selectedChoices.insert(choice) }
@@ -2423,10 +2469,10 @@ public struct ClashConfigurationNodeScopeView: View {
         .clashSelectionRowFill(chosen)
     }
 
-    private func choiceLabel(_ name: String, detail: String?) -> some View {
+    private func choiceLabel(_ name: String, detail: ClashDisplayText?) -> some View {
         VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
             Text(verbatim: name).foregroundStyle(.primary)
-            if let detail, !detail.isEmpty { Text(verbatim: detail).font(.caption).foregroundStyle(.secondary) }
+            if let detail, !detail.isBlank { Text(clash: detail).font(.caption).foregroundStyle(.secondary) }
         }
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .contentShape(Rectangle())
@@ -2435,7 +2481,97 @@ public struct ClashConfigurationNodeScopeView: View {
 
  
  
-enum ClashConfigurationCollectionCopy {
+public enum ClashConfigurationCollectionCopy {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func members(of collection: ConfigurationCollection, count: Int?, inUse: Int?,
+                               inUseIsThisCopy: Bool = false) -> [ClashDisplayText] {
+        let nodes = collection.id.kind == .nodes
+        func counted(_ value: Int) -> ClashDisplayText {
+            ClashConfigurationSourceCopy.counted(value, one: nodes ? "%@ node" : "%@ rule", other: nodes ? "%@ nodes" : "%@ rules")
+        }
+        func running(_ value: Int) -> ClashDisplayText {
+            ClashConfigurationSourceCopy.counted(value, one: nodes ? "%@ node in the configuration in use" : "%@ rule in the configuration in use",
+                                                 other: nodes ? "%@ nodes in the configuration in use" : "%@ rules in the configuration in use")
+        }
+        guard let inUse else { return count.map { [counted($0)] } ?? [] }
+        guard let count else { return [running(inUse)] }
+        let filters = nodes && filtersMembers(collection)
+        if inUse == count {
+             
+            guard count > 0, inUseIsThisCopy || !filters else { return [counted(count)] }
+            return [ClashConfigurationSourceCopy.counted(count, one: nodes ? "%@ node, in use" : "%@ rule, in use",
+                                                         other: nodes ? "%@ nodes, all in use" : "%@ rules, all in use")]
+        }
+         
+         
+         
+        if inUseIsThisCopy, filters, inUse > 0, inUse < count {
+            return [.format("%@ nodes, %@ in use after filtering", [String(count), String(inUse)])]
+        }
+        return [counted(count), running(inUse)]
+    }
+
+     
+     
+     
+     
+     
+    static func filtersMembers(_ collection: ConfigurationCollection) -> Bool {
+        ["filter", "exclude-filter", "exclude-type"].contains { key in
+            switch collection.definition.topLevelValue(key) {
+            case nil, .scalar("null")?: return false
+            case .string(let text)?: return !text.isEmpty
+            case .array(let items)?: return !items.isEmpty
+            case .object(let pairs)?: return !pairs.isEmpty
+            case .scalar?: return true
+            }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    public static func updateWordStands(saidAt: Date, lineUpdatedAt: Date?) -> Bool {
+        guard let lineUpdatedAt else { return true }
+        return !(lineUpdatedAt.timeIntervalSince(saidAt) > updateWordEcho)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static let updateWordEcho: TimeInterval = 10
+
     static func summary(_ entry: ConfigurationCollectionEntry) -> ClashDisplayText {
         if let count = entry.memberCount {
             return .format(entry.id.kind == .nodes ? "%@ nodes" : "%@ rules", [String(count)])
@@ -2583,23 +2719,23 @@ struct ClashConfigurationSubscriptionUsageView: View {
     var body: some View {
         let _ = ClashPerf.count("library.usage")
         VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
-            if usage.total > 0 {
-                Text(clash: .format("%@ of %@ used", [bytes(usage.used), bytes(usage.total)]))
-            } else if usage.used > 0 {
-                Text(clash: .format("Used %@", [bytes(usage.used)]))
+             
+             
+            if let traffic = ClashSubscriptionUsageFormat.traffic(usage) {
+                Text(clash: traffic)
             }
             if let fraction = usage.fraction {
                 ProgressView(value: fraction, total: 1)
                     .progressViewStyle(.linear).tint(.accentColor)
                     .accessibilityLabel(ClashCopy.key("Used"))
             }
-            if usage.expire > 0 {
-                Text(clash: .format("Expires %@", [Date(timeIntervalSince1970: Double(usage.expire)).formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(locale))]))
+            if let expiry = ClashSubscriptionUsageFormat.expiry(usage, locale: locale) {
+                Text(clash: expiry)
                     .foregroundStyle(usage.expire < Int64(Date().timeIntervalSince1970) ? Color.red : Color.secondary)
             }
             if detailed {
-                Text(clash: .format("Uploaded %@", [bytes(max(0, usage.upload))]))
-                Text(clash: .format("Downloaded %@", [bytes(max(0, usage.download))]))
+                Text(clash: ClashSubscriptionUsageFormat.uploaded(usage))
+                Text(clash: ClashSubscriptionUsageFormat.downloaded(usage))
             }
         }
         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
@@ -2607,11 +2743,9 @@ struct ClashConfigurationSubscriptionUsageView: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("configuration.source.subscription-usage")
     }
-    private func bytes(_ value: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: value, countStyle: .binary)
-    }
 }
 
+ 
  
  
  
@@ -2625,10 +2759,6 @@ struct ClashLibraryPullToUpdate: ViewModifier {
     init(action: (() async -> Void)?) { self.action = action }
 
     func body(content: Content) -> some View {
-        if let action {
-            content.refreshable { await action() }
-        } else {
-            content
-        }
+        content.refreshable { await action?() }
     }
 }

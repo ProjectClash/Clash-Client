@@ -97,3 +97,56 @@ final class MacVPNDisconnectErrorFetchGate: @unchecked Sendable {
         continuation?.resume(returning: error)
     }
 }
+
+ 
+ 
+ 
+ 
+ 
+ 
+enum MacHomeStartError {
+    struct Line: Equatable {
+        let message: String
+        let subject: String?
+    }
+
+     
+     
+     
+     
+     
+     
+    static func line(lastError: String, refusal: CoreStartRefusal?, selected: String?,
+                     paused: CoreStartRefusal? = nil) -> Line {
+        if let paused = pausedRefusalSaid(lastError: lastError, selected: selected, paused: paused) {
+            return Line(message: paused.message, subject: paused.words)
+        }
+        guard let refusal else { return Line(message: lastError, subject: nil) }
+        guard refusal.isAbout(selected: selected) else { return Line(message: "", subject: nil) }
+        return Line(message: lastError, subject: refusal.words)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func revisionForThePauseNote(words: String?, lastError: String, refusal: CoreStartRefusal?,
+                                        selected: String?, paused: CoreStartRefusal?) -> StartupOutcomeRecord.Revision? {
+        let said = pausedRefusalSaid(lastError: lastError, selected: selected, paused: paused)
+            ?? refusal.flatMap { $0.isAbout(selected: selected) ? $0 : nil }
+        guard let said, let words, said.words == words else { return nil }
+        return said.requested
+    }
+
+     
+    private static func pausedRefusalSaid(lastError: String, selected: String?,
+                                          paused: CoreStartRefusal?) -> CoreStartRefusal? {
+        guard lastError.isEmpty || lastError == MacVPNDisconnectErrorPresentation.genericStartFailureMessage,
+              let paused, paused.isAbout(selected: selected)
+        else { return nil }
+        return paused
+    }
+}

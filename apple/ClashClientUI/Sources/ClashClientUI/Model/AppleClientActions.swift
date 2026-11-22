@@ -112,6 +112,33 @@ public enum ClashProxiesCommand: Codable, Equatable, Sendable {
      
     case setGroupsExpanded(names: [String], isExpanded: Bool)
     case cancelLatency
+     
+     
+    case addNodes
+     
+     
+    case updateNodeSources
+     
+     
+     
+    case inspectGroup(name: String)
+     
+    case newGroup
+     
+     
+    case reorderGroups
+     
+     
+     
+    case deleteGroup(name: String)
+     
+     
+     
+     
+     
+    case copyNodeYAML(name: String)
+    case removeNode(name: String)
+    case deleteNode(name: String)
 }
 
 public enum ClashActivityCommand: Codable, Equatable, Sendable {

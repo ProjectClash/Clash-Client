@@ -164,6 +164,10 @@ final class ExtensionProvider: NSObject {
     private var startRequested: ClashStartupOutcomeRecord.Revision?
      
      
+     
+    private var startBeganNanoseconds: UInt64 = 0
+     
+     
     private var tunnelStopped = false
     private var startupSamplingToken: StartupMemorySampler.Token?
     private var networkSettings: NEPacketTunnelNetworkSettings?
@@ -187,6 +191,9 @@ final class ExtensionProvider: NSObject {
     private var pathRecoveredSinceApply = false
     private var appliedInterfaceName: String?
     private var pathReapplyTask: Task<Void, Never>?
+     
+     
+    private var pathIPv6SettleTask: Task<Void, Never>?
 #if os(macOS)
      
      
@@ -285,6 +292,10 @@ final class ExtensionProvider: NSObject {
      
     private var handedNetworkIdentity: NetworkIdentity?
     private var physicalInterfaceIdentity = PhysicalInterfaceIdentity()
+     
+     
+     
+    private var pathIPv6FlapBreaker = TunnelIPv6PathFlapBreaker()
     private var physicalPathUpdateCount: UInt64 = 0
     private var physicalPathHistory: [PhysicalPathEvent] = []
     private var providerSleepCount: UInt64 = 0
@@ -327,6 +338,7 @@ final class ExtensionProvider: NSObject {
         defaultPathIsConstrained = false
         physicalPathUpdateCount = 0
         physicalInterfaceIdentity = PhysicalInterfaceIdentity()
+        pathIPv6FlapBreaker.reset()
         handedNetworkIdentity = nil
         physicalPathHistory.removeAll(keepingCapacity: true)
         providerSleepCount = 0
@@ -343,6 +355,11 @@ final class ExtensionProvider: NSObject {
             let correction = notePhysicalPathForTunnelSettings(
                 ready: snapshot.isReady, name: snapshot.interfaceName, supportsIPv6: snapshot.supportsIPv6
             )
+            let followsPath = ipStack.tunIPv6Mode.followsPath
+            let flap = notePathIPv6Flap(correction, followsPath: followsPath)
+             
+             
+            let coreSupportsIPv6 = pathIPv6FlapBreaker.pathIPv6ToDeclare(pathHasIPv6: snapshot.supportsIPv6)
             defaultInterfaceIndex = snapshot.interfaceIndex
             defaultInterfaceType = snapshot.interfaceType
             defaultPathIsExpensive = snapshot.expensive
@@ -373,9 +390,8 @@ final class ExtensionProvider: NSObject {
              
              
             if identityChanged { ClashSetNetworkIdentity(identity.kind, identity.routers, "", "", "") }
-            followPhysicalPath(
-                correction, followsPath: ipStack.tunIPv6Mode.followsPath, generation: settingsGeneration
-            )
+            followPhysicalPath(correction, flap: flap, followsPath: followsPath, interfaceName: snapshot.interfaceName,
+                               generation: settingsGeneration)
 #if os(iOS) || os(macOS)
              
             widgetMailbox.pathChanged(interfaceType: snapshot.interfaceType)
@@ -389,7 +405,7 @@ final class ExtensionProvider: NSObject {
                 isExpensive: snapshot.expensive,
                 isConstrained: snapshot.constrained,
                 supportsIPv4: snapshot.supportsIPv4,
-                supportsIPv6: snapshot.supportsIPv6
+                supportsIPv6: coreSupportsIPv6
             )
         }
     }
@@ -449,6 +465,110 @@ final class ExtensionProvider: NSObject {
         return PathCorrection(
             pathReady: ready, interfaceChange: interfaceChange, ipv6SupportChanged: ipv6SupportChanged,
             hasIPv6: ready && supportsIPv6
+        )
+    }
+
+     
+     
+     
+     
+    private func followPhysicalPath(
+        _ correction: PathCorrection, flap: TunnelIPv6PathFlapBreaker.Verdict?, followsPath: Bool,
+        interfaceName: String, generation: TunnelNetworkSettingsWriter.Generation
+    ) {
+        switch flap {
+        case .hold?:
+             
+             
+            break
+        case let .trip(flips)?:
+            let held = TunnelIPv6PathFlapBreaker.heldPathIPv6
+             
+             
+            let declares = held && withStateLock { self.offeredNetworkSettings?.ipv6Settings != nil }
+            ClashLogStore.shared.append(
+                "tun: path IPv6 support flipped \(flips) times in \(Int(TunnelIPv6PathFlapBreaker.window)) s on "
+                    + "\(interfaceName); holding IPv6 declaration=\(declares) until it settles",
+                stream: .app
+            )
+            scheduleTunnelSettingsFollowingPath(hasIPv6: held, interfaceChange: .none, generation: generation)
+            schedulePathIPv6Settle(after: TunnelIPv6PathFlapBreaker.settle, generation: generation)
+        case .follow?, nil:
+            followPhysicalPath(correction, followsPath: followsPath, generation: generation)
+        }
+    }
+
+     
+     
+     
+    private func notePathIPv6Flap(_ correction: PathCorrection, followsPath: Bool) -> TunnelIPv6PathFlapBreaker.Verdict? {
+        if correction.interfaceChange != .none {
+            pathIPv6FlapBreaker.reset()
+            return nil
+        }
+        guard correction.pathReady, correction.ipv6SupportChanged, followsPath else { return nil }
+        return pathIPv6FlapBreaker.noteFlip(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+     
+     
+     
+     
+    private func schedulePathIPv6Settle(after seconds: TimeInterval, generation: TunnelNetworkSettingsWriter.Generation) {
+        withStateLock {
+            pathIPv6SettleTask?.cancel()
+            pathIPv6SettleTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(max(seconds, 0.05) * 1_000_000_000))
+                } catch { return }
+                guard let self else { return }
+                pathQueue.async { [weak self] in self?.followPathIPv6AgainIfSettled(generation: generation) }
+            }
+        }
+    }
+
+     
+     
+     
+     
+     
+    private func followPathIPv6AgainIfSettled(generation: TunnelNetworkSettingsWriter.Generation) {
+        let now = ProcessInfo.processInfo.systemUptime
+        pathLock.lock()
+        let ready = defaultPathIsSatisfied
+        guard ready, let left = pathIPv6FlapBreaker.secondsUntilSettled(at: now) else {
+            pathLock.unlock()
+            return
+        }
+        if left > 0 {
+            pathLock.unlock()
+            schedulePathIPv6Settle(after: left, generation: generation)
+            return
+        }
+        _ = pathIPv6FlapBreaker.resumeIfSettled(at: now)
+        let hasIPv6 = defaultPathSupportsIPv6
+        let name = defaultInterfaceName
+        let index = defaultInterfaceIndex
+        let expensive = defaultPathIsExpensive
+        let constrained = defaultPathIsConstrained
+        let supportsIPv4 = defaultPathSupportsIPv4
+        let listener = interfaceListener
+        pathLock.unlock()
+        let declares = hasIPv6 && withStateLock { self.offeredNetworkSettings?.ipv6Settings != nil }
+        ClashLogStore.shared.append(
+            "tun: path IPv6 support settled for \(Int(TunnelIPv6PathFlapBreaker.settle)) s on \(name); "
+                + "following it again (IPv6 declaration=\(declares))",
+            stream: .app
+        )
+        scheduleTunnelSettingsFollowingPath(hasIPv6: hasIPv6, interfaceChange: .none, generation: generation)
+         
+        listener?.updateDefaultInterface(
+            name,
+            interfaceIndex: Int32(bitPattern: index),
+            isExpensive: expensive,
+            isConstrained: constrained,
+            supportsIPv4: supportsIPv4,
+            supportsIPv6: hasIPv6
         )
     }
 
@@ -805,6 +925,7 @@ final class ExtensionProvider: NSObject {
     }
 
     func start(userInitiated: Bool = false) async throws {
+        let began = DispatchTime.now().uptimeNanoseconds
         await operationGate.enter()
         var samplingToken: StartupMemorySampler.Token?
          
@@ -812,6 +933,7 @@ final class ExtensionProvider: NSObject {
         withStateLock {
             startRecorded = false; runningConfiguration = nil; startPathGeneration = nil; startAttempt = nil; startPublishedName = nil; startRequested = nil
             tunnelStopped = false
+            startBeganNanoseconds = began
         }
         do {
             try lifecycle.beginStart()
@@ -1292,6 +1414,9 @@ final class ExtensionProvider: NSObject {
                                             recovered: stored.recoveredFromLastKnownGood)
             }
         }
+         
+         
+        var enteredTheCore = false
         let result = ClashStartRecovery.run(
             state: &state, now: now, core: Self.coreIdentity, pathSignature: pathSignature,
             userInitiated: userInitiated, published: published, fallbackYAML: published == nil ? yaml : nil,
@@ -1313,6 +1438,7 @@ final class ExtensionProvider: NSObject {
                 return .init(profileID: loaded.profileID, revision: loaded.revision, yaml: text, recovered: true)
             },
             start: { yaml in
+                enteredTheCore = true
                  
                  
                  
@@ -1371,6 +1497,17 @@ final class ExtensionProvider: NSObject {
         case let .refused(errorClass, message, newlyQuarantined):
             withStateLock { startRecorded = true }
             settleStart { record(.refused, errorClass: errorClass, message: message, quarantined: quarantine(newlyQuarantined)) }
+            if !enteredTheCore {
+                 
+                 
+                 
+                let began = withStateLock { startBeganNanoseconds }
+                let elapsed = (DispatchTime.now().uptimeNanoseconds &- began) / 1_000_000
+                let name = requested.map { "\($0.profileID) \($0.revision)" } ?? "none"
+                ClashLogStore.shared.append(
+                    "start refused without entering the core  +\(elapsed)ms from the Start  errorClass=\(errorClass) requested=\(name) userInitiated=\(userInitiated)",
+                    stream: .app, level: .warning)
+            }
             throw ExtensionError.coreRefused(errorClass: errorClass, message: message)
         }
     }
@@ -1608,6 +1745,8 @@ final class ExtensionProvider: NSObject {
             let b = packetFlowBridge
             pathReapplyTask?.cancel()
             pathReapplyTask = nil
+            pathIPv6SettleTask?.cancel()
+            pathIPv6SettleTask = nil
             preappliedTunnel?.cancel()
             preappliedTunnel = nil
             preappliedDescriptor = nil
@@ -2441,10 +2580,22 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
          
          
          
+         
+         
+         
+         
+         
+         
+        #if os(tvOS)
+        let includeAllNetworks = false
+        #else
+        let includeAllNetworks = tunnelProvider.protocolConfiguration.includeAllNetworks
+        #endif
         let routeSwitches = ClashTunnelRouteShaping.Switches.read(
             from: UserDefaults(suiteName: appGroupID),
             moduleOverlay: ClashAppIdentifiers.appGroupContainer?
-                .appendingPathComponent(ClashTunnelRouteShaping.moduleDeviceSettingsPath)
+                .appendingPathComponent(ClashTunnelRouteShaping.moduleDeviceSettingsPath),
+            includeAllNetworks: includeAllNetworks
         )
          
         let enforceRoutes = tunnelProvider.protocolConfiguration.enforceRoutes
@@ -2490,7 +2641,7 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
          
         let besideLoopback = loopbackConfigured && !splitTable
         ClashLogStore.shared.append(
-            "route shaping: hideVPNIcon=\(routeSwitches.hideVPNIcon) homeKitCompatibility=\(routeSwitches.homeKitCompatibility) excludeAPNsRoute=\(routeSwitches.excludeAPNsRoute) enforceRoutes=\(enforceRoutes) splitTable=\(splitTable) loopback=\(loopback4.count + loopback6.count) besideLoopback=\(besideLoopback)",
+            "route shaping: hideVPNIcon=\(routeSwitches.hideVPNIcon) heldByIncludeAllNetworks=\(routeSwitches.hideVPNIconHeldOff) homeKitCompatibility=\(routeSwitches.homeKitCompatibility) excludeAPNsRoute=\(routeSwitches.excludeAPNsRoute) enforceRoutes=\(enforceRoutes) splitTable=\(splitTable) loopback=\(loopback4.count + loopback6.count) besideLoopback=\(besideLoopback)",
             stream: .app
         )
         var v4DeclaredMask = v4Mask
@@ -3203,7 +3354,9 @@ extension ExtensionProvider: ClashPlatformInterfaceProtocol {
             let isExpensive = defaultPathIsExpensive
             let isConstrained = defaultPathIsConstrained
             let supportsIPv4 = defaultPathSupportsIPv4
-            let supportsIPv6 = defaultPathSupportsIPv6
+             
+             
+            let supportsIPv6 = pathIPv6FlapBreaker.pathIPv6ToDeclare(pathHasIPv6: defaultPathSupportsIPv6)
             pathLock.unlock()
             listener.updateDefaultInterface(
                 name,

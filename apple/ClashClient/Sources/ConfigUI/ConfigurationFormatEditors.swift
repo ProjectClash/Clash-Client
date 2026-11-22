@@ -87,13 +87,15 @@ struct ConfigurationTypedEntry: Equatable {
 
  
  
+ 
+ 
 struct ConfigurationFormatEditor: View {
     @Binding var draft: ConfigurationFieldDraft
 
     var body: some View {
         switch draft.format {
         case .ipPort?: ConfigurationHostPortEditor(draft: $draft)
-        case .password?: ConfigurationShapedTextEditor(draft: $draft, secure: true, generator: generates ? .password : nil)
+        case .password?: ConfigurationShapedTextEditor(draft: $draft, generator: generates ? .password : nil)
         case .uuid?: ConfigurationShapedTextEditor(draft: $draft, generator: generates ? .uuid : nil)
         default: ConfigurationShapedTextEditor(draft: $draft)
         }
@@ -112,24 +114,17 @@ struct ConfigurationShapedTextEditor: View {
     enum Generator { case password, uuid }
 
     @Binding var draft: ConfigurationFieldDraft
-    var secure = false
     var generator: Generator? = nil
     @State private var entry: ConfigurationTypedEntry?
      
      
      
     @State private var handed: String?
-    @State private var revealed = false
 
     var body: some View {
         Section {
             HStack {
                 field
-                if secure {
-                    Button { revealed.toggle() } label: { Text(clash: .copy(revealed ? "Hide" : "Show")) }
-                        .buttonStyle(.borderless)
-                        .accessibilityIdentifier("configuration-editor.value.reveal")
-                }
                 if let generator {
                     Button { generate(generator) } label: { Text(clash: .copy("Generate")) }
                         .buttonStyle(.borderless)
@@ -173,18 +168,13 @@ struct ConfigurationShapedTextEditor: View {
 
     @ViewBuilder
     private var field: some View {
-        if secure && !revealed {
-            SecureField(text: typed, prompt: prompt) { Text(clash: .copy("Value")) }
-                .accessibilityIdentifier("configuration-editor.value.secret")
-        } else {
-            TextField(text: typed, prompt: prompt) { Text(clash: .copy("Value")) }
-                .autocorrectionDisabled()
+        TextField(text: typed, prompt: prompt) { Text(clash: .copy("Value")) }
+            .autocorrectionDisabled()
 #if os(iOS)
-                .textInputAutocapitalization(.never)
-                .keyboardType(ConfigurationFormatEditors.keyboard(for: draft.format))
+            .textInputAutocapitalization(.never)
+            .keyboardType(ConfigurationFormatEditors.keyboard(for: draft.format))
 #endif
-                .accessibilityIdentifier("configuration-editor.value.text")
-        }
+            .accessibilityIdentifier("configuration-editor.value.text")
     }
 
     private func generate(_ generator: Generator) {

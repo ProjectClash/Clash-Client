@@ -1245,8 +1245,10 @@ private struct ClashProductModalSearchModifier: ViewModifier {
     private func searchable(_ content: Content) -> some View {
         if let prompt {
             content.searchable(text: $text, prompt: prompt)
+            .clashBottomSearchClearance()
         } else {
             content.searchable(text: $text)
+            .clashBottomSearchClearance()
         }
     }
 }

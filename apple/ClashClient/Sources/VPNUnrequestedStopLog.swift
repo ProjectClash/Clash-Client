@@ -1,3 +1,4 @@
+import ClashClientUI
 import Foundation
 import NetworkExtension
 
@@ -122,5 +123,158 @@ struct VPNUnrequestedStopLog {
     static func stamp(_ date: Date) -> String {
         ISO8601DateFormatter.string(from: date, timeZone: TimeZone(secondsFromGMT: 0)!,
                                     formatOptions: [.withInternetDateTime])
+    }
+}
+
+ 
+ 
+ 
+struct UnrequestedStopAccount: Equatable {
+    enum Cause: Equatable {
+         
+         
+        case memory(footprintBytes: Int64?)
+         
+         
+        case unexplained
+    }
+
+    let cause: Cause
+     
+    let seenDownAt: Date
+
+     
+    var homeStop: ClashHomeUnrequestedStop {
+        if case .memory = cause { return .memory }
+        return .unexplained
+    }
+
+     
+    var footprintBytes: Int64? {
+        if case .memory(let bytes) = cause { return bytes }
+        return nil
+    }
+
+     
+     
+    static let coreLogLines = 400
+
+     
+     
+     
+     
+     
+     
+    static let evidenceWindow: TimeInterval = 60
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func judge(
+        run: VPNUnrequestedStopLog.Run, stoppedAt: Date,
+        record: ClashOOMEvidence?, coreLog: [String], error: NSError?
+    ) -> UnrequestedStopAccount? {
+        var readings: [(at: Date, footprint: Int64)] = []
+         
+         
+        if let record, record.pressureLevel == "critical" {
+            readings.append((Date(timeIntervalSince1970: TimeInterval(record.recordedAtUnix)), record.physicalMemoryBytes))
+        }
+        for line in coreLog {
+            guard let pressure = CoreMemoryPressure.observed(in: [line]), let at = loggedAt(line) else { continue }
+            readings.append((at, pressure.footprintBytes))
+        }
+        guard let newest = readings.filter({ isOfThisDrop($0.at, run: run, stoppedAt: stoppedAt) })
+            .max(by: { $0.at.timeIntervalSince1970 < $1.at.timeIntervalSince1970 })
+        else {
+            guard providerWentAway(error) else { return nil }
+            return UnrequestedStopAccount(cause: .unexplained, seenDownAt: stoppedAt)
+        }
+        return UnrequestedStopAccount(cause: .memory(footprintBytes: newest.footprint > 0 ? newest.footprint : nil),
+                                      seenDownAt: stoppedAt)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func isOfThisDrop(_ at: Date, run: VPNUnrequestedStopLog.Run, stoppedAt: Date) -> Bool {
+        let before = stoppedAt.timeIntervalSince(at)
+        guard before >= 0, before <= evidenceWindow else { return false }
+        guard let since = run.connectedSince else { return true }
+        return at.timeIntervalSince1970 >= since.timeIntervalSince1970.rounded(.down)
+    }
+
+     
+     
+     
+     
+    static func providerWentAway(_ error: NSError?) -> Bool {
+        guard let error else { return false }
+        return error.domain == "NEVPNConnectionErrorDomain" && error.code == 12
+    }
+
+     
+     
+    static func loggedAt(_ line: String) -> Date? {
+        guard let stamp = line.split(separator: " ", maxSplits: 1).first.map(String.init) else { return nil }
+        let precise = ISO8601DateFormatter()
+        precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return precise.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp)
+    }
+
+     
+     
+    static let recordFileName = "clash-oom-evidence.json"
+     
+    static let recordMaxBytes = 4 << 10
+
+     
+     
+     
+     
+     
+    static func readRecord(inContainer container: URL) -> ClashOOMEvidence? {
+        guard let handle = try? FileHandle(forReadingFrom: container.appendingPathComponent(recordFileName))
+        else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: recordMaxBytes + 1), data.count <= recordMaxBytes
+        else { return nil }
+        return try? JSONDecoder().decode(ClashOOMEvidence.self, from: data)
+    }
+
+     
+     
+    static let memoryRow = "Disconnected: not enough memory"
+
+     
+     
+     
+    static let memoryReason: ClashDisplayText =
+        .copy("The VPN disconnected. Clash used more memory than iOS allows it, and the system stopped it.")
+
+     
+     
+    var footprintSentence: ClashDisplayText? {
+        footprintBytes.map { .format("It was using %@ before it was stopped.", [ClashStartupExplanation.megabytes($0)]) }
     }
 }

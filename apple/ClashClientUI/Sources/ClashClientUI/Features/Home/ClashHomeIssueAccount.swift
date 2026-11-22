@@ -39,6 +39,15 @@ struct ClashHomeIssueLineLabel: View {
      
      
     var choosesNode = false
+     
+     
+     
+    var saysWords = false
+
+     
+    static let wordsLineLimit = 3
+
+    static func lineLimit(saysWords: Bool) -> Int { saysWords ? wordsLineLimit : 1 }
 
     var showsReason: Bool { choosesNode || (offersReason && opensAccount) }
 
@@ -52,14 +61,17 @@ struct ClashHomeIssueLineLabel: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            HStack(spacing: ClashTheme.Spacing.compact) {
+            HStack(alignment: saysWords ? .top : .center, spacing: ClashTheme.Spacing.compact) {
                 Text(clash: text)
                     .multilineTextAlignment(.leading)
                      
                      
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                     
+                     
+                    .lineLimit(Self.lineLimit(saysWords: saysWords))
+                    .minimumScaleFactor(saysWords ? 1 : 0.75)
                     .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: saysWords)
                 if showsReason {
                     Spacer(minLength: 0)
                      
@@ -101,7 +113,68 @@ struct ClashHomeIssueLineHint: ViewModifier {
         case .resetVPNProfile: return Text(clash: .copy("Reinstalls the VPN profile"))
         case .openOnDemand: return Text(clash: .copy("Opens On Demand"))
         case .openProxies where kind == .globalOnDirect: return Text(clash: .copy("Choose Node"))
+         
+        case .performPrimaryAction(.none): return Text("")
         default: return opensAccount ? Text(clash: .copy("Shows why")) : Text("")
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+public struct ClashCoreRefusalAccount: View {
+    private let issue: ClashHomeConnectionIssue
+
+    public init(issue: ClashHomeConnectionIssue) {
+        self.issue = issue
+    }
+
+     
+    nonisolated public static func lead(refusesConfiguration: Bool) -> ClashDisplayText {
+        refusesConfiguration
+            ? "This configuration can’t be used. Fix the problem below and connect again, or switch to another configuration."
+            : "Clash didn’t connect because the core couldn’t start. You can try again."
+    }
+
+     
+     
+    nonisolated public static let wordsHeader: ClashDisplayText = "The Core’s Reason"
+
+    public var body: some View {
+        Section {
+            Text(clash: Self.lead(refusesConfiguration: issue.refusesConfiguration))
+                .font(.subheadline)
+                .accessibilityIdentifier("connection.issue.reason")
+        }
+        if let words = issue.coreWords {
+            Section {
+                selectable(
+                    Text(verbatim: words)
+                        .font(.caption.monospaced())
+                        .foregroundColor(.secondary)
+                )
+                .accessibilityIdentifier("connection.issue.core-words")
+            } header: {
+                Text(clash: Self.wordsHeader)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func selectable(_ text: Text) -> some View {
+#if os(tvOS)
+        text
+#else
+        text.textSelection(.enabled)
+#endif
     }
 }

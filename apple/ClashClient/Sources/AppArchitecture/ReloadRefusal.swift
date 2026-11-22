@@ -1,3 +1,4 @@
+import ClashClientUI
 import Foundation
 
  
@@ -409,7 +410,9 @@ struct StartupOutcomeRecord: Equatable, Sendable {
 struct CoreStartRefusal: Equatable, Sendable {
      
      
-    static let configurationMessage = "The core rejected this configuration: %@"
+     
+     
+    static let configurationMessage = ClashHomeConnectionIssue.configurationRefusalRow
      
     static let startMessage = "The core couldn’t start: %@"
 
@@ -417,9 +420,31 @@ struct CoreStartRefusal: Equatable, Sendable {
     let message: String
      
     let words: String
+     
+     
+     
+     
+    var profileID: String? = nil
+     
+     
+     
+    var revision: String? = nil
+
+     
+    var requested: StartupOutcomeRecord.Revision? {
+        guard let profileID, let revision else { return nil }
+        return StartupOutcomeRecord.Revision(profileID: profileID, revision: revision)
+    }
 
     static func isLead(_ message: String) -> Bool {
         message == configurationMessage || message == startMessage
+    }
+
+     
+     
+    func isAbout(selected: String?) -> Bool {
+        guard let profileID else { return true }
+        return profileID == selected
     }
 
      
@@ -431,13 +456,213 @@ struct CoreStartRefusal: Equatable, Sendable {
     static func from(error: NSError?, record: StartupOutcomeRecord?, issuedAt: Date? = nil) -> CoreStartRefusal? {
         guard let error, error.domain == ClashTunnelStart.startErrorDomain,
               error.code == ClashTunnelStart.StartErrorCode.coreRefused.rawValue,
-              let record, record.operation == "start", record.outcome == .refused,
-              issuedAt.map(record.answersStart(issuedAt:)) ?? true,
+              let record, record.outcome == .refused, issuedAt.map(record.answersStart(issuedAt:)) ?? true
+        else { return nil }
+        return named(by: record)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func from(record: StartupOutcomeRecord?, sameAs reason: String?) -> CoreStartRefusal? {
+        guard let record, let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
+              reason == record.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return nil }
+        return named(by: record)
+    }
+
+     
+     
+    private static func named(by record: StartupOutcomeRecord) -> CoreStartRefusal? {
+        guard record.operation == "start", record.outcome == .refused || record.outcome == .backedOff,
               let words = record.message?.trimmingCharacters(in: .whitespacesAndNewlines), !words.isEmpty,
               !NodeLibraries.isUnavailable(words)
         else { return nil }
+        let asked = record.requested.flatMap { $0.profileID.isEmpty ? nil : $0 }
         return CoreStartRefusal(message: record.errorClass == .config ? configurationMessage : startMessage,
-                                words: String(words.prefix(512)))
+                                words: String(words.prefix(512)),
+                                profileID: asked?.profileID, revision: asked?.revision)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct OnDemandRefusalPause: Equatable, Sendable {
+     
+    enum Refusal: Equatable, Sendable {
+         
+         
+         
+        case configuration
+         
+        case other
+         
+        case none
+    }
+
+     
+     
+     
+    static let note = "Connect On Demand is paused. It resumes the next time you connect."
+
+     
+     
+     
+     
+    enum Cause: String, Equatable, Sendable {
+        case configuration
+        case memory
+    }
+
+     
+     
+    static let memoryNote = "Connect On Demand is paused so the VPN doesn't keep disconnecting. It resumes the next time you connect."
+
+     
+     
+    let profileID: String
+    let revision: String
+    var cause: Cause = .configuration
+     
+     
+    var footprintBytes: Int64? = nil
+     
+     
+     
+    var stoppedWhileUp: Bool = true
+
+     
+     
+     
+    static let defaultsKey = "onDemand.pausedForRefusal"
+
+    static func load(from defaults: UserDefaults) -> OnDemandRefusalPause? {
+        guard let stored = defaults.dictionary(forKey: defaultsKey),
+              let profileID = stored["profileID"] as? String,
+              let revision = stored["revision"] as? String
+        else { return nil }
+         
+        let cause = (stored["cause"] as? String).flatMap(Cause.init(rawValue:)) ?? .configuration
+        return OnDemandRefusalPause(profileID: profileID, revision: revision, cause: cause,
+                                    footprintBytes: (stored["footprintBytes"] as? NSNumber)?.int64Value,
+                                    stoppedWhileUp: stored["stoppedWhileUp"] as? Bool ?? true)
+    }
+
+    func save(to defaults: UserDefaults) {
+        var stored: [String: Any] = ["profileID": profileID, "revision": revision]
+        if cause != .configuration { stored["cause"] = cause.rawValue }
+        if let footprintBytes { stored["footprintBytes"] = NSNumber(value: footprintBytes) }
+        if !stoppedWhileUp { stored["stoppedWhileUp"] = false }
+        defaults.set(stored, forKey: Self.defaultsKey)
+    }
+
+    static func clear(in defaults: UserDefaults) {
+        guard defaults.object(forKey: defaultsKey) != nil else { return }
+        defaults.removeObject(forKey: defaultsKey)
+    }
+
+     
+     
+    func isAbout(_ refused: StartupOutcomeRecord.Revision?) -> Bool {
+        guard let refused else { return false }
+        return refused.profileID == profileID && refused.revision == revision
+    }
+
+     
+     
+     
+     
+     
+    static let loopRecordFreshness: TimeInterval = 180
+
+     
+     
+     
+     
+     
+     
+     
+     
+    static func pause(for record: StartupOutcomeRecord?, published: ActiveConfigurationPointer?,
+                      onDemandEnabled: Bool, readerIsStopping: Bool,
+                      notOlderThan: TimeInterval? = nil, now: Date = Date()) -> OnDemandRefusalPause? {
+         
+         
+        guard onDemandEnabled, !readerIsStopping, refusal(in: record) == .configuration,
+              let requested = record?.requested, speaksOf(record, published: published)
+        else { return nil }
+        if let notOlderThan {
+            guard let at = record?.at else { return nil }
+            let age = now.timeIntervalSince(at)
+            guard age < notOlderThan, -age < notOlderThan else { return nil }
+        }
+        return OnDemandRefusalPause(profileID: requested.profileID, revision: requested.revision)
+    }
+
+     
+     
+     
+    func stands(given record: StartupOutcomeRecord?) -> Bool {
+        Self.refusal(in: record) == .configuration && isAbout(record?.requested)
+    }
+
+    static func refusal(in record: StartupOutcomeRecord?) -> Refusal {
+        guard let record, record.operation == "start", record.outcome == .refused else { return .none }
+         
+         
+        if NodeLibraries.isUnavailable(record.message) { return .other }
+        return record.errorClass == .config ? .configuration : .other
+    }
+
+     
+     
+    static func speaksOf(_ record: StartupOutcomeRecord?, published: ActiveConfigurationPointer?) -> Bool {
+        guard let requested = record?.requested, let published else { return false }
+        return requested.profileID == published.profileID && requested.revision == published.revision
+    }
+
+     
+     
+    func logLine(profileName: String?, after trigger: String) -> String {
+        let name = profileName ?? "?"
+        if cause == .memory {
+            let used = footprintBytes.map(String.init) ?? "?"
+            return "vpn on-demand paused: iOS stopped the tunnel for memory, On Demand would start it into the same again  profile=\(name) id=\(profileID) revision=\(revision) footprintBytes=\(used) after=\(trigger)"
+        }
+        return "vpn on-demand paused: the core refuses this configuration, nothing to fall back to  profile=\(name) id=\(profileID) revision=\(revision) after=\(trigger)"
     }
 }
 

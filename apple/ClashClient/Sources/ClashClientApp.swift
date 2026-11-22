@@ -479,6 +479,8 @@ struct AppShellView: View {
          
         .clashRuleRunFeedbackRelay(profiles, locale: preferences.language.localeOverride)
          
+        .clashInstallLinkNoticeRelay(profiles)
+         
          
         .clashFeedbackSceneHost(locale: preferences.language.localeOverride,
                                 colorScheme: preferences.themeMode.colorScheme,
@@ -947,6 +949,9 @@ struct AppShellView: View {
         .environment(\.clashThroughputUnit, throughputUnit)
          
          
+        .environment(\.clashSearchFieldAtFoot, UIDevice.current.userInterfaceIdiom == .phone)
+         
+         
          
         .onReceive(NotificationCenter.default.publisher(for: .clashModeChosenElsewhere).receive(on: RunLoop.main)) { _ in
             guard scenePhaseWitness.phase == .active, pendingOutboundMode == nil,
@@ -965,8 +970,8 @@ struct AppShellView: View {
          
          
          
-        .environment(\.configurationLinkedPage, ConfigurationLinkedPages(from: [proxyShare, profiles, command]) {
-            [proxyShare, profiles, command] page in
+        .environment(\.configurationLinkedPage, ConfigurationLinkedPages(from: [proxyShare, profiles, command, vpn, nodes]) {
+            [proxyShare, profiles, command, vpn, nodes] page in
             switch page {
             case .owner(.lanSharing):
                 return AnyView(ProxyShareView(model: proxyShare))
@@ -974,6 +979,11 @@ struct AppShellView: View {
                 return AnyView(ConfigurationClientSettingsPage(profiles: profiles, command: command))
             case .owner:
                 return nil
+             
+             
+            case .proxies(let profileID):
+                return ConfigurationProxiesHost.page(profileID: profileID, vpn: vpn, command: command,
+                                                     nodes: nodes, profiles: profiles)
             }
         })
     }
@@ -1619,6 +1629,14 @@ struct AppShellView: View {
          
          
         rebind()
+         
+         
+         
+         
+         
+         
+         
+        Task { if await !vpn.pauseOnDemandTheSystemKeepsStartingIntoARefusal() { vpn.reviewTheOnDemandPause() } }
     }
 
     private func rebind() {

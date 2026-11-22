@@ -927,6 +927,13 @@ struct ProfileEditView: View {
      
      
     static func editFailure(_ error: Error, in text: String?) -> EditFailure {
+         
+         
+        if let refused = error as? ConfigurationRuleSourceCheck.Refusal {
+            let marked = refused.line.flatMap { line in text.flatMap { CodeEditorDiagnosticParser.markableLine(line, in: $0) } }
+            return EditFailure(message: refused.message(locale: .current), words: nil,
+                               diagnostic: marked.map { CodeEditorDiagnostic(line: $0) })
+        }
         let classified = ConfigurationFailureClassifier.classify(
             error,
             context: .activation,

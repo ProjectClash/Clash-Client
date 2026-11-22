@@ -26,6 +26,7 @@ import SwiftUI
  
  
  
+ 
 struct ClashTVProxyShareScreen: View {
     @Binding var state: ClashTVProductState
     @ObservedObject var tunnel: ClashTVTunnelController
@@ -113,16 +114,25 @@ struct ClashTVProxyShareScreen: View {
                     .disabled(model.status.enabled)
                     .onClashTVFocus { explained = .share }
                     .accessibilityIdentifier("tvos.proxyShare.port")
+                 
+                 
                 TextField("Username", text: $username)
                     .textContentType(.username)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                     .disabled(model.status.enabled)
                     .onClashTVFocus { explained = .share }
                     .accessibilityIdentifier("tvos.proxyShare.username")
                  
                  
                  
-                SecureField("Password", text: $password)
-                    .textContentType(.password)
+                 
+                 
+                 
+                 
+                TextField("Password", text: $password)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                     .disabled(model.status.enabled)
                     .onClashTVFocus { explained = .share }
                     .accessibilityIdentifier("tvos.proxyShare.password")

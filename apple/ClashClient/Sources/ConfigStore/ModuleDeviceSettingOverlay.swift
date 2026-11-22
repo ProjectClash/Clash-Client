@@ -140,6 +140,22 @@ extension VPNTunnelSettings {
         out.homeKitCompatibility = overlay.bool(.homeKitCompatibility, else: homeKitCompatibility)
         return out
     }
+
+     
+     
+     
+    func includeAllNetworksInEffect(moduleNotes: [ModuleDeviceSettingKey: ModuleDeviceSettingNote]) -> Bool {
+        moduleNotes[.includeAllNetworks].flatMap { ModuleSettingsMapping.boolean($0.value) } ?? includeAllNetworks
+    }
+
+     
+     
+     
+     
+     
+    func hideVPNIconSwitchIsEnabled(moduleNotes: [ModuleDeviceSettingKey: ModuleDeviceSettingNote]) -> Bool {
+        ClashTunnelRouteShaping.appliesHideVPNIcon(includeAllNetworks: includeAllNetworksInEffect(moduleNotes: moduleNotes))
+    }
 }
 
 extension DelayTestSettings {

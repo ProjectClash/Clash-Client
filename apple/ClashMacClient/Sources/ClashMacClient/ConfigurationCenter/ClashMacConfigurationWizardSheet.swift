@@ -157,6 +157,23 @@ public struct ClashMacConfigurationWizardSheet: View {
         self.created = created
     }
 
+     
+     
+     
+     
+     
+     
+    static func importActions(_ base: ClashMacSourceImportActions,
+                              closingWizard: @escaping @MainActor () -> Void) -> ClashMacSourceImportActions {
+        guard let original = base.importOriginal else { return base }
+        var actions = base
+        actions.importOriginal = { payload in
+            try await original(payload)
+            closingWizard()
+        }
+        return actions
+    }
+
     private var canAdvance: Bool { ClashMacConfigurationWizardRules.canAdvance(draft) && !busy }
 
     private var stepTitle: ClashDisplayText {
@@ -183,7 +200,7 @@ public struct ClashMacConfigurationWizardSheet: View {
         if addingSource {
             ClashMacSourceImportSheet(
                 purpose: .nodes,
-                actions: actions.sourceImport,
+                actions: Self.importActions(actions.sourceImport, closingWizard: { dismiss() }),
                 closeTitle: .copy("Back"),
                 accept: { payload in
                     ClashMacConfigurationWizardRules.addSource(payload, to: &draft)

@@ -9,7 +9,17 @@ import Foundation
  
 enum ProviderDownloadActivity {
      
+     
     static let didChangeNotification = Notification.Name("ClashProviderDownloadActivityDidChange")
+
+    private static let addressesKey = "addresses"
+
+     
+     
+     
+    static func addresses(in note: Notification) -> Set<String>? {
+        (note.userInfo?[addressesKey] as? [String]).map(Set.init)
+    }
 
      
     static let downloadingNote = "Downloading…"
@@ -49,7 +59,7 @@ enum ProviderDownloadActivity {
         lock.lock()
         for url in urls { running[url, default: 0] += 1 }
         lock.unlock()
-        post()
+        post(urls)
     }
 
      
@@ -61,7 +71,7 @@ enum ProviderDownloadActivity {
         if let count = running[url], count > 1 { running[url] = count - 1 } else { running[url] = nil }
         if answered { failures[url] = failure }
         lock.unlock()
-        post()
+        post([url])
     }
 
     static var downloading: Set<String> {
@@ -112,9 +122,9 @@ enum ProviderDownloadActivity {
 
      
      
-    private static func post() {
+    private static func post(_ urls: [String]) {
         DispatchQueue.main.async {
-            NotificationCenter.default.post(name: didChangeNotification, object: nil)
+            NotificationCenter.default.post(name: didChangeNotification, object: nil, userInfo: [addressesKey: urls])
         }
     }
 }

@@ -350,15 +350,27 @@ public struct ConfigurationRuleRow: View {
                     .truncationMode(.middle)
             }
             if showsChevron {
-                 
-                 
-                 
-                Image(systemName: ClashSymbol.chevronForward.rawValue)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHint(Text(verbatim: copy.rulePhrase("opens", language: .init(locale: locale)) ?? ""))
+                ConfigurationRuleDisclosure()
             }
         }
         .contentShape(Rectangle())
+    }
+}
+
+ 
+ 
+ 
+ 
+public struct ConfigurationRuleDisclosure: View {
+    @Environment(\.locale) private var locale
+    @Environment(\.configurationFieldCopy) private var copy
+
+    public init() {}
+
+    public var body: some View {
+        Image(systemName: ClashSymbol.chevronForward.rawValue)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .accessibilityHint(Text(verbatim: copy.rulePhrase("opens", language: .init(locale: locale)) ?? ""))
     }
 }

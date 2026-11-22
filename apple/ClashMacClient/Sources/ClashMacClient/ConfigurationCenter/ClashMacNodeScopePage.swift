@@ -46,26 +46,61 @@ struct ClashMacNodeScopePage: View {
     @Environment(\.locale) private var locale
 
      
+     
     static func initialSelection(
         _ scope: ConfigurationNodeScope?, collections: [ConfigurationCollection], nodes: [ClashConfigurationSelectableNode]
     ) -> (nodes: Set<String>, collections: Set<String>) {
-        let nodeNames = scope?.includesInlineNodes == false ? Set<String>() : Set(scope?.inlineNodeNames ?? nodes.map(\.name))
+        let nodeNames = Set(nodes.map(\.name).filter { scope?.choosesNode(named: $0) ?? true })
         let collectionNames = Set(scope?.providerKeys ?? collections.map(\.name))
         return (nodeNames, collectionNames)
     }
 
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
     static func selection(
         nodes selectedNodes: Set<String>, collections selectedCollections: Set<String>,
-        allNodes: [ClashConfigurationSelectableNode], allCollections: [ConfigurationCollection]
+        allNodes: [ClashConfigurationSelectableNode], allCollections: [ConfigurationCollection],
+        before: ConfigurationNodeScope? = nil
     ) -> ConfigurationNodeScope? {
-        let everyNode = selectedNodes == Set(allNodes.map(\.name))
-        if everyNode && selectedCollections == Set(allCollections.map(\.name)) { return nil }
+        if selectedNodes.isEmpty && selectedCollections.isEmpty {
+            return ConfigurationNodeScope(includesInlineNodes: false, providerKeys: [], inlineNodeNames: nil)
+        }
+        let present = Set(allNodes.map(\.name))
+        let excludedBefore = Set(before?.excludedNodeNames ?? [])
+        func listed(_ names: Set<String>) -> [String]? { names.isEmpty ? nil : names.sorted() }
+        if before?.includesInlineNodes == false {
+            return ConfigurationNodeScope(
+                includesInlineNodes: !selectedNodes.isEmpty,
+                providerKeys: selectedCollections.sorted(),
+                inlineNodeNames: selectedNodes.isEmpty ? nil : selectedNodes.sorted(),
+                excludedNodeNames: listed(excludedBefore.subtracting(selectedNodes))
+            )
+        }
+        if let picked = before?.inlineNodeNames {
+            let takenOut = Set(picked).intersection(present).subtracting(selectedNodes)
+            return ConfigurationNodeScope(
+                includesInlineNodes: true,
+                providerKeys: selectedCollections.sorted(),
+                inlineNodeNames: Set(picked).union(selectedNodes).sorted(),
+                excludedNodeNames: listed(excludedBefore.subtracting(selectedNodes).union(takenOut))
+            )
+        }
+        let excluded = excludedBefore.subtracting(present).union(present.subtracting(selectedNodes))
+        if excluded.isEmpty && selectedCollections == Set(allCollections.map(\.name)) { return nil }
         return ConfigurationNodeScope(
-            includesInlineNodes: !selectedNodes.isEmpty,
+            includesInlineNodes: true,
             providerKeys: selectedCollections.sorted(),
-            inlineNodeNames: everyNode ? nil : selectedNodes.sorted()
+            inlineNodeNames: nil,
+            excludedNodeNames: listed(excluded)
         )
     }
 
@@ -162,7 +197,7 @@ struct ClashMacNodeScopePage: View {
                 onClose: back,
                 onPrimary: {
                     guard let choices else { return }
-                    save(Self.selection(nodes: selectedNodes, collections: selectedCollections, allNodes: choices.nodes, allCollections: choices.collections))
+                    save(Self.selection(nodes: selectedNodes, collections: selectedCollections, allNodes: choices.nodes, allCollections: choices.collections, before: initial))
                 }
             )
         }

@@ -44,6 +44,12 @@ extension ProfilesViewModel {
         var followsSubscription = false
          
          
+         
+         
+         
+        var hasRecipe = false
+         
+         
         var readDigest: String? = nil
          
          
@@ -164,7 +170,7 @@ extension ProfilesViewModel {
             }.value
             return (ConfigurationEditorPage(profileID: profileID, label: profile.label,
                 form: .composed(scheme: scheme, ownership: snapshot.schemePageOwnership(profileID: profileID)),
-                rows: rows, document: page, ownLayer: onPage ? nil : own,
+                rows: rows, document: page, hasRecipe: true, ownLayer: onPage ? nil : own,
                 ownDNSSwitch: onPage ? nil : Self.ownDNSSwitch(of: latest),
                 followedLink: snapshot.followedLinkLabel(ofScheme: scheme.id)), snapshot)
         }
@@ -192,7 +198,7 @@ extension ProfilesViewModel {
             let digest = try await Task.detached(priority: .userInitiated) { try Self.textDigest(fileAt: file) }.value
             return (ConfigurationEditorPage(profileID: profileID, label: profile.label, form: .original,
                                            rows: rows, document: outlined.document, followsSubscription: followsSubscription,
-                                           readDigest: digest, ownLayer: own, ownDNSSwitch: Self.ownDNSSwitch(of: latest),
+                                           hasRecipe: true, readDigest: digest, ownLayer: own, ownDNSSwitch: Self.ownDNSSwitch(of: latest),
                                            keptRules: .init(count: source.ruleCount, file: file)), snapshot)
         }
         guard let text = await loadSourceYAML(for: profile) else {
@@ -207,6 +213,7 @@ extension ProfilesViewModel {
         }.value
         return (ConfigurationEditorPage(profileID: profileID, label: profile.label, form: .original,
                                        rows: rows, document: document, followsSubscription: followsSubscription,
+                                       hasRecipe: snapshot.recipes.contains(where: { $0.id == profileID }),
                                        readDigest: digest, ownLayer: own, ownDNSSwitch: Self.ownDNSSwitch(of: latest)), snapshot)
     }
 

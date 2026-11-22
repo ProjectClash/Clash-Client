@@ -195,6 +195,8 @@ struct ClashWidgetGroupQuery: EntityQuery {
         (ClashWidgetMailboxClient.store.readAppFacts()?.groups ?? []).map(ClashWidgetGroupEntity.init(id:))
     }
 
+     
+     
     func defaultResult() async -> ClashWidgetGroupEntity? {
         ClashWidgetMailboxClient.store.readAppFacts()?.firstGroup.map(ClashWidgetGroupEntity.init(id:))
     }

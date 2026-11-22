@@ -730,9 +730,20 @@ struct ProxyNodeDetailsView: View {
      
      
     let drawsClose: Bool
+     
+     
+     
+     
+    let trailingSections: AnyView?
 
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
+     
+     
+     
+     
+     
+     
     @State private var dismissal = ProxyNodeEditorDismissal()
     @Environment(\.clashPopRoute) private var popRoute
     @Environment(\.configurationFieldCopy) private var fieldCopy
@@ -764,9 +775,6 @@ struct ProxyNodeDetailsView: View {
     @State private var fieldCatalog: ConfigurationFieldCatalog?
      
     @State private var pendingType: String?
-    @State private var revealsPassword = false
-    @State private var revealsObfsPassword = false
-    @State private var revealedSecretKeys: Set<String> = []
     @State private var chainDialer: String?
 
     init(
@@ -781,9 +789,11 @@ struct ProxyNodeDetailsView: View {
         subscriptionReset: (() throws -> Void)? = nil,
         onDone: (() -> Void)? = nil,
         drawsClose: Bool = false,
-        commitTitle: String = "Save"
+        commitTitle: String = "Save",
+        trailingSections: AnyView? = nil
     ) {
         self.commitTitle = commitTitle
+        self.trailingSections = trailingSections
         self.drawsClose = drawsClose
         self.record = record
         self.retest = retest
@@ -795,15 +805,37 @@ struct ProxyNodeDetailsView: View {
         self.dialerCandidates = dialerCandidates
         self.subscriptionReset = subscriptionReset
         self.onDone = onDone
-        _draft = StateObject(wrappedValue: ProxyNodeEditorDraft(
-            configurationJSON: record.protocolDetails?.configurationJSON ?? "{}",
-            fallbackName: record.name,
-            fallbackType: record.protocolDetails?.typeID ?? record.type
-        ))
+        _draft = StateObject(wrappedValue: Self.openingDraft(record))
         _chainDialer = State(initialValue: {
             if case .chainAssignment(let current, _) = dialerRouting { return current }
             return nil
         }())
+    }
+
+     
+    static func openingDraft(_ record: ProxyNodeRecord) -> ProxyNodeEditorDraft {
+        ProxyNodeEditorDraft(
+            configurationJSON: record.protocolDetails?.configurationJSON ?? "{}",
+            fallbackName: record.name,
+            fallbackType: record.protocolDetails?.typeID ?? record.type
+        )
+    }
+
+     
+     
+     
+     
+     
+     
+    static func newNodeJSON(
+        for record: ProxyNodeRecord,
+        catalog: ConfigurationFieldCatalog?,
+        copy: ConfigurationFieldCopy,
+        locale: Locale
+    ) throws -> String {
+        let draft = openingDraft(record)
+        try check(draft, catalog: catalog, copy: copy, locale: locale)
+        return strippingEmptyStrings(draft.editedJSON)
     }
 
     var body: some View {
@@ -1011,7 +1043,7 @@ struct ProxyNodeDetailsView: View {
              
             editableRow("Port", key: "port", number: true)
             editableRow("Port Range", key: "ports", placeholder: "443-8443")
-            secretRow("Password", key: "password", reveals: $revealsPassword)
+            secretRow("Password", key: "password")
              
              
              
@@ -1030,11 +1062,7 @@ struct ProxyNodeDetailsView: View {
                                                                       catalog: fieldCatalog, copy: fieldCopy, locale: locale))
             }
             if !draft.string("obfs").isEmpty {
-                secretRow(
-                    "Obfuscation Password",
-                    key: "obfs-password",
-                    reveals: $revealsObfsPassword
-                )
+                secretRow("Obfuscation Password", key: "obfs-password")
             }
             ProxyNodeDraftNavigationLink(source: draft) { local in
                 ProxyTLSEditorView(draft: local)
@@ -1101,7 +1129,7 @@ struct ProxyNodeDetailsView: View {
         Section {
             editableRow("Address", key: "server", textContentType: .URL)
             editableRow("Port", key: "port", number: true)
-            secretRow("Password", key: "password", reveals: $revealsPassword)
+            secretRow("Password", key: "password")
             ProxyNodeDraftNavigationLink(source: draft) { local in
                 ProxyTLSEditorView(draft: local)
             } label: {
@@ -1418,6 +1446,7 @@ struct ProxyNodeDetailsView: View {
                     subscriptionSection
                 }
                 editorSections
+                trailingSections
             }
             .clashInsetGroupedListStyle()
         }
@@ -1644,13 +1673,6 @@ struct ProxyNodeDetailsView: View {
             secretRow(
                 humanLabel(key),
                 key: key,
-                reveals: Binding(
-                    get: { revealedSecretKeys.contains(key) },
-                    set: { shown in
-                        if shown { revealedSecretKeys.insert(key) }
-                        else { revealedSecretKeys.remove(key) }
-                    }
-                ),
                 placeholder: isRequiredKey(key) ? "Required" : "Optional",
                 identifier: "proxies.nodeEditor.option.\(key)"
             )
@@ -1809,10 +1831,17 @@ struct ProxyNodeDetailsView: View {
 
      
      
+     
+     
+     
+     
+     
+     
+     
+     
     private func secretRow(
         _ label: String,
         key: String,
-        reveals: Binding<Bool>,
         placeholder: String? = nil,
         identifier: String? = nil
     ) -> some View {
@@ -1826,11 +1855,10 @@ struct ProxyNodeDetailsView: View {
 #if os(macOS)
         return Group {
             if Self.isDocumentField(key, typeID: draft.typeID) {
-                ProxyRevealingFieldRow(
+                ProxyCredentialFieldRow(
                     title: label,
                     hint: placeholder,
                     text: stringBinding(key),
-                    reveals: reveals,
                     multiline: true,
                     identifier: identifier
                 )
@@ -1839,8 +1867,6 @@ struct ProxyNodeDetailsView: View {
                     label,
                     hint: placeholder,
                     text: stringBinding(key),
-                    secure: true,
-                    reveals: reveals,
                     monospaced: true,
                     identifier: identifier
                 )
@@ -1859,12 +1885,10 @@ struct ProxyNodeDetailsView: View {
          
          
          
-         
-        return ProxyRevealingFieldRow(
+        return ProxyCredentialFieldRow(
             title: label,
             hint: placeholder,
             text: stringBinding(key),
-            reveals: reveals,
             multiline: Self.isDocumentField(key, typeID: draft.typeID),
             identifier: identifier
         )
@@ -2171,6 +2195,7 @@ struct ProxyNodeDetailsView: View {
          
          
          
+         
 #if os(macOS)
         NSApplication.shared.keyWindow?.makeFirstResponder(nil)
 #else
@@ -2189,7 +2214,7 @@ struct ProxyNodeDetailsView: View {
      
      
      
-    private static func reason(for error: Error) -> ClashDisplayText {
+    static func reason(for error: Error) -> ClashDisplayText {
         guard let refusal = error as? ProxyNodeEditorError else {
             return .copy(error.localizedDescription)
         }
@@ -2237,15 +2262,31 @@ struct ProxyNodeDetailsView: View {
     }
 
     private func validate() throws {
+        try Self.check(draft, catalog: fieldCatalog, copy: fieldCopy, locale: locale)
+    }
+
+     
+     
+     
+     
+    static func check(
+        _ draft: ProxyNodeEditorDraft,
+        catalog: ConfigurationFieldCatalog?,
+        copy: ConfigurationFieldCopy,
+        locale: Locale
+    ) throws {
+        func label(_ key: String) -> String {
+            ProxyNodeFieldLabel.title(path: [key], typeID: draft.typeID, copy: copy, locale: locale)
+        }
          
          
         if let key = draft.firstMissingRequiredFieldKey() {
-            throw ProxyNodeEditorError.missingField(humanLabel(key), key: key)
+            throw ProxyNodeEditorError.missingField(label(key), key: key)
         }
          
          
          
-        if let violation = draft.crossFieldViolations(catalog: fieldCatalog).first {
+        if let violation = draft.crossFieldViolations(catalog: catalog).first {
             throw ProxyNodeEditorError.refusedCombination(violation.message)
         }
          
@@ -2263,7 +2304,7 @@ struct ProxyNodeDetailsView: View {
             typeID: draft.typeID,
             mapping: draft.mapping
         ) {
-            throw ProxyNodeEditorError.notANumber(humanLabel(key))
+            throw ProxyNodeEditorError.notANumber(label(key))
         }
     }
 
@@ -2276,6 +2317,7 @@ struct ProxyNodeDetailsView: View {
 
     private static let secretKeys = ProxyNodeEditorSecretFields.keys
 
+     
      
      
      
@@ -2586,12 +2628,17 @@ struct ProxyNodePendingText {
     let apply: () -> ClashDisplayText?
 }
 
+ 
+ 
 @MainActor
 final class ProxyNodeEditorDismissal {
     fileprivate var action: () -> Void = {}
     func callAsFunction() { action() }
 }
 
+ 
+ 
+ 
 private struct ProxyNodeEditorDismissalCapture: View {
     let dismissal: ProxyNodeEditorDismissal
     @Environment(\.presentationMode) private var presentationMode
@@ -2769,7 +2816,7 @@ private extension View {
  
  
  
-private enum ProxyNodeFieldLabel {
+enum ProxyNodeFieldLabel {
      
      
      
@@ -3098,31 +3145,6 @@ enum ProxyJSONShapeValidator {
  
  
  
- 
- 
- 
- 
-
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
-
- 
- 
- 
- 
- 
 enum ProxyNodeEditorDocumentFields {
     static let keys: Set<String> = [
         "ca", "certificate", "private-key", "client-certificate", "client-key",
@@ -3133,6 +3155,21 @@ enum ProxyNodeEditorDocumentFields {
     ]
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 enum ProxyNodeEditorSecretFields {
     static let keys: Set<String> = [
         "auth", "auth-key", "auth-str", "key", "obfs-password", "password", "pre-shared-key",
@@ -3150,22 +3187,13 @@ enum ProxyNodeEditorSecretFields {
      
      
      
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
-     
     static let plaintextAuthTypes: Set<String> = ["openvpn"]
 
+     
+     
+     
+     
+     
     static let plainUsernameTypes: Set<String> = [
         "http", "socks5", "ssh", "mieru", "trusttunnel", "openvpn", "gost-relay",
     ]
@@ -3431,11 +3459,15 @@ private struct ProxyDocumentFieldRow: View {
     }
 }
 
-private struct ProxyRevealingFieldRow: View {
+ 
+ 
+ 
+ 
+ 
+private struct ProxyCredentialFieldRow: View {
     let title: String
     let hint: String
     @Binding var text: String
-    @Binding var reveals: Bool
     let multiline: Bool
     let identifier: String?
     @FocusState private var focused: Bool
@@ -3444,9 +3476,7 @@ private struct ProxyRevealingFieldRow: View {
          
          
          
-        if multiline,
-           reveals,
-           #available(iOS 16.0, macOS 13.0, *) {
+        if multiline, #available(iOS 16.0, macOS 13.0, *) {
              
              
              
@@ -3458,18 +3488,16 @@ private struct ProxyRevealingFieldRow: View {
     }
 
     private var inline: some View {
-        HStack(alignment: multiline && reveals ? .top : .center) {
+        HStack(alignment: multiline ? .top : .center) {
             Text(clash: .copy(title))
                 .lineLimit(1)
                 .layoutPriority(1)
-                .padding(.top, multiline && reveals ? 4 : 0)
+                .padding(.top, multiline ? 4 : 0)
                  
                  
                 .onTapGesture { focused = true }
             Spacer(minLength: ClashTheme.Spacing.compact)
-            if ClashPlatformLayout.pageUsesSystemSettingsIdiom,
-                !(multiline && reveals)
-            {
+            if ClashPlatformLayout.pageUsesSystemSettingsIdiom, !multiline {
                  
                  
                  
@@ -3492,7 +3520,6 @@ private struct ProxyRevealingFieldRow: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .optionalProxyAccessibilityIdentifier(identifier)
             }
-            revealButton
         }
         .frame(maxWidth: .infinity, minHeight: ClashClientUI.ClashTheme.Control.fullWidthRowMinHeightOnItsOwnPlatform)
         .contentShape(Rectangle())
@@ -3509,23 +3536,6 @@ private struct ProxyRevealingFieldRow: View {
         )
     }
 
-    private var revealButton: some View {
-        Button {
-            reveals.toggle()
-        } label: {
-            Image(
-                systemName:
-                    (reveals ? ClashSymbol.eyeSlash : ClashSymbol.eye).name
-            )
-            .foregroundStyle(.secondary)
-            .frame(width: 28, height: 28)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .accessibilityLabel(reveals ? "Hide value" : "Show value")
-    }
-
-     
      
      
      
@@ -3542,7 +3552,6 @@ private struct ProxyRevealingFieldRow: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
-                revealButton
             }
             TextField(
                 text: $text,
@@ -3573,55 +3582,24 @@ private struct ProxyRevealingFieldRow: View {
         )
     }
 
-    @ViewBuilder
+     
     private var field: some View {
-        if reveals {
-            if multiline, #available(iOS 16.0, macOS 13.0, *) {
-                TextField("", text: $text, axis: .vertical)
-                    .lineLimit(3...12)
-                    .textFieldStyle(.plain)
-                    .textContentType(.oneTimeCode)
-                    .multilineTextAlignment(.leading)
-                    .disableAutocorrection(true)
-                    .textInputAutocapitalization(.never)
-                    .overlay(alignment: .trailing) {
-                        if text.isEmpty {
-                            Text(ClashCopy.key(hint))
-                                .foregroundStyle(.tertiary)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .accessibilityLabel(Text(ClashCopy.key(title)))
-            } else {
-                 
-                 
-                 
-                 
-                 
-                 
-                ClashValueField(
-                    hint: hint,
-                    label: title,
-                    bordered: ClashPlatformLayout.pageUsesSystemSettingsIdiom,
-                    text: $text
-                )
-                .textContentType(.oneTimeCode)
-                .multilineTextAlignment(.trailing)
-                .disableAutocorrection(true)
-                .textInputAutocapitalization(.never)
-                .clashMacFieldValueWidth()
-            }
-        } else {
-            ClashSecureValueField(
-                hint: hint,
-                label: title,
-                bordered: ClashPlatformLayout.pageUsesSystemSettingsIdiom,
-                text: $text
-            )
-            .textContentType(.oneTimeCode)
-            .multilineTextAlignment(.trailing)
-            .clashMacFieldValueWidth()
-        }
+         
+         
+         
+         
+         
+        ClashValueField(
+            hint: hint,
+            label: title,
+            bordered: ClashPlatformLayout.pageUsesSystemSettingsIdiom,
+            text: $text
+        )
+        .textContentType(.oneTimeCode)
+        .multilineTextAlignment(.trailing)
+        .disableAutocorrection(true)
+        .textInputAutocapitalization(.never)
+        .clashMacFieldValueWidth()
     }
 
 }
@@ -3792,7 +3770,6 @@ private struct ProxySchemaFieldRow: View {
      
      
     var valueName: ((String) -> ClashDisplayText)? = nil
-    @State private var revealsSecret = false
 
     var body: some View {
         Group {
@@ -3983,11 +3960,10 @@ private struct ProxySchemaFieldRow: View {
     }
 
     private var secretRow: some View {
-        ProxyRevealingFieldRow(
+        ProxyCredentialFieldRow(
             title: label,
             hint: field.required ? "Required" : "Optional",
             text: textBinding,
-            reveals: $revealsSecret,
             multiline: ProxyNodeDetailsView.isDocumentField(
                 field.key,
                 typeID: draft.typeID
@@ -4016,7 +3992,6 @@ private struct ProxySchemaFieldRow: View {
 
 private struct ProxyTLSEditorView: View {
     @ObservedObject var draft: ProxyNodeEditorDraft
-    @State private var revealsPrivateKey = false
 
      
     @ViewBuilder
@@ -4127,11 +4102,10 @@ private struct ProxyTLSEditorView: View {
                         )
                     }
                     if supports("private-key") {
-                        ProxyRevealingFieldRow(
+                        ProxyCredentialFieldRow(
                             title: "Private Key",
                             hint: "Optional",
                             text: textBinding(["private-key"]),
-                            reveals: $revealsPrivateKey,
                             multiline: true,
                             identifier: "proxies.nodeEditor.tls.private-key"
                         )
@@ -4269,16 +4243,14 @@ private struct ProxyECHEditorView: View {
 
 private struct ProxyRealityEditorView: View {
     @ObservedObject var draft: ProxyNodeEditorDraft
-    @State private var revealsPublicKey = false
 
     var body: some View {
         ProxyEditorSeat {
             Section {
-                ProxyRevealingFieldRow(
+                ProxyCredentialFieldRow(
                     title: "Public Key",
                     hint: "Required",
                     text: textBinding("public-key"),
-                    reveals: $revealsPublicKey,
                     multiline: false,
                     identifier: "proxies.nodeEditor.tls.reality.public-key"
                 )

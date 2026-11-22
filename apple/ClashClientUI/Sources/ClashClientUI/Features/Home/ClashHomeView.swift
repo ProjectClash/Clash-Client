@@ -322,7 +322,7 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
         (ClashTheme.Spacing.section - ClashTheme.Spacing.tight)
             + (ClashTheme.Control.minimumHitTarget - 30)
             + ClashTheme.Spacing.row
-            + statusRowHeight
+            + statusSlotHeight
             + (ClashTheme.Spacing.compact - ClashTheme.Spacing.tight)
     }
 
@@ -389,7 +389,7 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
         let distance = headerExpansionDistance * compaction
         let topReduction = ClashTheme.Spacing.section - ClashTheme.Spacing.tight
         let statusReductionStart = topReduction
-        let spacingReductionStart = statusReductionStart + statusRowHeight
+        let spacingReductionStart = statusReductionStart + statusSlotHeight
         let actionReductionStart = spacingReductionStart + ClashTheme.Spacing.row
         let bottomReductionStart = actionReductionStart
             + (ClashTheme.Control.minimumHitTarget - 30)
@@ -430,7 +430,7 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
                         height: dynamicTypeSize.isAccessibilitySize
                             ? nil
                             : ClashHomeHeaderCompaction.stagedValue(
-                                expanded: statusRowHeight,
+                                expanded: statusSlotHeight,
                                 compact: 0,
                                 distance: distance,
                                 after: statusReductionStart
@@ -563,6 +563,23 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
     @ScaledMetric(relativeTo: .subheadline)
     private var statusRowHeight: CGFloat = 20
 
+     
+     
+     
+    @State private var issueLine = ClashHomeMeasuredLine()
+
+     
+     
+     
+    private var statusSlotHeight: CGFloat {
+        ClashHomeHeaderCompaction.statusSlotHeight(
+            oneLine: statusRowHeight,
+            measured: issueLine.height(of: connection.issue?.id),
+            wraps: connection.issue?.coreWords != nil,
+            lines: ClashHomeIssueLineLabel.wordsLineLimit
+        )
+    }
+
     private var connectionStatus: some View {
         Group {
             if dynamicTypeSize.isAccessibilitySize {
@@ -592,7 +609,7 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
                     }
                     Spacer(minLength: 0)
                 }
-                .frame(minHeight: statusRowHeight, alignment: .leading)
+                .frame(minHeight: statusSlotHeight, alignment: .leading)
             }
         }
         .font(.subheadline)
@@ -688,8 +705,15 @@ public struct ClashHomeView<Icon: View>: View, Equatable {
                     text: issue.text,
                     offersReason: issue.kind.lineTapCommand == .showConnectionIssue,
                     isAccessibilitySize: dynamicTypeSize.isAccessibilitySize,
-                    choosesNode: issue.kind == .globalOnDirect
+                    choosesNode: issue.kind == .globalOnDirect,
+                    saysWords: issue.coreWords != nil
                 )
+                 
+                 
+                .clashReadsHeight(issue.coreWords == nil ? nil : { height in
+                    let measured = ClashHomeMeasuredLine(id: issue.id, height: height)
+                    if issueLine.differs(from: measured) { issueLine = measured }
+                })
             }
             .buttonStyle(.borderless)
             .contentShape(Rectangle())
@@ -2266,6 +2290,33 @@ private struct ClashHomeRoutingCard<Icon: View>: View {
     }
 }
 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashHomeDomainCardSpeech {
+    static func summary(title: String, snapshot: ClashHomeDomainSnapshot,
+                        ruleScheme: (name: String, counts: String)? = nil) -> String {
+        if let ruleScheme {
+            return "\(title), \(ruleScheme.name), \(ruleScheme.counts)"
+        }
+        var result = title
+        if let count = snapshot.count {
+            result = "\(count) \(result)"
+        }
+        if let breakdown = snapshot.breakdown {
+            result += ", \(breakdown)"
+        }
+        return result
+    }
+}
+
 private struct ClashHomeDomainCountCard<Icon: View>: View {
     @Environment(\.locale)
     private var locale
@@ -2347,20 +2398,57 @@ private struct ClashHomeDomainCountCard<Icon: View>: View {
                 Spacer(minLength: ClashTheme.Spacing.compact)
                 chevron
             }
-            if let count = snapshot.count {
-                countSummary(count)
-            }
-            if !compact, !snapshot.names.isEmpty {
-                ClashRegionalFlag.label(snapshot.names.joined(separator: " · "), pointSize: 12, relativeTo: .caption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(
-                        dynamicTypeSize.isAccessibilitySize ? 3 : 1
-                    )
-                    .truncationMode(.middle)
+            if let scheme = ruleScheme {
+                ruleSchemeSummary(scheme)
+            } else {
+                if let count = snapshot.count {
+                    countSummary(count)
+                }
+                if !compact, !snapshot.names.isEmpty {
+                    ClashRegionalFlag.label(snapshot.names.joined(separator: " · "), pointSize: 12, relativeTo: .caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(
+                            dynamicTypeSize.isAccessibilitySize ? 3 : 1
+                        )
+                        .truncationMode(.middle)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+     
+     
+     
+     
+     
+    private var ruleScheme: ClashHomeRuleScheme? {
+        guard !compact, let scheme = snapshot.ruleScheme, !scheme.name.isBlank else { return nil }
+        return scheme
+    }
+
+     
+     
+     
+     
+    @ViewBuilder
+    private func ruleSchemeSummary(_ scheme: ClashHomeRuleScheme) -> some View {
+        Text(clash: scheme.name)
+            .font(.title2.weight(.bold))
+            .foregroundStyle(.primary)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+            .truncationMode(.middle)
+            .accessibilityIdentifier("\(identifier).scheme")
+         
+         
+         
+        Text(verbatim: scheme.countsLine(locale: locale, total: scheme.total))
+            .font(.footnote)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+            .accessibilityIdentifier("\(identifier).schemeCounts")
     }
 
     @ViewBuilder
@@ -2431,14 +2519,11 @@ private struct ClashHomeDomainCountCard<Icon: View>: View {
     }
 
     private var accessibilitySummary: String {
-        var result = ClashCopy.string(card.title, locale: locale)
-        if let count = snapshot.count {
-            result = "\(count) \(result)"
-        }
-        if let breakdown = snapshot.breakdown {
-            result += ", \(breakdown)"
-        }
-        return result
+        ClashHomeDomainCardSpeech.summary(
+            title: ClashCopy.string(card.title, locale: locale),
+            snapshot: snapshot,
+            ruleScheme: ruleScheme.map { (name: ClashCopy.string(for: $0.name, locale: locale), counts: $0.countsLine(locale: locale, total: $0.total)) }
+        )
     }
 }
 
@@ -2448,7 +2533,13 @@ private struct ClashHomeCardCustomizationView<Icon: View>: View {
     let customizationPresentation: (AnyView) -> AnyView
     let icon: (ClashSymbol) -> Icon
 
-    @Environment(\.dismiss) private var dismiss
+     
+     
+     
+     
+     
+     
+    @StateObject private var dismiss = ClashDismissHandle()
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage(ClashHomeOutboundModeStyle.storageKey)
     private var outboundModeStyle: ClashHomeOutboundModeStyle = .spacious
@@ -2468,6 +2559,9 @@ private struct ClashHomeCardCustomizationView<Icon: View>: View {
          
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("home.cards.customization")
+         
+         
+        .clashCapturesDismiss(dismiss)
     }
 
     private var content: some View {

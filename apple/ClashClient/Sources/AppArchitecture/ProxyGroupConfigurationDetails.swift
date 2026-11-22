@@ -61,28 +61,32 @@ enum ProxyGroupConfigurationCatalog {
         "hidden-presentation",
     ]
 
+     
+     
+     
     static let specifications: [ProxyGroupSpecification] = [
         .init(
             typeID: "select",
-            displayName: "Manual Selection",
+            displayName: "Manual choice",
             summary: "Uses the route selected by the user and keeps that choice until it changes.",
-            aliases: ["selector"]
+             
+            aliases: ["selector", "Manual Selection"]
         ),
         .init(
             typeID: "url-test",
-            displayName: "Fastest Available",
+            displayName: "Fastest, tested",
             summary: "Measures available routes and automatically uses the lowest-latency result.",
-            aliases: ["urltest", "url test"]
+            aliases: ["urltest", "url test", "Fastest Available"]
         ),
         .init(
             typeID: "fallback",
-            displayName: "Ordered Fallback",
+            displayName: "First that works",
             summary: "Uses the first healthy route in configured order and falls back when it fails.",
-            aliases: []
+            aliases: ["Ordered Fallback"]
         ),
         .init(
             typeID: "load-balance",
-            displayName: "Load Balance",
+            displayName: "Load balance",
             summary: "Distributes connections across healthy routes using the configured strategy.",
             aliases: ["loadbalance", "load balance"]
         ),

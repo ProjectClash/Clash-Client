@@ -7,8 +7,6 @@ public struct ClashFieldRow: View {
     private let title: String
     private let hint: String
     private let text: Binding<String>
-    private let secure: Bool
-    private let reveals: Binding<Bool>?
     private let monospaced: Bool
     private let suffix: String?
     private let compactValue: Bool
@@ -47,8 +45,6 @@ public struct ClashFieldRow: View {
         _ title: String,
         hint: String,
         text: Binding<String>,
-        secure: Bool = false,
-        reveals: Binding<Bool>? = nil,
         monospaced: Bool = false,
         suffix: String? = nil,
         compactValue: Bool = false,
@@ -59,8 +55,6 @@ public struct ClashFieldRow: View {
         self.title = title
         self.hint = hint
         self.text = text
-        self.secure = secure
-        self.reveals = reveals
         self.monospaced = monospaced
         self.suffix = suffix
         self.compactValue = compactValue
@@ -128,25 +122,6 @@ public struct ClashFieldRow: View {
             } else {
                 valueField
                     .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            if let reveals {
-                Button {
-                    reveals.wrappedValue.toggle()
-                } label: {
-                    Image(
-                        systemName:
-                            (reveals.wrappedValue
-                                ? ClashSymbol.eyeSlash
-                                : ClashSymbol.eye).rawValue
-                    )
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(
-                    reveals.wrappedValue ? "Hide value" : "Show value"
-                )
             }
              
              
@@ -241,29 +216,20 @@ public struct ClashFieldRow: View {
         return ended != text
     }
 
-    @ViewBuilder
+     
+     
+     
+     
     private var valueField: some View {
-        if secure && reveals?.wrappedValue != true {
-            ClashSecureValueField(
-                hint: hint,
-                label: title,
-                bordered: ClashPlatformLayout.pageUsesSystemSettingsIdiom,
-                text: text
-            )
-            .font(monospaced ? .body.monospaced() : .body)
-            .focused($focused)
-            .clashFieldIdentifier(identifier)
-        } else {
-            ClashValueField(
-                hint: hint,
-                label: title,
-                bordered: ClashPlatformLayout.pageUsesSystemSettingsIdiom,
-                text: text
-            )
-            .font(monospaced ? .body.monospaced() : .body)
-            .focused($focused)
-            .clashFieldIdentifier(identifier)
-        }
+        ClashValueField(
+            hint: hint,
+            label: title,
+            bordered: ClashPlatformLayout.pageUsesSystemSettingsIdiom,
+            text: text
+        )
+        .font(monospaced ? .body.monospaced() : .body)
+        .focused($focused)
+        .clashFieldIdentifier(identifier)
     }
 
 }

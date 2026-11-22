@@ -100,6 +100,10 @@ public struct ClashModuleDetailView: View {
                 headerSection(snapshot)
                  
                  
+                 
+                notUpdatedSection(snapshot)
+                 
+                 
                 ClashModuleInformationSection(snapshot: snapshot)
                  
                  
@@ -109,7 +113,7 @@ public struct ClashModuleDetailView: View {
                 if let settings = snapshot.settings {
                     ClashModuleSettingsSection(moduleID: snapshot.id, settings: settings, values: writes.settings, perform: perform)
                 }
-                ForEach(snapshot.sections) { section in
+                ForEach(snapshot.sections.filter { !$0.isSentences }) { section in
                     Section {
                         ForEach(section.items) { item in
                             if let script = item.script {
@@ -144,6 +148,21 @@ public struct ClashModuleDetailView: View {
         } else {
             List {}
                 .modifier(ClashModulesListStyle())
+        }
+    }
+
+     
+     
+    @ViewBuilder
+    private func notUpdatedSection(_ snapshot: ClashModuleDetailSnapshot) -> some View {
+        if let section = snapshot.sections.first(where: \.isSentences) {
+            Section {
+                ForEach(section.items) { item in
+                    itemRow(item, sentence: true)
+                }
+            } header: {
+                sectionHeader(section)
+            }
         }
     }
 
@@ -336,10 +355,18 @@ public struct ClashModuleDetailView: View {
         return .init(isUpdating: snapshot.isUpdating, action: .refreshModule(id: snapshot.id))
     }
 
-    private func itemRow(_ item: ClashModuleDetailSnapshot.Item) -> some View {
+     
+     
+    private func itemRow(_ item: ClashModuleDetailSnapshot.Item, sentence: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: ClashTheme.Spacing.compact) {
-            moduleWords(item.text, runNow: item.runNow)
-                .font(.system(.callout, design: .monospaced))
+            if sentence {
+                Text(verbatim: item.text)
+                    .font(.footnote)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                moduleWords(item.text, runNow: item.runNow)
+                    .font(.system(.callout, design: .monospaced))
+            }
             if let detail = item.detail {
                 if case .verbatim(let words) = detail {
                      
@@ -589,6 +616,12 @@ extension ClashModuleDetailView {
     enum Mac {
         static let width: CGFloat = 560
         static let height: CGFloat = 712
+         
+         
+         
+         
+         
+        static let minimumHeight: CGFloat = 240
         static let top: CGFloat = 22
         static let bottom: CGFloat = 16
          
@@ -664,7 +697,7 @@ extension ClashModuleDetailView {
             Divider()
             macBar
         }
-        .frame(minWidth: 480, idealWidth: Mac.width, minHeight: 420, idealHeight: Mac.height)
+        .frame(minWidth: 480, idealWidth: Mac.width, minHeight: Mac.minimumHeight, idealHeight: Mac.height)
          
          
         .onExitCommand {
@@ -712,22 +745,16 @@ extension ClashModuleDetailView {
                         macFactRow(fact, snapshot)
                             .clashMacGroupRow(first: index == 0, last: index == facts.count - 1)
                     }
+                     
+                    macNotUpdatedSection(snapshot)
                     if !snapshot.panels.isEmpty {
                         ClashModuleMacPanelsGroup(panels: snapshot.panels) { perform(.refreshPanel(id: $0)) }
                     }
                     if let settings = snapshot.settings {
                         ClashModuleMacSettingsGroup(moduleID: snapshot.id, settings: settings, perform: perform)
                     }
-                    ForEach(snapshot.sections) { section in
-                        macSectionHeader(section)
-                            .padding(.top, Mac.groupGap)
-                            .padding(.bottom, Mac.headerGap)
-                            .padding(.horizontal, ClashMacGroupMetrics.margin + ClashTheme.Spacing.tight)
-                            .clashMacPlainRow()
-                        ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
-                            macItemRow(item, in: section)
-                                .clashMacGroupRow(first: index == 0, last: index == section.items.count - 1)
-                        }
+                    ForEach(snapshot.sections.filter { !$0.isSentences }) { section in
+                        macSection(section)
                     }
                     Color.clear
                         .frame(height: Mac.bottom)
@@ -890,6 +917,28 @@ extension ClashModuleDetailView {
 
      
      
+     
+    @ViewBuilder
+    private func macSection(_ section: ClashModuleDetailSnapshot.Section) -> some View {
+        macSectionHeader(section)
+            .padding(.top, Mac.groupGap)
+            .padding(.bottom, Mac.headerGap)
+            .padding(.horizontal, ClashMacGroupMetrics.margin + ClashTheme.Spacing.tight)
+            .clashMacPlainRow()
+        ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
+            macItemRow(item, in: section)
+                .clashMacGroupRow(first: index == 0, last: index == section.items.count - 1)
+        }
+    }
+
+     
+    @ViewBuilder
+    private func macNotUpdatedSection(_ snapshot: ClashModuleDetailSnapshot) -> some View {
+        if let section = snapshot.sections.first(where: \.isSentences) {
+            macSection(section)
+        }
+    }
+
     private func macSectionHeader(_ section: ClashModuleDetailSnapshot.Section) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: ClashTheme.Spacing.compact) {
             Text(clash: section.title)
@@ -909,7 +958,12 @@ extension ClashModuleDetailView {
     private func macItemRow(_ item: ClashModuleDetailSnapshot.Item, in section: ClashModuleDetailSnapshot.Section) -> some View {
         let named = section.id == "scripts" || section.id == "appScripts"
         return VStack(alignment: .leading, spacing: 2) {
-            if named {
+            if section.isSentences {
+                 
+                Text(verbatim: item.text)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if named {
                 moduleWords(item.text)
             } else {
                 moduleWords(item.text)

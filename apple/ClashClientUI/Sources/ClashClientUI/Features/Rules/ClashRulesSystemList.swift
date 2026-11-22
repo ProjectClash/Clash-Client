@@ -45,12 +45,30 @@ struct ClashRuleFrozenRow: Equatable, Hashable, Identifiable {
  
  
  
+ 
 struct ClashRulesSystemOverview<Icon: View>: View {
     let overview: ClashRulesOverviewSnapshot
     let query: String
     let palette: ClashProductPalette
     let icon: (ClashSymbol) -> Icon
     let activeRulesEntry: AnyView
+     
+     
+     
+    var bucketPage: ((String) -> AnyView)? = nil
+     
+     
+     
+    var leadingSections: AnyView? = nil
+     
+    var rulesGroupTitle: ClashDisplayText? = nil
+     
+     
+     
+     
+    var rowsBeforeActiveRules: AnyView? = nil
+     
+    var showsActiveRules = true
 
      
      
@@ -68,12 +86,19 @@ struct ClashRulesSystemOverview<Icon: View>: View {
         let _ = ClashPerf.count("rules.list.body")
         return List {
             if query.isEmpty {
+                if let leadingSections {
+                    leadingSections
+                }
                 overviewSections
             } else {
                 searchSection
             }
-            Section {
-                activeRulesEntry
+             
+             
+            if showsActiveRules, rowsBeforeActiveRules == nil || !query.isEmpty {
+                Section {
+                    activeRulesEntry
+                }
             }
         }
         .task(id: query) {
@@ -119,7 +144,7 @@ struct ClashRulesSystemOverview<Icon: View>: View {
         if overview.hasRulesGroup {
             Section {
                 ForEach(overview.buckets.map { ClashRuleBucketFrozenRow(target: $0.target, count: $0.ruleCount) }) { row in
-                    ClashRuleBucketListRow(row: row)
+                    ClashRuleBucketListRow(row: row, page: bucketPage.map { page in { page(row.target) } })
                         .equatable()
                 }
                 if overview.inapplicableCount > 0 {
@@ -137,11 +162,21 @@ struct ClashRulesSystemOverview<Icon: View>: View {
                         .accessibilityIdentifier("rules.inapplicable")
                 }
             } header: {
-                Text(clash: .format("Rules (%@)", [ClashCopy.count(overview.inlineCount, locale: locale)]))
+                Text(clash: rulesGroupTitle ?? .format("Rules (%@)", [ClashCopy.count(overview.inlineCount, locale: locale)]))
             } footer: {
                  
-                if !overview.buckets.isEmpty {
-                    Text("Grouped by destination. What the tunnel runs: the profile's rules with your custom rules and the override script applied.")
+                if !overview.buckets.isEmpty, let line = ClashRulesBucketsFooter.text(inUse: showsActiveRules) {
+                    Text(clash: line)
+                }
+            }
+        }
+         
+         
+        if let rowsBeforeActiveRules {
+            Section {
+                rowsBeforeActiveRules
+                if showsActiveRules {
+                    activeRulesEntry
                 }
             }
         }
@@ -161,7 +196,7 @@ struct ClashRulesSystemOverview<Icon: View>: View {
                         .equatable()
                 }
             } header: {
-                Text("Fallback")
+                Text(clash: .copy("Fallback (rules section)"))
             } footer: {
                 Text("Traffic that matches nothing above.")
             }
@@ -210,15 +245,36 @@ struct ClashRulesSystemOverview<Icon: View>: View {
  
  
 struct ClashRuleBucketListRow: View, Equatable {
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row }
+     
+     
+     
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        !a.carriesPage && !b.carriesPage && a.row == b.row
+    }
 
     let row: ClashRuleBucketFrozenRow
+    private let carriesPage: Bool
+    private let page: (() -> AnyView)?
     @Environment(\.locale) private var locale
+
+    init(row: ClashRuleBucketFrozenRow, page: (() -> AnyView)? = nil) {
+        self.row = row
+        self.page = page
+        carriesPage = page != nil
+    }
 
     var body: some View {
         let _ = ClashPerf.count("rules.list.bucket")
         return Group {
-            if #available(iOS 16.0, macOS 13.0, tvOS 16.0, *) {
+            if let page {
+                 
+                 
+                ClashRoutedViewLink {
+                    page()
+                } label: {
+                    label
+                }
+            } else if #available(iOS 16.0, macOS 13.0, tvOS 16.0, *) {
                 NavigationLink(value: ClashRuleBucketRoute(target: row.target)) {
                     label
                 }
@@ -249,6 +305,17 @@ struct ClashRuleBucketListRow: View, Equatable {
 struct ClashRuleListRow: View, Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row }
 
+     
+     
+     
+     
+     
+     
+    static func kindWords(_ row: ClashRuleFrozenRow, locale: Locale) -> String {
+        let words = ConfigurationRuleWords.of(row.raw, locale: locale).match
+        return words.isEmpty ? row.type : words
+    }
+
     let row: ClashRuleFrozenRow
     let palette: ClashProductPalette
     @Environment(\.locale) private var locale
@@ -257,7 +324,7 @@ struct ClashRuleListRow: View, Equatable {
         let _ = ClashPerf.count("rules.list.row")
         return HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(row.payload.isEmpty ? row.type : row.payload)
+                Text(row.payload.isEmpty ? Self.kindWords(row, locale: locale) : row.payload)
                     .font(.subheadline)
                     .lineLimit(1)
                     .truncationMode(.middle)

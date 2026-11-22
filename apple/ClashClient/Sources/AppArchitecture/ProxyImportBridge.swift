@@ -234,6 +234,18 @@ enum ProxyImportBridgeError: LocalizedError {
      
      
     case refusedConfiguration(reason: String, nodes: Int)
+     
+     
+     
+    case overrideScript
+
+     
+     
+     
+     
+     
+     
+    static let overrideScriptMessage = "This is an override script. Add it under the configuration’s Override Script."
 
     var errorDescription: String? {
         switch self {
@@ -241,6 +253,8 @@ enum ProxyImportBridgeError: LocalizedError {
             return message
         case .invalidResult:
             return "The share link could not be read."
+        case .overrideScript:
+            return Self.overrideScriptMessage
         case .refusedConfiguration(let reason, _):
             return reason
         case .rejected(let issues):
@@ -255,6 +269,31 @@ enum ProxyImportBridgeError: LocalizedError {
             }
             return first.message
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum OverrideScriptSniff {
+    private static let opening = try! NSRegularExpression(
+        pattern: #"\A\x{FEFF}?\s*(?:/\*|//|(?:async\s+)?function\b|(?:const|let|var)\s|main\s*=|["']use strict["'])"#)
+    private static let definesMain = try! NSRegularExpression(
+        pattern: #"^\x{FEFF}?[ \t]*(?:(?:async[ \t]+)?function[ \t]*main[ \t]*\(|(?:(?:const|let|var)[ \t]+)?main[ \t]*=[^=])"#,
+        options: [.anchorsMatchLines])
+     
+     
+    private static let openingLength = 4096
+
+    static func isOverrideScript(_ text: String) -> Bool {
+        let start = String(text.prefix(openingLength))
+        guard opening.firstMatch(in: start, range: NSRange(start.startIndex..., in: start)) != nil else { return false }
+        return definesMain.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 }
 
@@ -467,6 +506,24 @@ enum ProxyImportBridge {
             sourceValidationError = error
         }
         AppCore.returnFreeMemoryNow(after: text)
+         
+         
+         
+         
+         
+         
+         
+         
+#if !os(tvOS)
+        if let refusal = sourceValidationError as? ConfigTransformsError,
+           case .invalidConfiguration(let reason) = refusal,
+           OverrideScriptSniff.isOverrideScript(pasted) {
+            capabilityLog.notice(
+                "proxy import: an override script, refused as configuration -- \(reason, privacy: .public)"
+            )
+            throw ProxyImportBridgeError.overrideScript
+        }
+#endif
          
          
          

@@ -108,6 +108,14 @@ extension ClashProxiesDisplayPreferences {
  
  
  
+ 
+ 
+struct ProxiesNodeActions {
+    var copyYAML: (String) -> Void
+    var remove: (String) -> Void
+    var delete: (String) -> Void
+}
+
 struct ProxiesOverviewAdapter: View {
     @Environment(\.horizontalSizeClass)
     private var horizontalSizeClass
@@ -177,6 +185,29 @@ struct ProxiesOverviewAdapter: View {
     private let rememberedExpandedGroups: Set<String>
     private let rememberedOpenGroup: String?
     private let readerFoldedAll: Bool
+     
+     
+    private let configurationPage: ClashProxiesConfigurationPage?
+     
+    private let nodeSourcesPage: (() -> AnyView)?
+     
+    private let addNodes: (() -> Void)?
+     
+     
+    private let updateNodeSources: (() -> Void)?
+     
+     
+    private let inspectGroup: ((String) -> Void)?
+     
+    private let newGroup: (() -> Void)?
+     
+     
+    private let deleteGroup: ((String) -> Void)?
+     
+     
+    private let nodeActions: ProxiesNodeActions?
+     
+    private let reorderGroups: (() -> Void)?
 
     @State private var preferences:
         ClashProxiesDisplayPreferences
@@ -409,8 +440,26 @@ struct ProxiesOverviewAdapter: View {
         rememberedExpandedGroups: Set<String> = [],
         rememberedOpenGroup: String? = nil,
         readerFoldedAll: Bool = false,
-        ownsNavigationContainer: Bool = true
+        ownsNavigationContainer: Bool = true,
+        configurationPage: ClashProxiesConfigurationPage? = nil,
+        nodeSourcesPage: (() -> AnyView)? = nil,
+        addNodes: (() -> Void)? = nil,
+        updateNodeSources: (() -> Void)? = nil,
+        inspectGroup: ((String) -> Void)? = nil,
+        newGroup: (() -> Void)? = nil,
+        reorderGroups: (() -> Void)? = nil,
+        deleteGroup: ((String) -> Void)? = nil,
+        nodeActions: ProxiesNodeActions? = nil
     ) {
+        self.deleteGroup = deleteGroup
+        self.nodeActions = nodeActions
+        self.configurationPage = configurationPage
+        self.nodeSourcesPage = nodeSourcesPage
+        self.addNodes = addNodes
+        self.updateNodeSources = updateNodeSources
+        self.inspectGroup = inspectGroup
+        self.newGroup = newGroup
+        self.reorderGroups = reorderGroups
         self.ownsNavigationContainer = ownsNavigationContainer
         self.sourceModel = sourceModel
         self.runtime = runtime
@@ -509,7 +558,8 @@ struct ProxiesOverviewAdapter: View {
             palette: ClashClientUI.ClashProductPalette.clashProduct,
             showsDismissControl: ownsNavigationContainer,
             latencyPulse: pulseHub.publisher,
-            latencyPulseSnapshot: { pulseHub.current }
+            latencyPulseSnapshot: { pulseHub.current },
+            nodeSourcesPage: nodeSourcesPage
         ) { symbol in
             ClashSymbolImage(symbol: symbol)
         }
@@ -967,6 +1017,11 @@ struct ProxiesOverviewAdapter: View {
             runtime: effectiveRuntime.providerCatalog,
             isConnected: isConnected
         )
+         
+         
+         
+        let now = Date()
+        let updatedFormatter = composedProviders.contains(where: { $0.updatedAt != nil }) ? Self.updatedFormatter(locale) : nil
         let providers = ClashPerf.measure("proxies.snapshot.providers") {
             composedProviders.map { provider in
                 ClashProxyProviderSnapshot(
@@ -989,8 +1044,11 @@ struct ProxiesOverviewAdapter: View {
                      
                      
                      
+                     
                     loadFailure: provider.note.flatMap { $0.isFailure ? providerNote($0) : nil },
                     note: provider.note.flatMap { $0.isFailure || !$0.isShown ? nil : providerNote($0) }
+                        ?? (provider.note?.isFailure == true
+                            ? nil : Self.updatedLine(provider.updatedAt, formatter: updatedFormatter, now: now, locale: locale))
                 )
             }
         }
@@ -1100,12 +1158,61 @@ struct ProxiesOverviewAdapter: View {
                  
                 liveCatalog: isConnected && effectiveRuntime.isAuthoritative,
                  
-                nodeScripts: runNodeScript == nil ? [] : nodeScripts
+                nodeScripts: runNodeScript == nil ? [] : nodeScripts,
+                configurationPage: shownConfigurationPage
             ),
             capabilities: AppleClientCapabilities([
                 .proxies: .available,
             ])
         )
+    }
+
+     
+     
+     
+    private var shownConfigurationPage: ClashProxiesConfigurationPage? {
+        guard var page = configurationPage else { return nil }
+        page.offersAddNodes = addNodes != nil
+        page.offersNodeSourcesUpdate = updateNodeSources != nil
+        page.offersGroupDetails = inspectGroup != nil
+        page.offersNewGroup = newGroup != nil
+        page.offersGroupReorder = reorderGroups != nil
+        page.groupsAwaitingDownload = page.isCurrentConfiguration || updateNodeSources == nil
+            ? [] : Self.groupsAwaitingDownload(in: sourceModel)
+        return page
+    }
+
+     
+    static func updatedFormatter(_ locale: Locale) -> RelativeDateTimeFormatter {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = locale
+        formatter.unitsStyle = .full
+        return formatter
+    }
+
+     
+     
+     
+    static func updatedLine(_ written: Date?, formatter: RelativeDateTimeFormatter?, now: Date, locale: Locale) -> String? {
+        guard let written, let formatter else { return nil }
+        let shown = written.timeIntervalSince(now) > -1 ? now.addingTimeInterval(-1) : written
+        return ClashCopy.format("Last updated %@", locale: locale, formatter.localizedString(for: shown, relativeTo: now))
+    }
+
+     
+     
+     
+     
+     
+    static func groupsAwaitingDownload(in model: ProxiesOverviewModel) -> [String] {
+        model.groups.compactMap { group in
+            guard !group.drawsFromProviders.isEmpty,
+                  group.members.allSatisfy({ $0.name == group.emptyFallback }),
+                  ProxiesOverviewModel.emptyGroupNote(drawsFrom: group.drawsFromProviders,
+                                                      providers: model.providers) == .notDownloadedYet
+            else { return nil }
+            return group.name
+        }
     }
 
     private var latencyStates:
@@ -1187,6 +1294,24 @@ struct ProxiesOverviewAdapter: View {
                 }
             case .cancelLatency:
                 cancelLatency?()
+            case .addNodes:
+                addNodes?()
+            case .updateNodeSources:
+                updateNodeSources?()
+            case .inspectGroup(let name):
+                inspectGroup?(name)
+            case .newGroup:
+                newGroup?()
+            case .reorderGroups:
+                reorderGroups?()
+            case .deleteGroup(let name):
+                deleteGroup?(name)
+            case .copyNodeYAML(let name):
+                nodeActions?.copyYAML(name)
+            case .removeNode(let name):
+                nodeActions?.remove(name)
+            case .deleteNode(let name):
+                nodeActions?.delete(name)
             }
         }
     }

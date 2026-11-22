@@ -11,12 +11,21 @@ public struct ClashMacRootView: View {
     private let detailOverlay:
         @MainActor (ClashClientUI.ClashRootDestination?) -> AnyView
     private let moreAttentionAction: @MainActor (String) -> Void
+     
+     
+     
+     
+    private let refusalNote:
+        @MainActor (ClashClientUI.ClashHomeConnectionIssue) -> ClashDisplayText?
 
     @State private var navigationState:
         ClashClientUI.AppleClientNavigationState
     @State private var configurationDestination:
         ClashMacSecondaryDestination = .configuration
     @State private var isPickingProfile = false
+     
+     
+    @State private var presentedRefusal: ClashClientUI.ClashHomeConnectionIssue?
     @Binding private var navigationRequest:
         ClashMacSecondaryDestination?
 
@@ -35,13 +44,20 @@ public struct ClashMacRootView: View {
          
          
          
-        moreAttentionAction: @escaping @MainActor (String) -> Void = { _ in }
+        moreAttentionAction: @escaping @MainActor (String) -> Void = { _ in },
+         
+         
+         
+        refusalNote: @escaping @MainActor (
+            ClashClientUI.ClashHomeConnectionIssue
+        ) -> ClashDisplayText? = { _ in nil }
     ) {
         self.snapshot = snapshot
         self.actions = actions
         self.secondaryContent = secondaryContent
         self.detailOverlay = detailOverlay
         self.moreAttentionAction = moreAttentionAction
+        self.refusalNote = refusalNote
         _navigationRequest = navigationRequest
         _navigationState = State(
             initialValue: ClashClientUI.AppleClientNavigationState(
@@ -172,6 +188,17 @@ public struct ClashMacRootView: View {
                         if isAddDoor { isPickingProfile = false }
                     }
             }
+             
+             
+             
+             
+            .environment(
+                \.clashHomeIssueOpensAccount,
+                Self.homeIssueOpensAccount(snapshot.home.connection.issue)
+            )
+            .sheet(item: $presentedRefusal) { issue in
+                ClashMacCoreRefusalSheet(issue: issue, onDemandPausedNote: refusalNote(issue)) { presentedRefusal = nil }
+            }
             } placeholder: {
                 ClashMacPlatformPresentation.palette.canvas
                     .ignoresSafeArea()
@@ -218,6 +245,27 @@ public struct ClashMacRootView: View {
 
     private var productPalette: ClashClientUI.ClashProductPalette {
         ClashMacPlatformPresentation.palette
+    }
+
+     
+     
+     
+    static func homeIssueOpensAccount(
+        _ issue: ClashClientUI.ClashHomeConnectionIssue?
+    ) -> Bool {
+        issue?.coreWords != nil
+    }
+
+     
+     
+    static func refusalAccount(
+        for command: ClashClientUI.ClashHomeCommand,
+        issue: ClashClientUI.ClashHomeConnectionIssue?
+    ) -> ClashClientUI.ClashHomeConnectionIssue? {
+        guard case .showConnectionIssue = command,
+              let issue, homeIssueOpensAccount(issue)
+        else { return nil }
+        return issue
     }
 
     private var navigationAwareActions: AppleClientActions {
@@ -297,6 +345,12 @@ public struct ClashMacRootView: View {
         let destination: ClashClientUI.AppleClientDestination?
         switch action {
         case .home(let command):
+            if let refusal = Self.refusalAccount(
+                for: command,
+                issue: snapshot.home.connection.issue
+            ) {
+                presentedRefusal = refusal
+            }
             if let requested =
                 ClashMacSecondaryDestination(homeCommand: command)
             {

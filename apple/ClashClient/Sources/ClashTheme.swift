@@ -26,13 +26,20 @@ enum ClashTheme {
             }
         )
 #else
-        return Color(uiColor: UIColor { traits in
-            pureBlack && traits.userInterfaceStyle == .dark
-                ? .black
-                : .systemGroupedBackground
-        })
+        return pureBlack ? pureBlackCanvas : groupedCanvas
 #endif
     }
+#if !os(macOS)
+     
+     
+     
+     
+     
+    private static let groupedCanvas = Color(uiColor: .systemGroupedBackground)
+    private static let pureBlackCanvas = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? .black : .systemGroupedBackground
+    })
+#endif
 #if os(macOS)
     static let surface = Color(nsColor: .controlBackgroundColor)
     static let raisedFill = Color(

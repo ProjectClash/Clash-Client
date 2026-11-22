@@ -912,7 +912,14 @@ enum ConfigurationCollectionContentBridge {
         var nodes: [String] = []
         var lines: [String] = []
         var count: Int?
+         
+         
+         
         var updatedAt: Date?
+         
+         
+         
+        var usageUpdatedAt: Date?
         var nextOffset: Int?
          
          
@@ -1172,27 +1179,182 @@ enum ConfigurationCollectionContentBridge {
         let catalog: ProviderCatalog
          
          
-        private let answers: [String: [ProviderRefreshState.Entry]]
+        private let answers: [String: [Answer]]
+         
+         
+         
+         
+         
+         
+         
+        private let counts: [String: [Counted]]
+         
+         
+         
+        private let names: [String: [String]]
 
-        init(catalog: ProviderCatalog, state: ProviderRefreshState?) {
+         
+         
+         
+        private struct Counted: Sendable {
+            let name: String
+            let count: Int
+            let content: String?
+        }
+
+         
+         
+         
+        struct InUse: Equatable, Sendable {
+            let count: Int
+             
+             
+             
+             
+            let ofThisCopy: Bool
+        }
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        private struct Answer: Sendable {
+            let usage: SubscriptionInfo?
+            let at: Date?
+             
+            let request: String?
+
+            func isNewer(than date: Date?) -> Bool {
+                guard let at else { return false }
+                return date.map { at > $0 } ?? true
+            }
+        }
+
+         
+         
+         
+         
+        typealias RowFacts = (updatedAt: Date?, owed: Bool)
+
+        init(catalog: ProviderCatalog, state: ProviderRefreshState?,
+             row: (ProviderCatalog.Entry) -> RowFacts = { ($0.lastUpdatedAt, false) }) {
             self.catalog = catalog
-            var answers: [String: [ProviderRefreshState.Entry]] = [:]
-            for provider in catalog.entries where provider.kind == "proxy" {
-                guard let answer = state?.entry(kind: provider.kind, name: provider.name, url: provider.url) else { continue }
+            var answers: [String: [Answer]] = [:]
+            var counts: [String: [Counted]] = [:]
+            var names: [String: [String]] = [:]
+            let coreFetched = catalog.coreFetchedProviders ?? []
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            var sharing: [String: Int] = [:]
+            for request in (state?.running?.providers ?? [:]).values { sharing[request, default: 0] += 1 }
+            for provider in catalog.entries {
+                guard let kind = runningKind(provider.kind) else { continue }
+                names[runningKey(kind: kind, address: provider.url), default: []].append(provider.name)
+                 
+                 
+                 
+                 
+                 
+                 
+                let facts: RowFacts = kind == .nodes ? row(provider) : (provider.lastUpdatedAt, false)
+                 
+                 
+                let newer = facts.owed ? nil : state?.newerEntry(of: provider, than: facts.updatedAt)
+                 
+                 
+                 
+                 
+                 
+                 
+                let alone = state?.requestKey(kind: provider.kind, name: provider.name).map { sharing[$0] == 1 } ?? true
+                let tunnel = newer?.countOfCheckedContent
+                let listed = coreFetched.contains(provider.name) ? nil : provider.count ?? (provider.note == nil ? nil : 0)
+                if alone, let count = tunnel ?? listed {
+                    counts[runningKey(kind: kind, address: provider.url), default: []].append(
+                        Counted(name: provider.name, count: count, content: tunnel == nil ? nil : newer?.sourceSHA256))
+                }
+                guard kind == .nodes, !facts.owed else { continue }
+                let answer: Answer
+                if let usage = newer?.usage, let checked = newer?.checkedAt {
+                    answer = Answer(usage: usage, at: checked, request: provider.request)
+                } else {
+                     
+                     
+                     
+                     
+                     
+                    answer = Answer(usage: provider.subscriptionInfo, at: facts.updatedAt, request: provider.request)
+                }
                 answers[runningKey(kind: .nodes, address: provider.url), default: []].append(answer)
             }
             self.answers = answers
+            self.counts = counts
+            self.names = names
+        }
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        func inUse(of entry: ConfigurationCollectionEntry, copy: Cache?) -> InUse? {
+            guard entry.collection.type == "http", let location = entry.collection.location else { return nil }
+            let key = runningKey(kind: entry.id.kind, address: location)
+            guard let candidates = counts[key] else { return nil }
+            let named = (names[key] ?? []).filter { $0 == entry.collection.name }.count == 1
+            let chosen = named ? candidates.filter { $0.name == entry.collection.name } : candidates
+            guard let count = chosen.first?.count, chosen.allSatisfy({ $0.count == count }) else { return nil }
+            let digests = Set([copy?.sourceSHA256, copy?.payloadSHA256].compactMap { $0 })
+            let ofThisCopy = chosen.allSatisfy { $0.content.map(digests.contains) ?? false }
+            return InUse(count: count, ofThisCopy: ofThisCopy)
         }
 
         static func load(container: URL?) -> RunningProviders? {
             guard let container, let store = try? ConfigResourceStore(containerURL: container),
                   let directory = try? store.activeProvidersDirectory(),
                   let catalog = ProviderCatalog.load(providersDir: directory) else { return nil }
-            return RunningProviders(
-                catalog: catalog,
-                state: ProviderRefreshState.read(workingDirectory: container.appendingPathComponent("working")))
+            let state = ProviderRefreshState.read(workingDirectory: container.appendingPathComponent("working"))
+            let written = ProviderCatalog.writtenAt(providersDir: directory)
+            return RunningProviders(catalog: catalog, state: state, row: { entry in
+                 
+                let updatedAt = entry.lastUpdatedAt ?? (try? FileManager.default.attributesOfItem(
+                    atPath: directory.appendingPathComponent(entry.path).path))?[.modificationDate] as? Date
+                let note = catalog.note(of: entry, state: state, written: written,
+                                        copiedAt: entry.acquiredAt ?? updatedAt)
+                return (updatedAt, note == .notDownloadedYet)
+            })
         }
 
+         
+         
+         
+         
+         
+         
          
          
          
@@ -1208,16 +1370,20 @@ enum ConfigurationCollectionContentBridge {
         func newerUsage(of entry: ConfigurationCollectionEntry, than date: Date?) -> ConfigurationSubscriptionUsage? {
             guard entry.id.kind == .nodes, entry.collection.type == "http", let location = entry.collection.location,
                   let candidates = answers[runningKey(kind: .nodes, address: location)] else { return nil }
-            var found: ConfigurationSubscriptionUsage?
+            var said: [(usage: ConfigurationSubscriptionUsage, at: Date)] = []
             for answer in candidates where answer.isNewer(than: date) {
-                guard let usage = answer.usage.map(ConfigurationCenterSourceBridge.subscriptionUsage) else { continue }
-                if let known = found, known != usage { return nil }
-                found = usage
+                guard let at = answer.at,
+                      let usage = answer.usage.map(ConfigurationCenterSourceBridge.subscriptionUsage) else { continue }
+                said.append((usage, at))
             }
-            return found
+            guard let first = said.first else { return nil }
+            if said.allSatisfy({ $0.usage == first.usage }) { return first.usage }
+            guard let request = candidates.first?.request, candidates.allSatisfy({ $0.request == request }) else { return nil }
+            return said.max { $0.at < $1.at }?.usage
         }
     }
 
+     
      
      
      
@@ -1226,7 +1392,7 @@ enum ConfigurationCollectionContentBridge {
                                  running: RunningProviders?) -> [ConfigurationCollectionEntry] {
         guard let running else { return entries }
         return entries.map { entry in
-            guard let usage = running.newerUsage(of: entry, than: entry.copyUpdatedAt) else { return entry }
+            guard let usage = running.newerUsage(of: entry, than: entry.usageUpdatedAt) else { return entry }
             var result = entry
             result.subscriptionUsage = usage
             return result
@@ -1236,9 +1402,35 @@ enum ConfigurationCollectionContentBridge {
      
      
      
+     
+     
+     
+    static func withRunningCounts(_ entries: [ConfigurationCollectionEntry],
+                                  running: RunningProviders?) -> [ConfigurationCollectionEntry] {
+        guard let running else { return entries }
+        return entries.map { entry in
+            guard let count = running.inUse(of: entry, copy: nil)?.count else { return entry }
+            var result = entry
+            result.memberCount = count
+            return result
+        }
+    }
+
+     
+     
+     
+    static func inUse(of entry: ConfigurationCollectionEntry, container: URL?) -> RunningProviders.InUse? {
+        RunningProviders.load(container: container)?.inUse(of: entry, copy: libraryCopyRecord(of: entry))
+    }
+
+     
+     
+     
+     
+     
     static func shownUsage(_ page: Page, of entry: ConfigurationCollectionEntry,
                            running: RunningProviders?) -> ConfigurationSubscriptionUsage? {
-        running?.newerUsage(of: entry, than: page.updatedAt) ?? page.subscriptionUsage
+        running?.newerUsage(of: entry, than: page.usageUpdatedAt) ?? page.subscriptionUsage
     }
 
     private static func runningKind(_ catalogKind: String) -> ConfigurationCollection.Kind? {
@@ -1275,7 +1467,7 @@ enum ConfigurationCollectionContentBridge {
                    FileManager.default.fileExists(atPath: folder.appendingPathComponent(filename).path) {
                     result.memberCount = cache.count
                     result.subscriptionUsage = cache.subscriptionUsage
-                    result.copyUpdatedAt = cache.updatedAt
+                    result.usageUpdatedAt = cache.usageUpdatedAt
                 }
             }
             return result
@@ -1284,9 +1476,30 @@ enum ConfigurationCollectionContentBridge {
      
      
      
-    struct Cache: Codable {
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    struct Cache: Codable, Equatable {
         let count: Int; let updatedAt: Date; var payloadFile: String? = nil
         var subscriptionUsage: ConfigurationSubscriptionUsage? = nil; var requestIdentity: String? = nil
+        var sourceSHA256: String? = nil; var payloadSHA256: String? = nil; var confirmedAt: Date? = nil
+        var usageAt: Date? = nil
+
+         
+         
+        var latest: Date {
+            guard let confirmedAt, confirmedAt.timeIntervalSince(updatedAt) > 0 else { return updatedAt }
+            return confirmedAt
+        }
+
+         
+        var usageUpdatedAt: Date { usageAt ?? updatedAt }
     }
     static func directory(_ entry: ConfigurationCollectionEntry) -> URL {
         let key = entry.source.id + "\n" + entry.id.kind.rawValue + "\n" + entry.collection.name + "\n" + entry.collection.definition.serialized()
@@ -1502,7 +1715,8 @@ enum ConfigurationCollectionContentBridge {
         let collection = entry.collection
         let dir = directory(entry)
         let cache = try? JSONDecoder().decode(Cache.self, from: Data(contentsOf: dir.appendingPathComponent("state.json")))
-        var result = Page(count: cache?.count ?? collection.inlineCount, updatedAt: cache?.updatedAt)
+        var result = Page(count: cache?.count ?? collection.inlineCount, updatedAt: cache?.latest,
+                          usageUpdatedAt: cache?.usageUpdatedAt)
         let data: Data
         if collection.type == "inline" {
             let payload = collection.definition.topLevelValue("payload") ?? .array([])
@@ -1547,10 +1761,10 @@ enum ConfigurationCollectionContentBridge {
             result.count = summary.count
             result.nodes = shown
             result.nextOffset = position < summary.count ? position : nil
+             
+             
+             
             result.issues = summary.issues.map { $0.message }
-            if ["filter", "exclude-filter", "exclude-type", "override"].contains(where: { collection.definition.topLevelValue($0) != nil }) {
-                result.notes.append("Shows the collection's own nodes. Filters and overrides apply when it runs.")
-            }
         } else if collection.format == "mrs" {
             var count = 0; var error: NSError?
             guard AppCore.inspectProvider("rule", collection.behavior ?? "domain", "mrs", data, &count, &error) else {
@@ -1797,33 +2011,780 @@ enum ConfigurationCollectionContentBridge {
      
      
      
-    static func keepInLibrary(_ downloads: [(provider: RemoteResourcePlan.Provider, file: URL, count: Int,
-                                             usage: ConfigurationSubscriptionUsage?)],
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    struct KeptDownload {
+        let provider: RemoteResourcePlan.Provider
+        let file: URL
+         
+        let count: Int?
+        let usage: ConfigurationSubscriptionUsage?
+         
+        var receivedAt = Date()
+         
+         
+        var sourceSHA256: String? = nil
+        var sourceBytes: Int? = nil
+
+        var arrival: Arrival { Arrival(receivedAt: receivedAt, sourceSHA256: sourceSHA256, usage: usage, count: count) }
+    }
+
+     
+     
+     
+     
+    struct Arrival {
+        var receivedAt: Date
+        var sourceSHA256: String?
+        var usage: ConfigurationSubscriptionUsage?
+        var count: Int?
+    }
+
+    static func keepInLibrary(_ downloads: [KeptDownload],
                               userAgent: String? = nil, identity: String = ClientUserAgent.downloadIdentity(),
                               workingDirectory: URL) {
         guard !downloads.isEmpty else { return }
         let library = ConfigurationLibraryStore(directory: workingDirectory.appendingPathComponent("configuration-library"))
         guard let snapshot = try? library.snapshot(),
               let entries = try? library.collectionCatalog(snapshot) else { return }
-        let nodeCollections = entries.filter {
-            $0.id.kind == .nodes && $0.collection.type == "http"
-                && $0.source.suppliesNodes && $0.source.isRetainedSnapshot != true
-        }
-        var held = requestsAnswered(by: nodeCollections)
+        let collections = followable(entries)
+         
+         
+         
+         
+         
+        let answered = requestsAnswered(by: collections[.nodes] ?? [])
+        var followings: [(download: KeptDownload, kind: ConfigurationCollection.Kind, request: String,
+                          making: [ConfigurationCollectionEntry], bytes: Data, payloadSHA256: String?)] = []
         for download in downloads {
+            guard let kind = runningKind(download.provider.kind), let candidates = collections[kind] else { continue }
             let downloaded = ProviderRequestIdentity.of(download.provider)
-            guard !held.contains(downloaded),
-                  let entry = nodeCollections.first(where: {
-                      $0.collection.location?.trimmingCharacters(in: .whitespacesAndNewlines) == download.provider.url
-                          && requestIdentity(of: $0, userAgent: userAgent, identity: identity) == downloaded
-                  }),
-                  let bytes = try? Data(contentsOf: download.file, options: .mappedIfSafe),
-                  (try? store(bytes, count: download.count, subscriptionUsage: download.usage,
-                              requestIdentity: downloaded, in: entry)) != nil
-            else { continue }
-            held.insert(downloaded)
+            let making = Self.making(downloaded, at: download.provider.url, among: candidates,
+                                     userAgent: { _ in userAgent }, identity: identity)
+            let existing = making.compactMap { copy(of: $0, answering: downloaded) }
+            guard !existing.isEmpty || (kind == .nodes && !making.isEmpty && !answered.contains(downloaded)),
+                  let bytes = try? Data(contentsOf: download.file, options: .mappedIfSafe) else { continue }
+            followCounts.add(.downloadRead)
+             
+             
+            let needsPayload = existing.contains { $0.sourceSHA256 == nil || $0.sourceSHA256 != download.sourceSHA256 }
+            followings.append((download, kind, downloaded, making, bytes,
+                               needsPayload ? SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() : nil))
+        }
+        guard !followings.isEmpty else { return }
+        copyWrites.lock()
+        defer { copyWrites.unlock() }
+         
+        var held = requestsAnswered(by: collections[.nodes] ?? [])
+        for following in followings {
+            let download = following.download, downloaded = following.request, bytes = following.bytes
+            if following.kind == .nodes, !held.contains(downloaded) {
+                guard let first = following.making.first else { continue }
+                 
+                if (try? store(bytes, count: download.count ?? 0, subscriptionUsage: download.usage,
+                               requestIdentity: downloaded, sourceSHA256: download.sourceSHA256,
+                               receivedAt: download.receivedAt, in: first)) != nil {
+                    held.insert(downloaded)
+                }
+                continue
+            }
+            let takable = download.count != nil && (download.sourceBytes ?? bytes.count) <= libraryCopyLimit
+             
+            var digest = following.payloadSHA256
+            func payloadSHA256() -> String {
+                if let digest { return digest }
+                let hashed = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                digest = hashed
+                return hashed
+            }
+            for entry in following.making {
+                guard let cache = copy(of: entry, answering: downloaded) else { continue }
+                follow(cache, of: entry, arrival: download.arrival, bytes: bytes, payloadSHA256: payloadSHA256(),
+                       request: downloaded, takable: takable)
+            }
         }
     }
+
+     
+     
+     
+     
+    private static func followable(_ entries: [ConfigurationCollectionEntry])
+        -> [ConfigurationCollection.Kind: [ConfigurationCollectionEntry]] {
+        [
+            .nodes: entries.filter {
+                $0.id.kind == .nodes && $0.collection.type == "http"
+                    && $0.source.suppliesNodes && $0.source.isRetainedSnapshot != true
+            },
+            .rules: entries.filter {
+                $0.id.kind == .rules && $0.collection.type == "http"
+                    && $0.source.isRetainedSnapshot != true && $0.collection.fetchingOutbound == nil
+            },
+        ]
+    }
+
+     
+     
+     
+     
+     
+     
+    private static func making(_ request: String, at url: String, among candidates: [ConfigurationCollectionEntry],
+                               userAgent: (ConfigurationCollectionEntry) -> String?,
+                               identity: String) -> [ConfigurationCollectionEntry] {
+        candidates.filter { entry in
+            guard entry.collection.location?.trimmingCharacters(in: .whitespacesAndNewlines) == url else { return false }
+            let asked = userAgent(entry)
+            return (entry.id.kind == .nodes
+                ? requestIdentity(of: entry, userAgent: asked, identity: identity)
+                : libraryRequest(of: entry, userAgent: asked, identity: identity)) == request
+        }
+    }
+
+     
+     
+    private static func copy(of entry: ConfigurationCollectionEntry, answering request: String) -> Cache? {
+        guard let location = entry.collection.location, let cache = cachedState(entry),
+              (cache.requestIdentity ?? ProviderRequestIdentity.bare(url: location)) == request else { return nil }
+        return cache
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @discardableResult
+    private static func follow(_ found: Cache, of entry: ConfigurationCollectionEntry, arrival: Arrival,
+                               bytes: Data, payloadSHA256: @autoclosure () -> String, request: String, takable: Bool) -> Bool {
+        let cache = recordingPayloadDigest(found, of: entry)
+        let stored = cache.payloadSHA256
+        if arrival.sourceSHA256 != nil && arrival.sourceSHA256 == cache.sourceSHA256 {
+            return confirm(cache, of: entry, arrival: arrival, stored: stored)
+        }
+        let digest = payloadSHA256()
+        if stored == digest {
+            return confirm(cache, of: entry, arrival: arrival, stored: stored)
+        }
+        guard arrival.receivedAt.timeIntervalSince(cache.latest) > 0, takable, let count = arrival.count else { return false }
+        return (try? store(bytes, count: count, subscriptionUsage: arrival.usage, requestIdentity: request,
+                           sourceSHA256: arrival.sourceSHA256, payloadSHA256: digest,
+                           receivedAt: arrival.receivedAt, in: entry)) != nil
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @discardableResult
+    private static func confirm(_ cache: Cache, of entry: ConfigurationCollectionEntry, arrival: Arrival,
+                                stored: String?) -> Bool {
+        var confirmed = cache
+        if confirmed.payloadSHA256 == nil { confirmed.payloadSHA256 = stored }
+        if arrival.receivedAt.timeIntervalSince(cache.latest) > 0 {
+            confirmed.confirmedAt = arrival.receivedAt
+            if let source = arrival.sourceSHA256 { confirmed.sourceSHA256 = source }
+        }
+        if let usage = arrival.usage, arrival.receivedAt.timeIntervalSince(cache.usageUpdatedAt) > 0 {
+            confirmed.subscriptionUsage = usage
+            confirmed.usageAt = arrival.receivedAt
+        }
+        guard confirmed != cache, let data = try? JSONEncoder().encode(confirmed) else { return false }
+        return (try? data.write(to: directory(entry).appendingPathComponent("state.json"),
+                                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    private static func recordingPayloadDigest(_ cache: Cache, of entry: ConfigurationCollectionEntry) -> Cache {
+        guard cache.payloadSHA256 == nil else { return cache }
+        let folder = directory(entry)
+        let file = folder.appendingPathComponent(cache.payloadFile ?? "payload")
+        guard let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= libraryCopyLimit,
+              let bytes = try? Data(contentsOf: file, options: .mappedIfSafe) else { return cache }
+        var recorded = cache
+        recorded.payloadSHA256 = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        if let data = try? JSONEncoder().encode(recorded) {
+            try? data.write(to: folder.appendingPathComponent("state.json"),
+                            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
+        return recorded
+    }
+
+     
+     
+     
+    static func libraryCopyRecord(of entry: ConfigurationCollectionEntry) -> Cache? { cachedState(entry) }
+
+     
+
+     
+     
+     
+     
+     
+     
+    struct TunnelBytes: Sendable {
+        let kind: ConfigurationCollection.Kind
+        let url: String
+        let request: String
+        let file: URL
+        let sha256: String
+        let receivedAt: Date
+        let subscriptionInfo: String?
+         
+        var heldKey: String? = nil
+    }
+
+     
+     
+    static let libraryCopiesDidFollow = Notification.Name("ClashLibraryCopiesDidFollowTheTunnel")
+
+     
+     
+     
+    private struct HeldBytes: HTTPFetching {
+        let data: Data
+        let subscriptionUserInfo: String?
+        func fetch(_ request: URLRequest, maxBytes: Int, redirectPolicy: DownloadRedirectPolicy) async throws -> DownloadResult {
+            DownloadResult(data: data, etag: nil, lastModified: nil, subscriptionUserInfo: subscriptionUserInfo, notModified: false)
+        }
+    }
+
+     
+     
+     
+     
+    enum TunnelClones {
+        static let directory = FileManager.default.temporaryDirectory.appendingPathComponent("library-follows-tunnel", isDirectory: true)
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var held: Set<String> = []
+
+        static func begin() -> URL? {
+            lock.lock()
+            defer { lock.unlock() }
+            let files = FileManager.default
+            for name in (try? files.contentsOfDirectory(atPath: directory.path)) ?? [] where !held.contains(name) {
+                try? files.removeItem(at: directory.appendingPathComponent(name))
+            }
+            let name = UUID().uuidString
+            let run = directory.appendingPathComponent(name, isDirectory: true)
+            guard (try? files.createDirectory(at: run, withIntermediateDirectories: true)) != nil else { return nil }
+            held.insert(name)
+            return run
+        }
+
+        static func end(_ run: URL) {
+            lock.lock()
+            held.remove(run.lastPathComponent)
+            lock.unlock()
+            try? FileManager.default.removeItem(at: run)
+        }
+
+         
+         
+         
+        static func clone(_ file: URL, into run: URL) -> URL? {
+            guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true, let size = values.fileSize,
+                  size <= ConfigurationCollectionContentBridge.libraryCopyLimit else { return nil }
+            let clone = run.appendingPathComponent(UUID().uuidString)
+            guard (try? FileManager.default.copyItem(at: file, to: clone)) != nil else { return nil }
+            ConfigurationCollectionContentBridge.followCounts.add(.clone)
+            return clone
+        }
+    }
+
+     
+     
+    private static func catalogInUse(container: URL) -> ProviderCatalog? {
+        guard let store = try? ConfigResourceStore(containerURL: container),
+              let directory = try? store.activeProvidersDirectory() else { return nil }
+        return ProviderCatalog.load(providersDir: directory)
+    }
+
+     
+     
+    struct TunnelHold: Sendable {
+        let run: URL
+        let catalog: ProviderCatalog
+        let bytes: [TunnelBytes]
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    @MainActor
+    static func compileHolding<T>(_ waiting: [PendingProviderCompile.Held], of state: ProviderRefreshState, container: URL,
+                                  _ compile: @MainActor () async -> T) async -> T {
+        let hold = await Task.detached(priority: .utility) { Self.clonePending(waiting, state: state, container: container) }.value
+        let result = await compile()
+        if let hold {
+            let followed = await Task.detached(priority: .utility) { await Self.give(hold, container: container) }.value
+            if followed { NotificationCenter.default.post(name: libraryCopiesDidFollow, object: nil) }
+        }
+        return result
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func clonePending(_ waiting: [PendingProviderCompile.Held], state: ProviderRefreshState,
+                             container: URL, identity: String = ClientUserAgent.downloadIdentity()) -> TunnelHold? {
+        let working = container.appendingPathComponent("working", isDirectory: true)
+        givenToTheLibrary.keep(only: PendingProviderCompile.heldKeys(in: state), in: container)
+        let waiting = waiting.filter { !$0.pendingSHA256.isEmpty && !givenToTheLibrary.contains($0.key, in: container) }
+        guard !waiting.isEmpty, let catalog = catalogInUse(container: container),
+              let collections = followableCollections(workingDirectory: working) else { return nil }
+        let userAgents = CollectionUserAgents(inUse: catalog, identity: identity)
+        var run: URL?
+        var bytes: [TunnelBytes] = []
+        for held in waiting {
+            guard let kind = runningKind(held.kind), let entry = state.entries[held.requestKey],
+                  let request = catalog.entries.first(where: {
+                      $0.kind == held.kind && $0.name == held.name && $0.url == entry.url
+                  })?.request,
+                  !copies(making: request, at: entry.url, kind: kind, in: collections, userAgents: userAgents, identity: identity).isEmpty,
+                  let at = entry.pendingCheckedAt ?? entry.lastCheckedAt, at > 0,
+                  let file = ProviderRefreshState.cacheFile(ProviderRefreshState.pendingFileName, requestKey: held.requestKey,
+                                                            workingDirectory: working) else { continue }
+            if run == nil { run = TunnelClones.begin() }
+            guard let run, let clone = TunnelClones.clone(file, into: run) else { continue }
+            bytes.append(TunnelBytes(kind: kind, url: entry.url, request: request, file: clone, sha256: held.pendingSHA256,
+                                     receivedAt: Date(timeIntervalSince1970: TimeInterval(at)),
+                                     subscriptionInfo: entry.subscriptionInfo, heldKey: held.key))
+        }
+        guard let run else { return nil }
+        guard !bytes.isEmpty else {
+            TunnelClones.end(run)
+            return nil
+        }
+        return TunnelHold(run: run, catalog: catalog, bytes: bytes)
+    }
+
+     
+     
+    private static func followableCollections(workingDirectory: URL)
+        -> [ConfigurationCollection.Kind: [ConfigurationCollectionEntry]]? {
+        followCounts.add(.libraryRead)
+        let library = ConfigurationLibraryStore(directory: workingDirectory.appendingPathComponent("configuration-library"))
+        guard let snapshot = try? library.snapshot(), let entries = try? library.collectionCatalog(snapshot) else { return nil }
+        return followable(entries)
+    }
+
+     
+     
+     
+     
+    final class FollowCounts: @unchecked Sendable {
+        enum Work: Hashable { case libraryRead, clone, opening, downloadRead }
+        private let lock = NSLock()
+        private var counts: [Work: Int] = [:]
+        func add(_ work: Work) {
+            lock.lock()
+            counts[work, default: 0] += 1
+            lock.unlock()
+        }
+        func count(_ work: Work) -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return counts[work] ?? 0
+        }
+    }
+
+    static let followCounts = FollowCounts()
+
+     
+     
+     
+     
+    actor SerialGate {
+        private var busy = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+
+        func enter() async {
+            guard busy else {
+                busy = true
+                return
+            }
+            await withCheckedContinuation { waiting.append($0) }
+        }
+
+         
+        func leave() {
+            guard !waiting.isEmpty else {
+                busy = false
+                return
+            }
+            waiting.removeFirst().resume()
+        }
+    }
+
+    static let tunnelOpenings = SerialGate()
+
+     
+     
+     
+     
+    final class Remembered: @unchecked Sendable {
+        private let lock = NSLock()
+        private var sets: [String: Set<String>] = [:]
+
+        func contains(_ value: String, in container: URL) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return sets[container.path]?.contains(value) == true
+        }
+
+        func insert(_ value: String, in container: URL) {
+            lock.lock()
+            sets[container.path, default: []].insert(value)
+            lock.unlock()
+        }
+
+         
+        func keep(only values: Set<String>, in container: URL) {
+            lock.lock()
+            sets[container.path] = sets[container.path]?.intersection(values)
+            lock.unlock()
+        }
+
+        func replace(with values: Set<String>, in container: URL) {
+            lock.lock()
+            sets[container.path] = values
+            lock.unlock()
+        }
+    }
+
+     
+     
+     
+    private static let givenToTheLibrary = Remembered()
+     
+    private static let tunnelWordsLooked = Remembered()
+
+     
+     
+     
+    private static func copies(making request: String, at url: String, kind: ConfigurationCollection.Kind,
+                               in collections: [ConfigurationCollection.Kind: [ConfigurationCollectionEntry]],
+                               userAgents: CollectionUserAgents, identity: String) -> [ConfigurationCollectionEntry] {
+        guard let candidates = collections[kind], !candidates.isEmpty else { return [] }
+        return making(request, at: url, among: candidates, userAgent: userAgents.of, identity: identity)
+            .filter { copy(of: $0, answering: request) != nil }
+    }
+
+     
+     
+    static func give(_ hold: TunnelHold, container: URL, identity: String = ClientUserAgent.downloadIdentity(),
+                     credentials: CredentialStore = CredentialStore()) async -> Bool {
+        defer { TunnelClones.end(hold.run) }
+        var changed = false
+        let working = container.appendingPathComponent("working", isDirectory: true)
+        for bytes in hold.bytes {
+            if await follow(bytes, catalog: hold.catalog, workingDirectory: working, identity: identity, credentials: credentials) {
+                changed = true
+            }
+            if let key = bytes.heldKey { givenToTheLibrary.insert(key, in: container) }
+        }
+        return changed
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func follow(_ held: TunnelBytes, catalog: ProviderCatalog, workingDirectory: URL,
+                       identity: String = ClientUserAgent.downloadIdentity(),
+                       credentials: CredentialStore = CredentialStore()) async -> Bool {
+        let userAgents = CollectionUserAgents(inUse: catalog, identity: identity)
+        guard let collections = followableCollections(workingDirectory: workingDirectory) else { return false }
+        let making = copies(making: held.request, at: held.url, kind: held.kind, in: collections,
+                            userAgents: userAgents, identity: identity)
+        guard !making.isEmpty,
+              let raw = try? Data(contentsOf: held.file, options: .mappedIfSafe), raw.count <= libraryCopyLimit,
+              SHA256.hash(data: raw).map({ String(format: "%02x", $0) }).joined() == held.sha256 else { return false }
+        var arrival = Arrival(receivedAt: held.receivedAt, sourceSHA256: held.sha256,
+                              usage: held.kind == .nodes ? held.subscriptionInfo.flatMap { SubscriptionInfo.parse(header: $0) }
+                                  .map(ConfigurationCenterSourceBridge.subscriptionUsage) : nil,
+                              count: nil)
+        let (confirmed, others) = confirmingTheSameServerBytes(making, request: held.request, arrival: arrival)
+        guard let first = others.first,
+              let request = try? libraryDownloadRequest(for: first, userAgent: userAgents.of(first), identity: identity)
+        else { return confirmed }
+        await tunnelOpenings.enter()
+        followCounts.add(.opening)
+        let opened = try? await materialize(first, root: request.root, provider: request.provider,
+                                            userAgent: userAgents.of(first) ?? identity,
+                                            downloader: HeldBytes(data: raw, subscriptionUserInfo: held.subscriptionInfo),
+                                            credentials: credentials)
+        await tunnelOpenings.leave()
+        guard let opened else { return confirmed }
+        arrival.count = opened.count
+        arrival.usage = opened.usage
+        return following(opened.bytes, of: others, request: held.request, arrival: arrival) || confirmed
+    }
+
+     
+     
+    private static func confirmingTheSameServerBytes(_ entries: [ConfigurationCollectionEntry], request: String,
+                                                     arrival: Arrival) -> (changed: Bool, others: [ConfigurationCollectionEntry]) {
+        copyWrites.lock()
+        defer { copyWrites.unlock() }
+        var changed = false
+        var others: [ConfigurationCollectionEntry] = []
+        for entry in entries {
+            guard let cache = copy(of: entry, answering: request) else { continue }
+            if let source = arrival.sourceSHA256, source == cache.sourceSHA256 {
+                if confirm(cache, of: entry, arrival: arrival, stored: cache.payloadSHA256) { changed = true }
+            } else {
+                others.append(entry)
+            }
+        }
+        return (changed, others)
+    }
+
+     
+     
+     
+    private static func following(_ bytes: Data, of entries: [ConfigurationCollectionEntry], request: String,
+                                  arrival: Arrival) -> Bool {
+        copyWrites.lock()
+        defer { copyWrites.unlock() }
+        let payloadSHA256 = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        var changed = false
+        for entry in entries {
+            guard let cache = copy(of: entry, answering: request) else { continue }
+            if follow(cache, of: entry, arrival: arrival, bytes: bytes, payloadSHA256: payloadSHA256,
+                      request: request, takable: true) {
+                changed = true
+            }
+        }
+        return changed
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func followTunnel(container: URL, identity: String = ClientUserAgent.downloadIdentity(),
+                             credentials: CredentialStore = CredentialStore()) async -> Bool {
+        let working = container.appendingPathComponent("working", isDirectory: true)
+        guard let catalog = catalogInUse(container: container),
+              let state = ProviderRefreshState.read(workingDirectory: working) else { return false }
+         
+         
+        let held: [(provider: ProviderCatalog.Entry, kind: ConfigurationCollection.Kind, request: String,
+                    entry: ProviderRefreshState.Entry, tunnelSHA256: String, checked: Date, changed: Date,
+                    word: String)] = catalog.entries.compactMap { provider in
+            guard let kind = runningKind(provider.kind), let request = provider.request,
+                  let entry = state.entry(kind: provider.kind, name: provider.name, url: provider.url),
+                  let tunnelSHA256 = entry.sourceSHA256, let checked = entry.checkedAt else { return nil }
+            let changedAt = entry.lastChangedAt.flatMap { $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0)) : nil } ?? checked
+            let word = [provider.kind, provider.url, request, tunnelSHA256, String(entry.lastCheckedAt ?? 0),
+                        String(entry.lastChangedAt ?? 0)].joined(separator: "\n")
+            return (provider, kind, request, entry, tunnelSHA256, checked, changedAt, word)
+        }
+        let moved = held.filter { !tunnelWordsLooked.contains($0.word, in: container) }
+        guard !moved.isEmpty, let collections = followableCollections(workingDirectory: working) else { return false }
+        tunnelWordsLooked.replace(with: Set(held.map(\.word)), in: container)
+        let userAgents = CollectionUserAgents(inUse: catalog, identity: identity)
+        var run: URL?
+        defer { if let run { TunnelClones.end(run) } }
+        var changed = false
+        var kept: [(bytes: TunnelBytes, usage: ConfigurationSubscriptionUsage?, checked: Date)] = []
+        for item in moved {
+            let making = copies(making: item.request, at: item.provider.url, kind: item.kind, in: collections,
+                                userAgents: userAgents, identity: identity)
+            guard !making.isEmpty else { continue }
+            let usage = item.kind == .nodes ? item.entry.subscriptionInfo.flatMap { SubscriptionInfo.parse(header: $0) }
+                .map(ConfigurationCenterSourceBridge.subscriptionUsage) : nil
+            let (confirmed, newer) = confirmingTheTunnelsContent(making, request: item.request, tunnelSHA256: item.tunnelSHA256,
+                                                                 changedAt: item.changed,
+                                                                 arrival: Arrival(receivedAt: item.checked, sourceSHA256: nil,
+                                                                                  usage: usage, count: nil))
+            if confirmed { changed = true }
+             
+             
+             
+            guard !newer.isEmpty, let key = state.requestKey(kind: item.provider.kind, name: item.provider.name),
+                  let file = ProviderRefreshState.cacheFile(ProviderRefreshState.sourceFileName, requestKey: key, workingDirectory: working),
+                  FileManager.default.fileExists(atPath: file.path) else { continue }
+            if run == nil { run = TunnelClones.begin() }
+            guard let run, let clone = TunnelClones.clone(file, into: run) else { continue }
+            kept.append((TunnelBytes(kind: item.kind, url: item.provider.url, request: item.request, file: clone,
+                                     sha256: item.tunnelSHA256, receivedAt: item.changed, subscriptionInfo: item.entry.subscriptionInfo),
+                         usage, item.checked))
+        }
+        for taken in kept {
+            guard await follow(taken.bytes, catalog: catalog, workingDirectory: working, identity: identity,
+                               credentials: credentials) else { continue }
+            changed = true
+            let making = copies(making: taken.bytes.request, at: taken.bytes.url, kind: taken.bytes.kind, in: collections,
+                                userAgents: userAgents, identity: identity)
+            _ = confirmingTheTunnelsContent(making, request: taken.bytes.request, tunnelSHA256: taken.bytes.sha256,
+                                            changedAt: taken.bytes.receivedAt,
+                                            arrival: Arrival(receivedAt: taken.checked, sourceSHA256: nil, usage: taken.usage, count: nil))
+        }
+        return changed
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    private static func confirmingTheTunnelsContent(_ entries: [ConfigurationCollectionEntry], request: String,
+                                                    tunnelSHA256: String, changedAt: Date,
+                                                    arrival: Arrival) -> (changed: Bool, newer: [ConfigurationCollectionEntry]) {
+        copyWrites.lock()
+        defer { copyWrites.unlock() }
+        var changed = false
+        var others: [ConfigurationCollectionEntry] = []
+        for entry in entries {
+            guard let found = copy(of: entry, answering: request) else { continue }
+            let cache = recordingPayloadDigest(found, of: entry)
+            guard tunnelSHA256 == cache.sourceSHA256 || tunnelSHA256 == cache.payloadSHA256 else {
+                if changedAt.timeIntervalSince(cache.latest) > 0 { others.append(entry) }
+                continue
+            }
+            if arrival.receivedAt.timeIntervalSince(cache.latest) > 0,
+               confirm(cache, of: entry, arrival: arrival, stored: cache.payloadSHA256) {
+                changed = true
+            }
+        }
+        return (changed, others)
+    }
+
+     
+     
+    static func followTunnelOnce(container: URL?) async -> Bool {
+        guard let container else { return false }
+        return await tunnelFollows.run { await Self.followTunnel(container: container) }
+    }
+
+    static let tunnelFollows = OneRunAtATime()
+
+     
+     
+     
+     
+     
+     
+     
+     
+    final class OneRunAtATime: @unchecked Sendable {
+        private let lock = NSLock()
+        private var running = false
+        private var askedAgain = false
+
+        func run(_ work: () async -> Bool) async -> Bool {
+            guard begin() else { return false }
+            var changed = false
+            repeat {
+                if await work() { changed = true }
+            } while goesAgain()
+            return changed
+        }
+
+        private func begin() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !running else {
+                askedAgain = true
+                return false
+            }
+            running = true
+            askedAgain = false
+            return true
+        }
+
+        private func goesAgain() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if askedAgain {
+                askedAgain = false
+                return true
+            }
+            running = false
+            return false
+        }
+    }
+
+     
+     
+     
+    static let libraryCopyLimit = 32 * 1024 * 1024
+
+     
+     
+     
+     
+    private static let copyWrites = NSLock()
 
      
     private static func cachedState(_ entry: ConfigurationCollectionEntry) -> Cache? {
@@ -1859,30 +2820,9 @@ enum ConfigurationCollectionContentBridge {
         guard entry.collection.type == "http" else { return .local }
         let userAgents = CollectionUserAgents(inUse: inUse)
         let userAgent = userAgents.of(entry)
-         
-         
-         
-         
-         
-         
-         
-         
-         
-         
-        if entry.id.kind == .nodes {
-            let request = try runtimeRequest(for: entry, userAgent: userAgent, identity: userAgents.identity)
-            guard !ProviderFetchedByCore.applies(toProxy: request.provider.proxy) else { return .coreOwned }
-            try await download(entry, root: request.root, provider: request.provider,
-                               userAgent: userAgent ?? userAgents.identity,
-                               downloader: downloader, credentials: credentials)
-            return .downloaded
+        guard let request = try libraryDownloadRequest(for: entry, userAgent: userAgent, identity: userAgents.identity) else {
+            return .coreOwned
         }
-         
-         
-         
-        guard entry.collection.fetchingOutbound == nil else { return .coreOwned }
-        let request = try planned(entry, definition: entry.collection.browserDownloadDefinition(),
-                                  userAgent: userAgent, identity: userAgents.identity)
         try await download(entry, root: request.root, provider: request.provider,
                            userAgent: userAgent ?? userAgents.identity,
                            downloader: downloader, credentials: credentials)
@@ -1892,41 +2832,128 @@ enum ConfigurationCollectionContentBridge {
      
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private static func libraryDownloadRequest(for entry: ConfigurationCollectionEntry, userAgent: String?,
+                                               identity: String) throws
+        -> (root: OrderedJSON, provider: RemoteResourcePlan.Provider)? {
+        if entry.id.kind == .nodes {
+            let request = try runtimeRequest(for: entry, userAgent: userAgent, identity: identity)
+            return ProviderFetchedByCore.applies(toProxy: request.provider.proxy) ? nil : request
+        }
+        guard entry.collection.fetchingOutbound == nil else { return nil }
+        return try planned(entry, definition: entry.collection.browserDownloadDefinition(),
+                           userAgent: userAgent, identity: identity)
+    }
+
+     
+     
+     
     private static func download(_ entry: ConfigurationCollectionEntry, root: OrderedJSON,
                                  provider: RemoteResourcePlan.Provider, userAgent: String,
                                  downloader: HTTPFetching, credentials: CredentialStore) async throws {
+        let opened = try await materialize(entry, root: root, provider: provider, userAgent: userAgent,
+                                           downloader: downloader, credentials: credentials)
+        try storeHoldingCopyWrites(opened.bytes, count: opened.count, subscriptionUsage: opened.usage,
+                                   requestIdentity: ProviderRequestIdentity.of(provider), sourceSHA256: opened.sourceSHA256,
+                                   in: entry)
+    }
+
+     
+     
+     
+    private struct Opened {
+        let bytes: Data
+        let count: Int
+        let usage: ConfigurationSubscriptionUsage?
+        let sourceSHA256: String?
+    }
+
+    private static func materialize(_ entry: ConfigurationCollectionEntry, root: OrderedJSON,
+                                    provider: RemoteResourcePlan.Provider, userAgent: String,
+                                    downloader: HTTPFetching, credentials: CredentialStore) async throws -> Opened {
         let directory = directory(entry)
         let stage = directory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: stage) }
         let result = try await ProviderMaterializer(downloader: downloader, credentials: credentials)
             .materializeDetailed(plan: .init(providers: [provider]), into: stage, publishedProvidersDir: stage,
-                maxBytesEach: 32 * 1024 * 1024, forceRefresh: [provider.name],
+                maxBytesEach: libraryCopyLimit, forceRefresh: [provider.name],
                 ageSecretKeys: try ConfigTransforms.providerAgeSecretKeys(mergedYAML: root.serialized()),
                 userAgent: userAgent)
         if let warning = result.validationWarnings.first {
             throw AuthoredError(text: ProviderMaterializer.failureText(of: warning.note))
         }
         guard result.firstLoadPending.isEmpty, let path = result.readPaths[provider.name] else { throw ConfigurationLibraryError.unreadable }
+         
+         
         let bytes = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
          
         if entry.id.kind == .nodes { _ = try ProxyImportBridge.inspectSummary(bytes, context: .nodeBundle) }
-        try store(bytes, count: result.entryCounts[provider.name] ?? 0,
-                  subscriptionUsage: entry.id.kind == .nodes ? result.subscriptionUserInfo[provider.name]
-                      .flatMap { SubscriptionInfo.parse(header: $0) }.map(ConfigurationCenterSourceBridge.subscriptionUsage) : nil,
-                  requestIdentity: ProviderRequestIdentity.of(provider), in: entry)
+        return Opened(bytes: bytes, count: result.entryCounts[provider.name] ?? 0,
+                      usage: entry.id.kind == .nodes ? result.subscriptionUserInfo[provider.name]
+                          .flatMap { SubscriptionInfo.parse(header: $0) }.map(ConfigurationCenterSourceBridge.subscriptionUsage) : nil,
+                      sourceSHA256: result.sourceSHA256[provider.name])
     }
 
      
      
+    private static func storeHoldingCopyWrites(_ bytes: Data, count: Int, subscriptionUsage: ConfigurationSubscriptionUsage?,
+                                               requestIdentity: String, sourceSHA256: String?,
+                                               in entry: ConfigurationCollectionEntry) throws {
+        copyWrites.lock()
+        defer { copyWrites.unlock() }
+        try store(bytes, count: count, subscriptionUsage: subscriptionUsage, requestIdentity: requestIdentity,
+                  sourceSHA256: sourceSHA256, in: entry)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     private static func store(_ bytes: Data, count: Int, subscriptionUsage: ConfigurationSubscriptionUsage?,
-                              requestIdentity: String, in entry: ConfigurationCollectionEntry) throws {
+                              requestIdentity: String, sourceSHA256: String? = nil, payloadSHA256: String? = nil,
+                              receivedAt: Date = Date(), in entry: ConfigurationCollectionEntry) throws {
         let directory = directory(entry)
+        let record = directory.appendingPathComponent("state.json")
+        let replaced = (try? Data(contentsOf: record)).flatMap { try? JSONDecoder().decode(Cache.self, from: $0) }?.payloadFile
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let file = UUID().uuidString + ".payload"
         try bytes.write(to: directory.appendingPathComponent(file), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        try JSONEncoder().encode(Cache(count: count, updatedAt: Date(), payloadFile: file,
-                                       subscriptionUsage: subscriptionUsage, requestIdentity: requestIdentity))
-            .write(to: directory.appendingPathComponent("state.json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try? FileManager.default.setAttributes([.modificationDate: receivedAt.addingTimeInterval(-0.001)],
+                                               ofItemAtPath: directory.appendingPathComponent(file).path)
+        try JSONEncoder().encode(Cache(count: count, updatedAt: receivedAt, payloadFile: file,
+                                       subscriptionUsage: subscriptionUsage, requestIdentity: requestIdentity,
+                                       sourceSHA256: sourceSHA256,
+                                       payloadSHA256: payloadSHA256 ?? SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()))
+            .write(to: record, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let kept = Set([file] + (replaced.map { [$0] } ?? []))
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        where name.hasSuffix(".payload") && !kept.contains(name) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
     }
 }
 

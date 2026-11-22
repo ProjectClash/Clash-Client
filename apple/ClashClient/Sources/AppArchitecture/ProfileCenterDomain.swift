@@ -388,6 +388,14 @@ enum DirectProfileTemplate {
      
      
      
+    static let finalRuleGroup = "Default Route"
+
+     
+     
+     
+     
+     
+     
      
      
      
@@ -417,7 +425,7 @@ enum DirectProfileTemplate {
         - 1.1.1.1
     proxies: []
     proxy-groups:
-      - name: Default Route
+      - name: \(finalRuleGroup)
         type: select
         proxies:
           - DIRECT
@@ -431,6 +439,6 @@ enum DirectProfileTemplate {
       # but `lan` remains available if that database is replaced. Under fake-ip a domain
       # request already carries a synthetic address.
       - GEOIP,lan,DIRECT,no-resolve
-      - MATCH,Default Route
+      - MATCH,\(finalRuleGroup)
     """
 }

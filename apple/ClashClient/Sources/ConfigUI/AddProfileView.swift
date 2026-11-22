@@ -31,7 +31,9 @@ struct AddProfileView: View {
      
      
      
-    let saveAsync: ((String, Profile.Source, String?, [ExternalResourceImportFile], Bool) async throws -> Void)?
+     
+     
+    let saveAsync: ((String, Profile.Source, String?, [ExternalResourceImportFile], Bool, InstallLinkRuleScheme?) async throws -> Void)?
     @State private var isSaving = false
     @Environment(\.locale) private var locale
      
@@ -54,7 +56,7 @@ struct AddProfileView: View {
          sourceKind: ClashConfigurationSourceKind? = nil, blankFileEntry: Bool = false, isFirstConfigurationStep: Bool = false,
          registerSuppliedRules: Binding<Bool>? = nil, importRuleCollection: (() -> Void)? = nil,
          importRuleSet: ((ConfigurationRuleSetPrefill) -> Void)? = nil, createEmpty: @escaping () -> Void,
-         saveAsync: ((String, Profile.Source, String?, [ExternalResourceImportFile], Bool) async throws -> Void)? = nil,
+         saveAsync: ((String, Profile.Source, String?, [ExternalResourceImportFile], Bool, InstallLinkRuleScheme?) async throws -> Void)? = nil,
          save: @escaping (String, Profile.Source, String?, [ExternalResourceImportFile]) -> Void) {
         self.dismissAfterSave = dismissAfterSave
         self.saveAsync = saveAsync
@@ -825,7 +827,8 @@ struct AddProfileView: View {
             deliver((draft.label.isEmpty ? "Direct" : draft.label, .file("Direct.yaml"), ConfigurationBuiltins.directYAML, []),
                     completion: completion)
         case .link:
-            deliver((draft.label, .url(draft.resolvedLink), nil, []), nodesOnly: nodesOnly, completion: completion)
+            deliver((draft.label, .url(draft.resolvedLink), nil, []), nodesOnly: nodesOnly, rules: draft.linkRules,
+                    completion: completion)
         case .file:
             submitDocument(label: draft.label, imported: draft.importedYAML, fileName: draft.importedFileName,
                            pasted: draft.pastedConfigText, files: importedResourceFiles, nodesOnly: nodesOnly,
@@ -880,7 +883,10 @@ struct AddProfileView: View {
         guard let offer = draft.nodesOnlyOffer else { return }
         switch Self.nodesOnlyReplay(offer, label: draft.label) {
         case .fetchLink(let label, let url):
-            deliver((label, .url(url), nil, []), nodesOnly: true) { _ in }
+             
+             
+            deliver((label, .url(url), nil, []), nodesOnly: true,
+                    rules: draft.resolvedLink == url ? draft.linkRules : nil) { _ in }
         case .readText(let label, let text):
             submitDocument(label: label, imported: "", fileName: "", pasted: text, files: [], nodesOnly: true) { _ in }
         case .readFile(let file):
@@ -933,12 +939,13 @@ struct AddProfileView: View {
 
     private typealias SubmittedSource = (String, Profile.Source, String?, [ExternalResourceImportFile])
 
-    private func deliver(_ value: SubmittedSource, nodesOnly: Bool = false, completion: @escaping (Bool) -> Void) {
+    private func deliver(_ value: SubmittedSource, nodesOnly: Bool = false, rules: InstallLinkRuleScheme? = nil,
+                         completion: @escaping (Bool) -> Void) {
         if let saveAsync {
             isSaving = true
             Task { @MainActor in
                 do {
-                    try await saveAsync(value.0, value.1, value.2, value.3, nodesOnly)
+                    try await saveAsync(value.0, value.1, value.2, value.3, nodesOnly, rules)
                     isSaving = false
                     completion(true)
                     if dismissAfterSave { dismissPresentation() }
@@ -956,7 +963,8 @@ struct AddProfileView: View {
                      
                     var answering: NodesOnlyOffer.Input?
                     if case .url(let url) = value.1 { answering = .link(url) }
-                    draft.fail(safeImportMessage(error), error: error, answering: Self.nodesOnlyInput(answering, purpose: purpose))
+                    draft.fail(addFailureMessage(error, forALink: answering != nil), error: error,
+                               answering: Self.nodesOnlyInput(answering, purpose: purpose))
                     completion(false)
                 }
             }
@@ -1111,6 +1119,30 @@ struct AddProfileView: View {
         ) else { return ClashCopy.string("The profile could not be imported.", locale: locale) }
         return ProfileSwitchFailureText.cardText(for: failure, locale: locale)
     }
+
+     
+     
+     
+    private func addFailureMessage(_ error: Error, forALink link: Bool) -> String {
+#if os(iOS)
+        if link { return Self.linkFailureMessage(error, locale: locale) }
+#endif
+        return safeImportMessage(error)
+    }
+
+#if os(iOS)
+     
+     
+     
+    static func linkFailureMessage(_ error: Error, locale: Locale) -> String {
+        guard let failure = ConfigurationFailureClassifier.classify(
+            error,
+            context: .localImport,
+            preservesLastKnownGood: false
+        ) else { return ClashCopy.string("The profile could not be imported.", locale: locale) }
+        return LinkAddFailureText.text(for: failure, locale: locale)
+    }
+#endif
 }
 
  

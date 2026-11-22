@@ -222,6 +222,43 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+     
+     
+     
+     
+     
+    struct InstallLinkNotice: Equatable {
+        enum Kind: Equatable {
+             
+             
+            case schemeKept
+             
+             
+            case originalUnavailable
+        }
+        let kind: Kind
+         
+         
+        let title: ClashDisplayText
+         
+        let message: ClashDisplayText?
+    }
+    let installLinkNotices = PassthroughSubject<InstallLinkNotice, Never>()
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    let handedImportsSettled = PassthroughSubject<String?, Never>()
+     
+     
+     
+     
     struct TunnelApplyRecord: Equatable {
         var sequence: UInt64 = 0
         var profileID: String?
@@ -243,6 +280,29 @@ final class ProfilesViewModel: ObservableObject {
     @PublishedWhenChanged private(set) var notices: [String] = []
     @PublishedWhenChanged private(set) var planErrors: [String] = []
     @PublishedWhenChanged private(set) var lastFailure: ConfigurationFailure? = nil
+     
+     
+     
+     
+     
+     
+    @PublishedWhenChanged private(set) var failureSerial = 0
+     
+     
+     
+     
+     
+    @PublishedWhenChanged private(set) var refusalsAnswered = 0
+     
+     
+     
+     
+    @PublishedWhenChanged private(set) var sourceRefreshRefusalSerial: Int?
+
+     
+    var failureCameFromASourceRefresh: Bool {
+        lastFailure != nil && sourceRefreshRefusalSerial == failureSerial
+    }
      
      
      
@@ -301,7 +361,6 @@ final class ProfilesViewModel: ObservableObject {
          
         var updated = 0
         var failures: [String] = []
-        var finishedAt: Date?
          
         var total = 0
          
@@ -328,7 +387,27 @@ final class ProfilesViewModel: ObservableObject {
     @Published private(set) var nodeLibraryUpdate: NodeLibraryUpdateRun?
      
      
+     
     @Published private(set) var libraryContentEpoch: UInt64 = 0
+     
+     
+     
+     
+     
+    func noteLibraryRestored() {
+        libraryContentEpoch &+= 1
+    }
+     
+     
+     
+     
+     
+    @MainActor
+    final class LibraryCommits {
+        private(set) var made = false
+        func note() { made = true }
+    }
+    @TaskLocal static var libraryCommits: LibraryCommits?
      
      
     var isUpdatingNodeLibrary: Bool { nodeLibraryUpdate.map { !$0.finished } ?? false }
@@ -406,14 +485,23 @@ final class ProfilesViewModel: ObservableObject {
                 unconfirmed = CollectionUpdateRun.unconfirmed(
                     result.targets + CollectionUpdateRun.counted(result.coreOwned, take: take), take: take)
                 appliesOnConnect = take.appliesOnConnect
-                await self.restageConfigurationInUseOwedBySourceRefresh()
+                 
+                 
+                 
+                 
+                 
+                let putBackIDs = await self.restageConfigurationInUseOwedBySourceRefresh()
+                let putBack = sources.filter { putBackIDs.contains($0.id) }
+                updated = max(0, updated - putBack.count)
+                failures += putBack.map {
+                    Self.labelled($0.displayLabel(locale: locale), ClashCopy.string(Self.putBackKey, locale: locale), locale: locale)
+                }
             } else {
                 failures = [ConfigurationLibraryError.unreadable.localizedDescription]
             }
             if self.nodeLibraryUpdate?.id == runID {
                 self.nodeLibraryUpdate = NodeLibraryUpdateRun(id: runID, progress: nil, finished: true,
-                                                              updated: updated, failures: failures,
-                                                              finishedAt: Date(), total: total,
+                                                              updated: updated, failures: failures, total: total,
                                                               unconfirmed: unconfirmed, appliesOnConnect: appliesOnConnect)
             }
             self.libraryContentEpoch &+= 1
@@ -426,6 +514,40 @@ final class ProfilesViewModel: ObservableObject {
      
     func acknowledgeNodeLibraryUpdate(_ id: UUID) {
         if nodeLibraryUpdate?.id == id, nodeLibraryUpdate?.finished == true { nodeLibraryUpdate = nil }
+    }
+
+     
+     
+     
+     
+     
+    @Published private(set) var updatingSourceIDs: Set<String> = []
+
+     
+     
+     
+     
+     
+    var isNodeLibraryHeld: Bool { isUpdatingNodeLibrary || !updatingSourceIDs.isEmpty }
+
+     
+     
+     
+     
+     
+     
+    func updateConfigurationSource(_ source: ConfigurationSourceRecord, replacingRules: Bool, locale: Locale,
+                                   changed: @escaping (ConfigurationLibrarySnapshot) -> Void,
+                                   status: @escaping (String?) -> Void) -> Task<(failures: [String], changed: Bool), Error>? {
+        guard updatingSourceIDs.insert(source.id).inserted else { return nil }
+        return Task { @MainActor in
+            defer {
+                self.updatingSourceIDs.remove(source.id)
+                self.libraryContentEpoch &+= 1
+            }
+            return try await ConfigurationSourceUpdate.run(source, replacingRules: replacingRules, model: self,
+                                                           locale: locale, changed: changed, status: status)
+        }
     }
 
      
@@ -1303,6 +1425,16 @@ final class ProfilesViewModel: ObservableObject {
      
     private static let batchItemLimit: TimeInterval = 45
     private var failedOperation: FailedOperation?
+
+     
+     
+     
+     
+     
+    var refusedActivation: (profileID: String, failure: ConfigurationFailure)? {
+        guard let lastFailure, case .activation(let id)? = failedOperation else { return nil }
+        return (id, lastFailure)
+    }
     private var automaticSelectionAttempts: Set<String> = []
 
     var isActivationInFlight: Bool { activationAppliesToTunnel != nil }
@@ -3127,6 +3259,14 @@ final class ProfilesViewModel: ObservableObject {
      
      
     func quickAddSource(_ input: ProfileQuickAddInput, nodesOnly: Bool = false) async throws -> ConfigurationLibrarySnapshot {
+        try await quickAddNodeSource(input, nodesOnly: nodesOnly).library
+    }
+
+     
+     
+     
+     
+    func quickAddNodeSource(_ input: ProfileQuickAddInput, nodesOnly: Bool = false) async throws -> AddedNodeSource {
         guard let library = configurationLibraryStore else {
             throw PipelineError.sourceUnavailable("The configuration store is unavailable.")
         }
@@ -3172,7 +3312,8 @@ final class ProfilesViewModel: ObservableObject {
             throw ConfigurationLibraryError.missingNodes
         }
         let generation = try await Task.detached { try library.snapshot().generation }.value
-        return try await addConfigurationSource(payload, generation: generation)
+        let updated = try await addConfigurationSource(payload, generation: generation)
+        return AddedNodeSource(id: payload.record.id, library: updated)
     }
 
      
@@ -3411,6 +3552,11 @@ final class ProfilesViewModel: ObservableObject {
              
              
             statusMessage = .copy("This link asked to run as the original configuration, but its content has no rules of its own. Default Rules are used instead.")
+             
+             
+             
+            installLinkNotices.send(InstallLinkNotice(kind: .originalUnavailable,
+                title: .formatCopy("Rule scheme: %@", [InstallLinkRuleScheme.defaultRules.name]), message: statusMessage))
         }
         return ProfileQuickAddOutcome(id: created.id, isFirstUserProfile: !created.hadUserProfile,
                                       runsAsOriginal: created.runsAsOriginal)
@@ -3549,6 +3695,25 @@ final class ProfilesViewModel: ObservableObject {
         let profile = Profile(id:id,label:label,labelIsUserAssigned:true,source:profileSource,autoUpdate:false,
             updateIntervalHours:12,subscriptionInfo:nil,selectedMap:[:],override:OverrideSpec(),
             activeRevision:nil,order:(profiles.map(\.order).min() ?? 0) - 1,lastUpdatedAt:nil)
+        try await publishCreatedConfiguration(prepared, profile: profile, generation: generation,
+                                              library: library, workingDir: workingDir) { staged in
+            _ = try profileStore.insertIfAbsent(staged)
+        }
+         
+        return (id,nil)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    private func publishCreatedConfiguration(_ prepared: PreparedConfigurationCreation, profile: Profile,
+                                             generation: UInt64, library: ConfigurationLibraryStore,
+                                             workingDir: URL, place: (Profile) throws -> Void) async throws {
+        let id = profile.id
          
          
          
@@ -3569,7 +3734,7 @@ final class ProfilesViewModel: ObservableObject {
 
         try Task.checkCancellation()
         var candidate = prepared.candidate
-        if let index = candidate.recipes.firstIndex(where: { $0.id == id }) { candidate.recipes[index].label = label }
+        if let index = candidate.recipes.firstIndex(where: { $0.id == id }) { candidate.recipes[index].label = profile.label }
         let publication = ConfigurationPublicationPayload(reference:.init(profileID:id),
             profileMetadata:try JSONEncoder().encode(profile),yaml:yaml)
         _ = try await Task.detached(priority:.userInitiated) {
@@ -3584,7 +3749,7 @@ final class ProfilesViewModel: ObservableObject {
         }.value
 
 
-        try profileStore.insertIfAbsent(staged)
+        try place(staged)
         try await Task.detached { try library.acknowledgePublication(publication.reference) }.value
          
          
@@ -3592,8 +3757,6 @@ final class ProfilesViewModel: ObservableObject {
         noteLibraryFetchability(candidate)
         downloadNeverFetchedNodeCollections()
         load()
-         
-        return (id,nil)
     }
 
      
@@ -3847,6 +4010,30 @@ final class ProfilesViewModel: ObservableObject {
         try await saveConfigurationPlan(candidate: prepared.candidate, payloads: prepared.payloads,
             compositions: prepared.compositions, generation: prepared.candidate.generation)
         return try await Task.detached { try store.snapshot() }.value
+    }
+
+     
+     
+     
+     
+     
+    func deleteConfigurationLocalRuleSetRestorably(_ id: String, generation: UInt64) async throws
+        -> (snapshot: ConfigurationLibrarySnapshot, removal: ConfigurationLibraryRemoval) {
+        await settleLibraryHousekeeping()
+        guard !changingConfigurationLibrary else { throw ConfigurationLibraryError.busy }
+        guard let library = configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
+        changingConfigurationLibrary = true
+        defer { changingConfigurationLibrary = false }
+        let (prepared, removal) = try await Task.detached(priority: .userInitiated) {
+            let before = try library.snapshot()
+            let prepared = try library.prepareLocalRuleSet(nil, deleting: id, expectedGeneration: generation,
+                                                           resolveInput: ConfigurationCenterSourceBridge.boundInput)
+            for payload in prepared.payloads { try ConfigTransforms.validateSource(payload.documentJSON) }
+            return (prepared, try library.removal(from: before, to: prepared.candidate))
+        }.value
+        try await saveConfigurationPlan(candidate: prepared.candidate, payloads: prepared.payloads,
+            compositions: prepared.compositions, generation: generation)
+        return (try await Task.detached { try library.snapshot() }.value, removal)
     }
 
     func createConfigurationRuleScheme(_ draft: ConfigurationNewRuleDraft, generation: UInt64) async throws -> ConfigurationLibrarySnapshot {
@@ -4307,6 +4494,8 @@ final class ProfilesViewModel: ObservableObject {
     func refreshConfigurationSource(_ id: String, replaceEditedRules: Bool = false,
                                     expectedVersion: String? = nil,
                                     restagingConfigurationInUse: Bool = true) async throws -> ConfigurationSourceRefreshResult {
+        let serial = failureSerial
+        defer { if failureSerial != serial, lastFailure != nil { sourceRefreshRefusalSerial = failureSerial } }
         await settleLibraryHousekeeping()
         guard !changingConfigurationLibrary else { throw ConfigurationLibraryError.busy }
         guard let library = configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
@@ -4362,6 +4551,16 @@ final class ProfilesViewModel: ObservableObject {
              
             try await backfillImportedPage(of: source.id, library: library,
                                            restagingConfigurationInUse: restagingConfigurationInUse)
+             
+             
+             
+             
+            if let putBack = refusalPutBack, putBack.sourceIDs.contains(source.id), putBack.failures == failureSerial,
+               let refused = refusedActivation, refused.profileID == putBack.profileID,
+               Self.anUpdateAnswers(refused.failure) {
+                answerRefusal()
+            }
+            refusalPutBack?.sourceIDs.remove(source.id)
             return .nothingNew
         }
         let prepared = try await Task.detached(priority: .userInitiated) {
@@ -4370,12 +4569,49 @@ final class ProfilesViewModel: ObservableObject {
             return try library.prepareSourceUpdate(replacement, expectedGeneration: current.generation,
                 replaceEditedRules: replaceEditedRules, resolveInput: ConfigurationCenterSourceBridge.boundInput)
         }.value
+        refusalPutBack?.sourceIDs.remove(source.id)
+         
+         
+         
+         
+         
+         
+         
+        let putBack = restagingConfigurationInUse ? PutBackScopeOpening() : nil
+        defer { if let restaged = putBack?.profileID { endPutBackScope(for: restaged) } }
         try await saveConfigurationPlan(candidate: prepared.candidate, payloads: prepared.payloads,
             compositions: prepared.compositions, generation: current.generation,
-            restagesConfigurationInUse: restagingConfigurationInUse)
-        if !restagingConfigurationInUse { noteRestageOwedBySourceRefresh(prepared.compositions) }
+            restagesConfigurationInUse: restagingConfigurationInUse, holdingRefusalsFor: putBack)
+         
+         
+         
+         
+         
+         
+        let written = prepared.candidate.sources.first { $0.id == source.id }?.version ?? refreshedRecord.version
+         
+         
+         
+         
+        let writtenSchemes = prepared.candidate.rules.filter { $0.sourceID == source.id }
+        if let active = activeProfileID, prepared.compositions.keys.contains(active) {
+            if let kept = sourceRefreshUndo[source.id], kept.profileID == active {
+                sourceRefreshUndo[source.id] = .init(previous: kept.previous, written: written, profileID: active,
+                                                     schemes: kept.schemes, writtenSchemes: writtenSchemes)
+            } else {
+                sourceRefreshUndo[source.id] = .init(previous: previous, written: written, profileID: active,
+                                                     schemes: current.rules.filter { $0.sourceID == source.id },
+                                                     writtenSchemes: writtenSchemes)
+            }
+        }
         ConfigurationSourceRefusals.clear(source.id, in: runtimeDefaults)
         ConfigurationSourceRefusals.record(prepared.pageRefusals, in: runtimeDefaults)
+        if !restagingConfigurationInUse {
+            noteRestageOwedBySourceRefresh(prepared.compositions)
+        } else {
+             
+            await putBackRefusedSourceRefreshWhole(library: library, for: putBack?.profileID)
+        }
         return .updated
     }
 
@@ -4408,6 +4644,305 @@ final class ProfilesViewModel: ObservableObject {
      
      
     private var restageOwedBySourceRefresh: String?
+     
+    private var owedRestageStarting: String?
+
+     
+     
+    private struct SourceRefreshUndo {
+        let previous: ConfigurationSourcePayload
+         
+        let written: String
+        let profileID: String
+         
+         
+        let schemes: [ConfigurationRuleScheme]
+         
+         
+        let writtenSchemes: [ConfigurationRuleScheme]
+    }
+    private var sourceRefreshUndo: [String: SourceRefreshUndo] = [:]
+     
+     
+    private var refusalPutBack: (sourceIDs: Set<String>, profileID: String, failures: Int)?
+
+     
+     
+     
+    func wasPutBack(_ sourceID: String) -> Bool {
+        guard let putBack = refusalPutBack, putBack.failures == failureSerial else { return false }
+        return putBack.sourceIDs.contains(sourceID)
+    }
+    static let putBackKey = "Not used. Still on the previous version."
+
+     
+     
+     
+     
+     
+     
+     
+     
+    private struct PutBackScope {
+        let profileID: String
+         
+         
+         
+         
+        var depth = 1
+         
+        var pending: (failure: ConfigurationFailure, operation: FailedOperation)?
+         
+        var held = 0
+         
+         
+        var statusWhenHeld: ClashDisplayText?
+         
+         
+        var deferredClearSerial: Int?
+         
+         
+         
+         
+        var taken = false
+         
+         
+        var outcome = false
+         
+        var named: ClashDisplayText?
+         
+         
+         
+        var putBackIDs: Set<String> = []
+    }
+     
+     
+     
+    private var putBackScopes: [String: PutBackScope] = [:]
+
+     
+     
+    final class PutBackScopeOpening {
+        fileprivate(set) var profileID: String?
+    }
+
+    private func openPutBackScope(for profileID: String) {
+        if putBackScopes[profileID] != nil {
+            putBackScopes[profileID]?.depth += 1
+        } else {
+            putBackScopes[profileID] = PutBackScope(profileID: profileID)
+        }
+    }
+
+     
+     
+     
+     
+     
+    private func endPutBackScope(for profileID: String) {
+        guard var scope = putBackScopes[profileID] else { return }
+        scope.depth -= 1
+        let outermost = scope.depth == 0
+        let says = outermost || scope.outcome
+        let said = scope
+        if says {
+            scope.pending = nil
+            scope.named = nil
+            scope.putBackIDs = []
+            scope.statusWhenHeld = nil
+            scope.outcome = false
+        }
+        putBackScopes[profileID] = outermost ? nil : scope
+        if says, let pending = said.pending {
+             
+             
+            let failure = said.named.map { pending.failure.putBack(as: $0) } ?? pending.failure
+            let statusStood = statusMessage == said.statusWhenHeld
+            lastFailure = failure
+            failedOperation = pending.operation
+             
+             
+            failureSerial &+= 1
+            if statusStood { statusMessage = said.named ?? .copy(failure.title) }
+            if !said.putBackIDs.isEmpty { refusalPutBack = (said.putBackIDs, said.profileID, failureSerial) }
+        } else {
+             
+             
+             
+            if says, !said.putBackIDs.isEmpty { refusalPutBack = (said.putBackIDs, said.profileID, failureSerial) }
+             
+             
+             
+             
+             
+            if outermost, let deferred = said.deferredClearSerial, failureSerial == deferred {
+                if said.taken, let refused = refusedActivation, refused.profileID == said.profileID,
+                   Self.anUpdateAnswers(refused.failure) {
+                    answerRefusal()
+                } else {
+                    clearFailure()
+                }
+            }
+        }
+        dropUndosNoPutBackCanUse()
+    }
+
+     
+     
+     
+     
+     
+    private func clearActivationFailure(of profileID: String) {
+        guard putBackScopes[profileID] != nil else { clearFailure(); return }
+        putBackScopes[profileID]?.deferredClearSerial = failureSerial
+        putBackScopes[profileID]?.pending = nil
+    }
+
+     
+     
+     
+     
+     
+    private func dropUndosNoPutBackCanUse() {
+        sourceRefreshUndo = sourceRefreshUndo.filter { _, undo in
+            putBackScopes[undo.profileID] != nil || undo.profileID == restageOwedBySourceRefresh
+                || undo.profileID == owedRestageStarting
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func putBackRefusedSourceRefresh(library: ConfigurationLibraryStore, for profileID: String?,
+                                             into putBackIDs: inout Set<String>) async throws {
+        guard let profileID else { sourceRefreshUndo = [:]; return }
+        defer { dropUndosNoPutBackCanUse() }
+         
+         
+        let undos = sourceRefreshUndo.filter { $0.value.profileID == profileID }
+        sourceRefreshUndo = sourceRefreshUndo.filter { $0.value.profileID != profileID }
+        guard let scope = putBackScopes[profileID], scope.pending != nil else { return }
+         
+         
+        putBackScopes[profileID]?.outcome = true
+        guard let container, let workingDir else { return }
+         
+         
+         
+        let owned = Array(undos.values)
+        guard !owned.isEmpty else { return }
+         
+         
+        let held = scope.held
+         
+         
+         
+        let runsTheRefresh = await Task.detached(priority: .userInitiated) { () -> Bool? in
+            let inUse: ActiveConfigurationPointer?
+            do { inUse = try ConfigResourceStore(containerURL: container).activeIdentity() } catch { return nil }
+            guard let inUse, inUse.profileID == profileID else { return false }
+            guard let source = try? String(contentsOf: ProfileSourceStore.runnableURL(
+                      workingDirectory: workingDir, profileID: profileID), encoding: .utf8) else { return nil }
+            return PublishedSourceLedger.published(inUse, from: source)
+        }.value
+        guard runsTheRefresh == false else {
+            if runsTheRefresh == nil {
+                ClashLogStore.shared.append("source update not put back: what runs could not be read  profile=\(profileID)",
+                                            stream: .app, level: .warning)
+            }
+            return
+        }
+         
+         
+         
+         
+         
+         
+        var named: ClashDisplayText?
+        defer {
+            if let named, putBackScopes[profileID]?.held == held, putBackScopes[profileID]?.pending != nil {
+                putBackScopes[profileID]?.named = named
+            }
+        }
+
+
+         
+         
+         
+        for undo in owned.sorted(by: { $0.previous.record.id < $1.previous.record.id }) {
+            let previous = undo.previous
+            let current = try await Task.detached { try library.snapshot() }.value
+             
+             
+             
+             
+             
+             
+            guard let record = current.sources.first(where: { $0.id == previous.record.id }),
+                  record.version == undo.written,
+                  undo.writtenSchemes.allSatisfy({ scheme in
+                      let now = current.rules.first { $0.id == scheme.id }
+                      return now?.namedNodes == scheme.namedNodes && now?.namedNodesSourceID == scheme.namedNodesSourceID
+                  }) else {
+                ClashLogStore.shared.append(
+                    "source update not put back: written since  source=\(previous.record.id) profile=\(profileID)",
+                    stream: .app, level: .warning)
+                continue
+            }
+             
+             
+             
+            var adopted = ConfigurationCenterSourceBridge.adopting(record, fetched: previous).record
+             
+             
+             
+             
+            adopted.updatedAt = record.updatedAt
+            adopted.subscriptionUsage = record.subscriptionUsage
+            let restored = ConfigurationSourcePayload(record: adopted, original: previous.original,
+                documentJSON: previous.documentJSON, resourceFiles: previous.resourceFiles,
+                ruleBaselineJSON: previous.ruleBaselineJSON)
+             
+             
+            let schemes = undo.schemes
+            let putBack = try await Task.detached(priority: .userInitiated) {
+                try library.prepareSourceUpdate(restored, expectedGeneration: current.generation,
+                    replaceEditedRules: true, restoringNamedNodesOf: schemes,
+                    resolveInput: ConfigurationCenterSourceBridge.boundInput)
+            }.value
+
+
+            try await saveConfigurationPlan(candidate: putBack.candidate, payloads: putBack.payloads,
+                compositions: putBack.compositions, generation: current.generation,
+                restagesConfigurationInUse: false)
+            putBackIDs.insert(previous.record.id)
+             
+            putBackScopes[profileID]?.putBackIDs.insert(previous.record.id)
+            named = ClashConfigurationSourceCopy.sentence(RuleSchemeRefusalNotice.notInUse, naming: adopted)
+             
+             
+             
+            ConfigurationSourceRefusals.clear(previous.record.id, in: runtimeDefaults)
+            ConfigurationSourceRefusals.record(putBack.pageRefusals, in: runtimeDefaults)
+            ClashLogStore.shared.append(
+                "source update put back after its restage was refused  source=\(previous.record.id) profile=\(profileID)",
+                stream: .app)
+        }
+    }
 
     private func noteRestageOwedBySourceRefresh(_ compositions: [String: ConfigurationComposition]) {
         guard let active = activeProfileID, compositions.keys.contains(active) else { return }
@@ -4427,11 +4962,133 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
-    func restageConfigurationInUseOwedBySourceRefresh() async {
-        guard let owed = restageOwedBySourceRefresh else { return }
+     
+     
+     
+     
+    @discardableResult
+    func restageConfigurationInUseOwedBySourceRefresh() async -> Set<String> {
+        await restageOwedBySourceRefreshAnswering().putBack
+    }
+
+     
+     
+     
+     
+    struct OwedRestage {
+        var putBack: Set<String> = []
+        var refused = false
+    }
+
+    private func restageOwedBySourceRefreshAnswering() async -> OwedRestage {
+        await Task { @MainActor in await self.restageOwedBySourceRefreshAndPutBack() }.value
+    }
+
+    private func restageOwedBySourceRefreshAndPutBack() async -> OwedRestage {
+         
+         
+         
+         
+         
+         
+         
+        let restage = await restageOwedBySourceRefreshNow()
+         
+         
+         
+        defer { if let restaged = restage.scopeOpenedFor { endPutBackScope(for: restaged) } }
+         
+         
+        let refused = restage.madeFor.map { putBackScopes[$0]?.pending != nil } ?? false
+        var answer = OwedRestage(putBack: [], refused: refused)
+        guard !sourceRefreshUndo.isEmpty else { return answer }
+         
+        let owedProfile = sourceRefreshUndo.values.first?.profileID ?? "-"
+         
+         
+         
+        guard restageOwedBySourceRefresh == nil else {
+            sourceRefreshUndo = [:]
+            ClashLogStore.shared.append("source update not put back: the restage is still owed  profile=\(owedProfile)",
+                                        stream: .app, level: .warning)
+            return answer
+        }
+         
+         
+         
+        guard let made = restage.madeFor else {
+            sourceRefreshUndo = [:]
+            if refusedActivation?.profileID == owedProfile {
+                ClashLogStore.shared.append("source update not put back: no restage was made  profile=\(owedProfile)",
+                                            stream: .app, level: .warning)
+            }
+            return answer
+        }
+        await settleLibraryHousekeeping()
+         
+         
+        for _ in 0..<100 where changingConfigurationLibrary {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard !changingConfigurationLibrary, let library = configurationLibraryStore else {
+            sourceRefreshUndo = [:]
+            ClashLogStore.shared.append("source update not put back: the library was busy  profile=\(owedProfile)",
+                                        stream: .app, level: .warning)
+            return answer
+        }
+        changingConfigurationLibrary = true
+        defer { changingConfigurationLibrary = false }
+        answer.putBack = await putBackRefusedSourceRefreshWhole(library: library, for: made)
+        return answer
+    }
+
+     
+     
+     
+     
+     
+    @discardableResult
+    private func putBackRefusedSourceRefreshWhole(library: ConfigurationLibraryStore,
+                                                  for profileID: String?) async -> Set<String> {
+        let whole = Task { @MainActor () -> Set<String> in
+            var putBack = Set<String>()
+            do {
+                try await self.putBackRefusedSourceRefresh(library: library, for: profileID, into: &putBack)
+            } catch {
+                ClashLogStore.shared.append("source update not put back  error=\(error.localizedDescription)",
+                                            stream: .app, level: .warning)
+            }
+            return putBack
+        }
+        return await whole.value
+    }
+
+     
+     
+    private enum OwedRestageNow {
+        case notMade, parked(String), made(String)
+         
+        var scopeOpenedFor: String? {
+            switch self {
+            case .notMade: return nil
+            case .parked(let id), .made(let id): return id
+            }
+        }
+         
+        var madeFor: String? { if case .made(let id) = self { return id }; return nil }
+    }
+
+     
+     
+     
+    private func restageOwedBySourceRefreshNow() async -> OwedRestageNow {
+        guard let owed = restageOwedBySourceRefresh else { return .notMade }
         restageOwedBySourceRefresh = nil
+         
+        owedRestageStarting = owed
+        defer { owedRestageStarting = nil }
         guard owed == activeProfileID, let container, let workingDir,
-              let latest = profiles.first(where: { $0.id == owed }) else { return }
+              let latest = profiles.first(where: { $0.id == owed }) else { return .notMade }
          
          
          
@@ -4440,28 +5097,59 @@ final class ProfilesViewModel: ObservableObject {
          
          
          
-        guard pendingActivation == nil else { return }
-        enum Owed { case settled, restage(ActiveConfigurationPointer), unreadable }
+        guard pendingActivation == nil else { return .notMade }
+        enum Owed { case settled, runsTheSource, restage(ActiveConfigurationPointer), unreadable }
+         
+         
+         
+        let failuresBeforeRead = failureSerial
         let verdict = await Task.detached(priority: .userInitiated) { () -> Owed in
             let inUse: ActiveConfigurationPointer?
             do { inUse = try ConfigResourceStore(containerURL: container).activeIdentity() } catch { return .unreadable }
             guard let inUse, inUse.profileID == owed else { return .settled }
             guard let source = try? String(contentsOf: ProfileSourceStore.runnableURL(
                       workingDirectory: workingDir, profileID: owed), encoding: .utf8) else { return .restage(inUse) }
-            return PublishedSourceLedger.published(inUse, from: source) ? .settled : .restage(inUse)
+            return PublishedSourceLedger.published(inUse, from: source) ? .runsTheSource : .restage(inUse)
         }.value
         let inUse: ActiveConfigurationPointer
         switch verdict {
-        case .settled: return
+        case .settled: return .notMade
+        case .runsTheSource:
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            if owed == activeProfileID, failureSerial == failuresBeforeRead,
+               let refused = refusedActivation, refused.profileID == owed,
+               Self.anUpdateAnswers(refused.failure) {
+                answerRefusal()
+            }
+            return .notMade
         case .restage(let pointer): inUse = pointer
         case .unreadable:
              
              
              
             if restageOwedBySourceRefresh == nil { restageOwedBySourceRefresh = owed }
-            return
+            return .notMade
         }
-        guard owed == activeProfileID, pendingActivation == nil else { return }
+         
+         
+         
+         
+         
+         
+         
+        await waitForPendingActivation()
+        guard owed == activeProfileID, pendingActivation == nil else { return .notMade }
+        openPutBackScope(for: owed)
         startActivation(
             latest,
             applyToTunnel: ProfileSelectionRuntimePolicy.shouldApplyToTunnel(vpnStatus: vpn.status),
@@ -4469,14 +5157,30 @@ final class ProfilesViewModel: ObservableObject {
             onlyIfActive: inUse,
             because: ClashPerf.Reason.configurationSaved
         )
+         
+         
+         
+         
+         
+         
+        for _ in 0..<1_200 where activationTask == nil && pendingActivation != nil {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard activationTask != nil || pendingActivation == nil else {
+            ClashLogStore.shared.append("source update not put back: its restage still waits for the slot  profile=\(owed)",
+                                        stream: .app, level: .warning)
+            return .parked(owed)
+        }
         await waitForPendingActivation()
+        return .made(owed)
     }
 
     func saveConfigurationPlan(candidate initial: ConfigurationLibrarySnapshot,
                                payloads: [ConfigurationSourcePayload],
                                compositions: [String: ConfigurationComposition],
                                generation: UInt64, rename: String? = nil,
-                               restagesConfigurationInUse: Bool = true) async throws {
+                               restagesConfigurationInUse: Bool = true,
+                               holdingRefusalsFor putBack: PutBackScopeOpening? = nil) async throws {
         guard let library = configurationLibraryStore, let workingDir, container != nil, let profileStore else {
             throw ConfigurationLibraryError.unreadable
         }
@@ -4487,12 +5191,15 @@ final class ProfilesViewModel: ObservableObject {
             _ = try await Task.detached {
                 try library.commit(initial, payloads: payloads, expectedGeneration: generation)
             }.value
+            Self.libraryCommits?.note()
              
              
              
             noteLibraryFetchability(initial)
             return
         }
+
+
         let originals = profileStore.load()
         var candidate = initial
          
@@ -4513,6 +5220,7 @@ final class ProfilesViewModel: ObservableObject {
         try Task.checkCancellation()
         try await ConfigurationCenterPublicationBridge.replaceOffMain(replacements, candidate: candidate,
             payloads: payloads, library: library, workingDir: workingDir, expectedGeneration: generation)
+        Self.libraryCommits?.note()
         laps.mark("save.replace")
         noteLibraryFetchability(candidate)
         load()
@@ -4537,16 +5245,53 @@ final class ProfilesViewModel: ObservableObject {
          
          
         if restagesConfigurationInUse, let active = activeProfileID, compositions.keys.contains(active),
-           let latest = profiles.first(where: { $0.id == active }) {
+           var latest = profiles.first(where: { $0.id == active }) {
+             
+             
+             
+             
+             
+             
+             
+             
+             
+            if let putBack {
+                await waitForPendingActivation()
+                guard let now = activeProfileID, compositions.keys.contains(now),
+                      let current = profiles.first(where: { $0.id == now }) else { return }
+                latest = current
+                openPutBackScope(for: now)
+                putBack.profileID = now
+            }
             startActivation(
                 latest,
                 applyToTunnel: ProfileSelectionRuntimePolicy.shouldApplyToTunnel(vpnStatus: vpn.status),
                 preferCachedSource: true,
                 because: ClashPerf.Reason.configurationSaved
             )
+
+
             await waitForPendingActivation()
             laps.mark("save.restage")
         }
+    }
+
+     
+     
+     
+     
+     
+    func restageConfigurationInUse(_ id: String) async {
+        guard id == activeProfileID else { return }
+        await waitForPendingActivation()
+        guard id == activeProfileID, let latest = profiles.first(where: { $0.id == id }) else { return }
+        startActivation(
+            latest,
+            applyToTunnel: ProfileSelectionRuntimePolicy.shouldApplyToTunnel(vpnStatus: vpn.status),
+            preferCachedSource: true,
+            because: ClashPerf.Reason.configurationSaved
+        )
+        await waitForPendingActivation()
     }
 
      
@@ -4961,12 +5706,55 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+    private func storedForDuplicate(_ id: String, in store: ProfileStore) -> Profile? {
+        if let stored = store.load().first(where: { $0.id == id }) { return stored }
+        recordFailure(PipelineError.sourceUnavailable("the saved source for this profile is unavailable"),
+                      context: .localImport, operation: nil, preservesLastKnownGood: true)
+        return nil
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
      
     @discardableResult
     func duplicate(_ profile: Profile) async -> Profile? {
         guard let profileStore, let workingDir else { return nil }
+        if let library = configurationLibraryStore {
+             
+             
+             
+             
+            await settleLibraryHousekeeping()
+            do {
+                let snapshot = try await Task.detached(priority: .userInitiated) { try library.snapshot() }.value
+                if snapshot.recipes.contains(where: { $0.id == profile.id }) { return await duplicateComposed(profile) }
+            } catch {
+                 
+                 
+                 
+                 
+                recordFailure(error, context: .localImport, operation: nil, preservesLastKnownGood: true)
+                return nil
+            }
+        }
+         
+        guard let profile = storedForDuplicate(profile.id, in: profileStore) else { return nil }
         let id = makeProfileID()
-        let label = uniqueCopyLabel(base: profile.label, suffix: " Copy")
+        let label = uniqueCopyLabel(base: profile.label, suffix: copySuffix)
         let sourceWriter = sourceWriter
         let large = hasLargeSource(profile)
         do {
@@ -5009,51 +5797,18 @@ final class ProfilesViewModel: ObservableObject {
                 autoUpdate: false,
                 updateIntervalHours: profile.updateIntervalHours,
                 subscriptionInfo: nil,
-                selectedMap: profile.selectedMap,
-                currentGroupName: profile.currentGroupName,
-                unfoldedGroups: profile.unfoldedGroups,
-                globalPickedByReader: profile.globalPickedByReader,
-                override: profile.override,
+                selectedMap: [:],
+                override: OverrideSpec(),
                 activeRevision: nil,
                 order: profile.order + 1,
-                lastUpdatedAt: nil,
-                subscriptionETag: nil,
-                subscriptionLastModified: nil,
-                usesLocalSourceOverride: true,
-                selectedScriptID: profile.selectedScriptID,
-                overwriteMode: profile.overwriteMode,
-                customOverwrite: profile.customOverwrite,
-                proxyChain: profile.proxyChain,
-                legacyRelayMigrations: profile.legacyRelayMigrations,
-                proxyCredentials: nil,
-                sourceCredentials: nil,
-                sourceCredentialsRedacted: nil,
-                externalResources: prepared.references.isEmpty ? nil : prepared.references,
-                migratedGlobalOverride: profile.migratedGlobalOverride,
-                outboundMode: profile.outboundMode
+                lastUpdatedAt: nil
             )
-             
-             
-             
-             
-             
-             
-             
-            copy.postMergeScriptID = profile.postMergeScriptID
-            copy.proxyNodeOverrides = profile.proxyNodeOverrides
-             
-             
-            copy.providerDefinitions = profile.providerDefinitions
+            copy.usesLocalSourceOverride = true
+            copy.externalResources = prepared.references.isEmpty ? nil : prepared.references
+            Self.carryProfileOverlays(of: profile, onto: &copy)
              
              
             copy.subscriptionInfo = nil
-             
-             
-             
-             
-             
-             
-             
             let sidecarCopy = copy
             if let yaml = prepared.yaml {
                 try await Task.detached(priority: .userInitiated) {
@@ -5063,14 +5818,7 @@ final class ProfilesViewModel: ObservableObject {
              
              
              
-            let placed = copy
-            try profileStore.updateAll { stored in
-                for index in stored.indices where stored[index].id != placed.id && stored[index].order >= placed.order {
-                    stored[index].order += 1
-                }
-                stored.removeAll { $0.id == placed.id }
-                stored.append(placed)
-            }
+            try placeCopy(copy, in: profileStore)
             statusMessage = .format("%@ created", [copy.label])
             clearFailure()
             load()
@@ -5088,6 +5836,118 @@ final class ProfilesViewModel: ObservableObject {
             )
             load()
             return nil
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func duplicateComposed(_ profile: Profile) async -> Profile? {
+        guard let library = configurationLibraryStore, let workingDir, let profileStore else { return nil }
+        let id = makeProfileID()
+        let label = uniqueCopyLabel(base: profile.label, suffix: copySuffix)
+        let originalID = profile.id
+        do {
+            await settleLibraryHousekeeping()
+             
+            guard let profile = storedForDuplicate(originalID, in: profileStore) else { return nil }
+            let generation = try await Task.detached { try library.snapshot().generation }.value
+            let prepared = try await Task.detached(priority: .userInitiated) {
+                try library.prepareDuplicate(ofRecipe: originalID, as: id, label: label, expectedGeneration: generation,
+                                             resolveInput: ConfigurationCenterSourceBridge.boundInput)
+            }.value
+            var copy = Profile(id: id, label: label, labelIsUserAssigned: true, source: Self.profileSource(for: prepared),
+                               autoUpdate: false, updateIntervalHours: profile.updateIntervalHours, subscriptionInfo: nil,
+                               selectedMap: [:], override: OverrideSpec(), activeRevision: nil,
+                               order: profile.order + 1, lastUpdatedAt: nil)
+            Self.carryProfileOverlays(of: profile, onto: &copy)
+             
+             
+            copy = try prepared.carryingComposedNames(copy)
+            var placed = copy
+            try await publishCreatedConfiguration(prepared, profile: copy, generation: generation,
+                                                  library: library, workingDir: workingDir) { staged in
+                try placeCopy(staged, in: profileStore)
+                placed = staged
+            }
+            statusMessage = .format("%@ created", [label])
+            clearFailure()
+             
+             
+             
+            return profiles.first(where: { $0.id == id }) ?? placed
+        } catch {
+             
+             
+             
+             
+            recordFailure(error, context: .localImport, operation: nil, preservesLastKnownGood: true)
+            load()
+            return nil
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private static func carryProfileOverlays(of original: Profile, onto copy: inout Profile) {
+        copy.updateIntervalHours = original.updateIntervalHours
+        copy.selectedMap = original.selectedMap
+        copy.currentGroupName = original.currentGroupName
+        copy.unfoldedGroups = original.unfoldedGroups
+        copy.globalPickedByReader = original.globalPickedByReader
+        copy.override = original.override
+        copy.selectedScriptID = original.selectedScriptID
+        copy.overwriteMode = original.overwriteMode
+        copy.customOverwrite = original.customOverwrite
+        copy.proxyChain = original.proxyChain
+        copy.legacyRelayMigrations = original.legacyRelayMigrations
+        copy.migratedGlobalOverride = original.migratedGlobalOverride
+        copy.outboundMode = original.outboundMode
+        copy.postMergeScriptID = original.postMergeScriptID
+        copy.proxyNodeOverrides = original.proxyNodeOverrides
+        copy.providerDefinitions = original.providerDefinitions
+        copy.udpFallbackPolicy = original.udpFallbackPolicy
+        copy.memoryTrim = original.memoryTrim
+        copy.dnsBootstrapInsurance = original.dnsBootstrapInsurance
+        copy.legacyRuntimePatchJSON = original.legacyRuntimePatchJSON
+        copy.legacyRuntimeDNSGated = original.legacyRuntimeDNSGated
+    }
+
+     
+     
+     
+     
+     
+     
+    private func placeCopy(_ placed: Profile, in profileStore: ProfileStore) throws {
+        try profileStore.updateAll { stored in
+            for index in stored.indices where stored[index].id != placed.id && stored[index].order >= placed.order {
+                stored[index].order += 1
+            }
+            stored.removeAll { $0.id == placed.id }
+            stored.append(placed)
         }
     }
 
@@ -5115,12 +5975,17 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+     
+     
     func installSubscription(_ rawURL: String, rules: InstallLinkRuleScheme? = nil) {
         if let existing = profiles.first(where: {
             if case let .url(url) = $0.source { return url == rawURL }
             return false
         }) {
             statusMessage = .format("Profile URL already exists; syncing %@…", [existing.label])
+            if let rules, let notice = schemeKeptNotice(for: existing, named: rules) {
+                installLinkNotices.send(notice)
+            }
             sync(existing)
             return
         }
@@ -5140,12 +6005,69 @@ final class ProfilesViewModel: ObservableObject {
         enqueueImport { [weak self] in
             guard let self else { return }
             do {
-                _ = try await self.quickCreate(.link(rawURL, rules: rules))
+                let made = try await self.quickCreate(.link(rawURL, rules: rules))
+                self.handedImportsSettled.send(made.id)
             } catch {
                 self.recordFailure(error, context: .subscription, operation: nil)
+                self.handedImportsSettled.send(nil)
             }
         }
 #endif
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    private func schemeKeptNotice(for profile: Profile, named: InstallLinkRuleScheme) -> InstallLinkNotice? {
+        var library = ConfigurationLibrarySnapshot()
+        if let store = configurationLibraryStore {
+            guard let read = try? store.snapshot() else { return nil }
+            library = read
+        }
+        guard let running = Self.installLinkScheme(of: profile, in: library), running.scheme != named else { return nil }
+        let row = "This Profile URL is already in the Profile Center. Its rule scheme wasn't changed and is still “%@”."
+        return InstallLinkNotice(kind: .schemeKept, title: Self.naming(row, running.name), message: nil)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func installLinkScheme(of profile: Profile, in library: ConfigurationLibrarySnapshot)
+        -> (scheme: InstallLinkRuleScheme?, name: ClashDisplayText)? {
+        guard let recipe = library.recipes.first(where: { $0.id == profile.id }), recipe.preservesOriginal != true else {
+            return (.original, .copy(InstallLinkRuleScheme.original.name))
+        }
+         
+         
+         
+        let builtin = ConfigurationBuiltins.isNative(recipe.ruleSchemeID)
+            ? recipe.ruleSchemeID : ProfileRowPresentation.builtinBase(of: recipe.ruleSchemeID, in: library)
+        if builtin == ConfigurationBuiltins.basicRuleID { return (.defaultRules, .copy(InstallLinkRuleScheme.defaultRules.name)) }
+        if builtin == ConfigurationBuiltins.lazyRuleID { return (.lazyRules, .copy(InstallLinkRuleScheme.lazyRules.name)) }
+        guard let scheme = library.rules.first(where: { $0.id == recipe.ruleSchemeID }) else { return nil }
+        let named = scheme.ownViewBaseID.flatMap { base in library.rules.first { $0.id == base } } ?? scheme
+        return (nil, .verbatim(named.displayLabel))
+    }
+
+     
+     
+    private static func naming(_ row: String, _ name: ClashDisplayText) -> ClashDisplayText {
+        if case .copy(let key) = name { return .formatCopy(row, [key]) }
+        return .format(row, [name.rawValue])
     }
 
      
@@ -5190,9 +6112,11 @@ final class ProfilesViewModel: ObservableObject {
             guard let self else { return }
             let data = await Task.detached(priority: .userInitiated) { handed.takeBytes() }.value
             do {
-                _ = try await self.quickCreate(.document(fileName: fileName, data: data, rules: rules))
+                let made = try await self.quickCreate(.document(fileName: fileName, data: data, rules: rules))
+                self.handedImportsSettled.send(made.id)
             } catch {
                 self.recordFailure(error, context: .localImport, operation: nil)
+                self.handedImportsSettled.send(nil)
             }
         }
 #endif
@@ -5452,6 +6376,26 @@ final class ProfilesViewModel: ObservableObject {
                   let latest = profileStore.load().first(where: { $0.id == draft.profileID }) else {
                 throw PipelineError.sourceUnavailable("the profile is no longer available")
             }
+            try updateConfiguration(draft.applying(to: latest))
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+    func updateCustomRules(profileID: String, _ change: (inout ProfileRulesDraft) -> Void) throws {
+        try withProfileLock {
+            guard let profileStore,
+                  let latest = profileStore.load().first(where: { $0.id == profileID }) else {
+                throw PipelineError.sourceUnavailable("the profile is no longer available")
+            }
+            let stored = ProfileRulesDraft(profile: latest)
+            var draft = stored
+            change(&draft)
+            guard draft != stored else { return }
             try updateConfiguration(draft.applying(to: latest))
         }
     }
@@ -6406,6 +7350,14 @@ final class ProfilesViewModel: ObservableObject {
         let runtime = FlClashRuntimeConfig.load(from: runtimeDefaults)
         guard let raw = OverridePatch(patchJSON: runtime.patchJSON).mode else { return nil }
         return Profile.OutboundMode(rawValue: raw.lowercased())
+    }
+
+     
+     
+     
+     
+    func appWideOutboundMode() -> Profile.OutboundMode? {
+        patchedOutboundMode()
     }
 
     private func memoizedOutboundMode(for profile: Profile) -> Profile.OutboundMode? {
@@ -8450,8 +9402,22 @@ final class ProfilesViewModel: ObservableObject {
          
          
         var failures: [ProviderDownloadFailure] = []
+         
+         
+         
+        var putBack: [String] = []
+         
+         
+        var refused = false
     }
 
+     
+     
+     
+     
+     
+     
+     
      
      
      
@@ -8470,7 +9436,7 @@ final class ProfilesViewModel: ObservableObject {
         var outcome = ConfigurationSourceRefresh()
         for reference in references {
             do {
-                try await refreshConfigurationSource(reference)
+                try await refreshConfigurationSource(reference, restagingConfigurationInUse: false)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -8493,6 +9459,20 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+    private func restageOwedByConfigurationUpdate(_ profile: Profile, references: [String],
+                                                  _ outcome: inout ConfigurationSourceRefresh) async {
+        if busyProfileID == profile.id { busyProfileID = nil }
+        let owed = await restageOwedBySourceRefreshAnswering()
+        outcome.putBack = references.filter(owed.putBack.contains)
+        outcome.changed.removeAll(where: owed.putBack.contains)
+        outcome.refused = owed.refused
+    }
+
+     
+     
+     
+     
+     
      
      
      
@@ -8503,6 +9483,9 @@ final class ProfilesViewModel: ObservableObject {
         case changed
         case unchanged
         case failed
+         
+         
+        case putBack
     }
 
     @discardableResult
@@ -8512,18 +9495,32 @@ final class ProfilesViewModel: ObservableObject {
          
         defer { if busyProfileID == profile.id { busyProfileID = nil } }
         do {
-            let outcome = try await refreshConfigurationSources(references)
+            var outcome = try await refreshConfigurationSources(references)
              
              
             load()
              
              
-            busyProfileID = nil
-            await restageAfterSourceRefresh(profile.id, changed: outcome.changed)
+             
+            await restageOwedByConfigurationUpdate(profile, references: references, &outcome)
              
              
              
             if outcome.failures.isEmpty {
+                 
+                 
+                 
+                if !outcome.putBack.isEmpty {
+                    statusMessage = .copy(Self.putBackKey)
+                    return .putBack
+                }
+                 
+                 
+                 
+                 
+                 
+                 
+                if outcome.refused { return .failed }
                  
                  
                  
@@ -8540,7 +9537,17 @@ final class ProfilesViewModel: ObservableObject {
                 return .failed
             }
         } catch {
-            recordFailure(error, context: .subscription, operation: nil, preservesLastKnownGood: true)
+             
+             
+             
+             
+             
+             
+            var cut = ConfigurationSourceRefresh()
+            await restageOwedByConfigurationUpdate(profile, references: references, &cut)
+            if !(error is CancellationError) {
+                recordFailure(error, context: .subscription, operation: nil, preservesLastKnownGood: true)
+            }
             return .failed
         }
     }
@@ -8811,6 +9818,8 @@ final class ProfilesViewModel: ObservableObject {
                 let before = (try? self.configurationLibraryStore?.snapshot()) ?? nil
                 let versions = Dictionary(uniqueKeysWithValues: (before?.sources ?? []).map { ($0.id, $0.version) })
                 var failures: [String: ProviderDownloadFailure] = [:]
+                 
+                var putBack = Set<String>()
                 var cancelled = false
                 for source in plan.sources {
                     guard self.batchRunID == runID else { return }
@@ -8826,6 +9835,8 @@ final class ProfilesViewModel: ObservableObject {
                             defer { group.cancelAll() }
                             try await group.next()
                         }
+                         
+                        if self.wasPutBack(source.id) { putBack.insert(source.id) }
                     } catch is CancellationError {
                         guard self.batchRunID == runID else { return }
                         self.markBatchCancelled(); cancelled = true; break
@@ -8854,6 +9865,12 @@ final class ProfilesViewModel: ObservableObject {
                         let failed = entry.sources.compactMap { failures[$0] }
                         if !failed.isEmpty {
                             self.recordBatchFailure(ProviderDownloadFailuresError(failures: failed), profile: entry.profile)
+                        } else if entry.sources.contains(where: putBack.contains) {
+                             
+                             
+                             
+                            self.recordBatchItem(id: entry.profile.id, label: entry.profile.label,
+                                                 state: .failed, message: Self.putBackKey)
                         } else if entry.sources.contains(where: changed.contains) {
                             self.recordBatchItem(id: entry.profile.id, label: entry.profile.label,
                                                  state: .updated, message: "The validated source was saved.")
@@ -8949,7 +9966,10 @@ final class ProfilesViewModel: ObservableObject {
                     id: profile.id,
                     label: profile.label,
                     state: state,
-                    message: state == .unchanged
+                     
+                     
+                    message: state == .failed ? Self.putBackKey
+                        : state == .unchanged
                         ? "Already up to date."
                         : "The validated source was saved."
                 )
@@ -8993,15 +10013,26 @@ final class ProfilesViewModel: ObservableObject {
          
         if let references = configurationLibrarySources(for: profile) {
             guard !references.isEmpty else { return .unchanged }
-            let outcome = try await refreshConfigurationSources(references)
+            var outcome: ConfigurationSourceRefresh
+            do {
+                outcome = try await refreshConfigurationSources(references)
+            } catch {
+                 
+                var cut = ConfigurationSourceRefresh()
+                await restageOwedByConfigurationUpdate(profile, references: references, &cut)
+                throw error
+            }
+             
              
              
              
             load()
-            await restageAfterSourceRefresh(profile.id, changed: outcome.changed)
+            await restageOwedByConfigurationUpdate(profile, references: references, &outcome)
             guard outcome.failures.isEmpty else {
                 throw ProviderDownloadFailuresError(failures: outcome.failures)
             }
+             
+            if !outcome.putBack.isEmpty { return .failed }
             return outcome.changed.isEmpty ? .unchanged : .updated
         }
 
@@ -9676,6 +10707,23 @@ final class ProfilesViewModel: ObservableObject {
         }
     }
 
+     
+     
+     
+     
+     
+    static func copySuffix(locale: Locale) -> String {
+        ClashCopy.string(" Copy", locale: locale)
+    }
+
+     
+     
+     
+    var copyNameLocale: Locale?
+    private var copySuffix: String {
+        Self.copySuffix(locale: copyNameLocale ?? AppPreferences.language().locale)
+    }
+
     private func uniqueCopyLabel(base: String, suffix: String) -> String {
         let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
         let root = (trimmed.isEmpty ? "Profile" : trimmed) + suffix
@@ -9750,7 +10798,7 @@ final class ProfilesViewModel: ObservableObject {
         request.fetchesRuleSets = fetchesRuleSets || pendingActivation?.fetchesRuleSets == true
          
         request.fetchesFresh = fetchesFresh || pendingActivation?.fetchesFresh == true
-        clearFailure()
+        clearActivationFailure(of: profile.id)
         guard activationTask == nil else {
              
              
@@ -10005,21 +11053,21 @@ final class ProfilesViewModel: ObservableObject {
              
             statusMessage = Self.statusLine(label: profile.label, outcome: applied)
             lastTunnelApply = TunnelApplyRecord(sequence: lastTunnelApply.sequence &+ 1, profileID: profile.id, outcome: applied)
-            clearFailure()
+            clearActivationFailure(of: profile.id)
             pipelineSucceeded = true
         } catch is CancellationError {
             statusMessage = "Update cancelled"
-            clearFailure()
+            clearActivationFailure(of: profile.id)
         } catch where ProfileActivationCoordinator.superseded(error) {
              
              
             statusMessage = .copy("")
-            clearFailure()
+            clearActivationFailure(of: profile.id)
         } catch where onlyIfActive != nil && ProfileActivationCoordinator.lostToASwitch(error) {
              
              
             statusMessage = .copy("")
-            clearFailure()
+            clearActivationFailure(of: profile.id)
         } catch let PipelineError.planRejected(failures) {
             planErrors = failures.map { "\($0.field): \($0.reason)" }
             recordFailure(
@@ -10043,12 +11091,28 @@ final class ProfilesViewModel: ObservableObject {
          
          
          
-        if pipelineSucceeded, lastFailure == nil, activeProfileID != profile.id {
+         
+         
+        if pipelineSucceeded, lastFailure == nil || putBackScopes[profile.id] != nil,
+           activeProfileID != profile.id {
             recordFailure(
                 PipelineError.activationReadback,
                 context: .activation,
                 operation: .activation(profile.id)
             )
+        } else if pipelineSucceeded, activeProfileID == profile.id, putBackScopes[profile.id] != nil,
+                  lastTunnelApply.profileID == profile.id, Self.configurationTookIt(lastTunnelApply.outcome) {
+             
+            putBackScopes[profile.id]?.taken = true
+        }
+    }
+
+     
+     
+    nonisolated static func configurationTookIt(_ outcome: TunnelApplyOutcome?) -> Bool {
+        switch outcome {
+        case .keptRunning?, .failed?: return false
+        default: return true
         }
     }
 
@@ -10070,6 +11134,27 @@ final class ProfilesViewModel: ObservableObject {
         clearFailure()
     }
 
+     
+     
+     
+     
+     
+     
+    nonisolated static func anUpdateAnswers(_ failure: ConfigurationFailure) -> Bool {
+        switch failure.kind {
+        case .mihomoSchema, .yamlSyntax: return true
+        case .kernelRejected: return failure.providerFailures.isEmpty
+        default: return false
+        }
+    }
+
+     
+     
+    private func answerRefusal() {
+        clearFailure()
+        refusalsAnswered &+= 1
+    }
+
     private func recordFailure(
         _ error: Error,
         context: ConfigurationFailureContext,
@@ -10081,11 +11166,22 @@ final class ProfilesViewModel: ObservableObject {
             context: context,
             preservesLastKnownGood: preservesLastKnownGood
         ) else {
-            clearFailure()
+            if case .activation(let profileID)? = operation { clearActivationFailure(of: profileID) } else { clearFailure() }
+            return
+        }
+         
+         
+         
+        if case .activation(let profileID)? = operation, putBackScopes[profileID] != nil {
+            putBackScopes[profileID]?.pending = (failure, .activation(profileID))
+            putBackScopes[profileID]?.held &+= 1
+            putBackScopes[profileID]?.statusWhenHeld = statusMessage
+            putBackScopes[profileID]?.taken = false
             return
         }
         lastFailure = failure
         failedOperation = operation
+        failureSerial &+= 1
         statusMessage = .copy(failure.title)
     }
 

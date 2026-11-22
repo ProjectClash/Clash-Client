@@ -1,4 +1,5 @@
 import Foundation
+import ClashClientKit
 import ClashClientUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -569,63 +570,82 @@ enum ScriptLibrary {
     }
 }
 
+extension ScriptLibrary {
+     
+     
+     
+    static func usage(ofScript id: String, profiles: [Profile]) -> LibraryUsage {
+        LibraryUsage(names: profiles.filter { $0.selectedScriptID == id }.map(\.label))
+    }
+
+     
+     
+     
+    static func configurationsRunning(_ id: String, in profiles: [Profile]) -> [Profile] {
+        profiles.filter { ScriptSaveCheck.runs(id, in: $0) }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+enum ScriptLibraryCopy {
+    static func deletionNote(usedBy names: [String]) -> ClashDisplayText? {
+        switch names.count {
+        case 0: nil
+        case 1: .format("Once deleted, “%@” stops using it.", [names[0]])
+        default: .format("Once deleted, %@ configurations stop using it.", ["\(names.count)"])
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+#if os(iOS)
 struct ScriptLibraryView: View {
-    @State private var scripts = ScriptLibrary.load()
+     
+     
+    private let library: UserDefaults
+    private let profileStore: ProfileStore?
+     
+    private let model: ProfilesViewModel
+    @State private var scripts: [ConfigScript]
+     
+     
+     
+    @State private var configurations: [Profile] = []
     @State private var deletingScripts: [ConfigScript] = []
-    @State private var editing: ConfigScript?
-    @State private var adding: ConfigScript?
+     
+     
+    @State private var doorSelection: String?
+     
+     
+    @State private var addingManually = false
     @State private var updating = false
+    @StateObject private var quickAdd: ProfileQuickAddController
     @Environment(\.clashFeedback) private var feedback
      
     private var updatable: [ConfigScript] { scripts.filter { !($0.sourceURL ?? "").isEmpty } }
 
+    init(model: ProfilesViewModel, library: UserDefaults = ScriptLibrary.appGroupDefaults,
+         profiles: ProfileStore? = ScriptLibrary.defaultProfileStore) {
+        self.model = model
+        self.library = library
+        profileStore = profiles
+        _scripts = State(initialValue: ScriptLibrary.load(from: library))
+        _quickAdd = StateObject(wrappedValue: ProfileQuickAddController(model: model, target: .scripts))
+    }
+
     var body: some View {
         Group {
-#if os(macOS)
-         
-         
-         
-         
-         
-         
-        Form {
-            if scripts.isEmpty {
-                Section {
-                ClashEmptyState(
-                    title: "No Scripts",
-                    message: "",
-                    symbol: .curlybraces
-                )
-                .listRowSeparator(.hidden)
-                }
-            } else {
-                Section {
-            ForEach(scripts) { script in
-                Button { editing = script } label: {
-                    ClashDestinationRow(
-                         
-                        title: .verbatim(script.label),
-                        subtitle: "JavaScript main(config)",
-                        symbol: .curlybraces,
-                        tint: .purple
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("scripts.row.\(script.id)")
-            }
-            .onDelete { offsets in
-                removeWithUndo(offsets.compactMap { scripts.indices.contains($0) ? scripts[$0] : nil })
-            }
-                }
-            }
-            Section {
-                ClashAddRow(Text(ClashCopy.key("Add Script"))) {
-                    adding = ScriptLibrary.fresh()
-                }
-                .accessibilityIdentifier("scripts.row.add")
-            }
-        }
-#else
         List {
             if scripts.isEmpty {
                 ClashEmptyState(
@@ -634,81 +654,168 @@ struct ScriptLibraryView: View {
                     symbol: .curlybraces
                 )
                 .listRowSeparator(.hidden)
-            }
-            ForEach(scripts) { script in
-                Button { editing = script } label: {
-                    ClashDestinationRow(
-                         
-                        title: .verbatim(script.label),
-                        subtitle: "JavaScript main(config)",
-                        symbol: .curlybraces,
-                        tint: .purple
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("scripts.row.\(script.id)")
-                .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                    if !(script.sourceURL ?? "").isEmpty {
+            } else {
+                Section {
+                    ForEach(scripts) { script in
                          
                          
-                        Button { Task { await update([script]) } } label: {
-                            Label("Update", systemImage: ClashSymbol.arrowClockwise.name)
+                         
+                         
+                         
+                         
+                        ClashDoorLink(script.id, selection: $doorSelection) {
+                            ScriptLibraryDetailPage(script: script, library: library,
+                                usedBy: configurations.filter { $0.selectedScriptID == script.id }.map(\.label),
+                                update: (script.sourceURL ?? "").isEmpty ? nil : { Task { await update(saved(script)) } },
+                                delete: { removeWithUndo(saved(script)) },
+                                saveCheck: { saveCheck(for: $0) })
+                        } label: {
+                            scriptRow(script)
                         }
-                        .tint(.blue)
-                        .accessibilityIdentifier("scripts.row.update")
+                        .accessibilityIdentifier("scripts.row.\(script.id)")
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            if !(script.sourceURL ?? "").isEmpty {
+                                 
+                                 
+                                Button { Task { await update([script]) } } label: {
+                                    Label("Update", systemImage: ClashSymbol.arrowClockwise.name)
+                                }
+                                .tint(.blue)
+                                .accessibilityIdentifier("scripts.row.update")
+                            }
+                        }
                     }
+                    .onDelete { offsets in
+                        removeWithUndo(offsets.compactMap { scripts.indices.contains($0) ? scripts[$0] : nil })
+                    }
+                } header: {
+                    ClashConfigurationLibraryHeader(title: .copy("Override Scripts"), count: scripts.count)
+                }
+                 
+                 
+                 
+                 
+                Section {
+                    Button { Task { await update(updatable) } } label: {
+                        Text(ClashCopy.key("Update All"))
+                    }
+                    .disabled(updating)
+                    .accessibilityIdentifier("scripts.update.all")
                 }
             }
-            .onDelete { offsets in
-                removeWithUndo(offsets.compactMap { scripts.indices.contains($0) ? scripts[$0] : nil })
-            }
+             
+             
+             
+             
+            ProfileQuickAddCard(controller: quickAdd,
+                identifiers: .init(linkIdentifier: "scripts.library.quick-add.link",
+                                   scanIdentifier: "scripts.library.quick-add.scan",
+                                   fileIdentifier: "scripts.library.quick-add.file",
+                                   manualIdentifier: "scripts.library.quick-add.manual",
+                                   statusIdentifier: "scripts.library.quick-add.status"),
+                manual: { addingManually = true }, showsScan: false, header: "Add Override Script")
         }
         .clashInsetGroupedListStyle()
-#endif
+         
+        .profileQuickAddPresenters(quickAdd)
+        .onAppear { quickAdd.onScriptAdded = { _ in reload() } }
+        .clashProductModal(isPresented: $addingManually, role: .page) {
+            ScriptManualPage(library: library, close: { addingManually = false }) { _ in
+                addingManually = false
+                reload()
+            }
+            .clashModalPresentation(.page)
         }
-        .clashPageTitle("Scripts")
+        }
+        .clashPageTitle(pageTitle)
         .clashDetailPageInsets()
         .accessibilityIdentifier("scripts.screen")
+        .task { reload() }
+         
+         
+         
+        .onReceive(NotificationCenter.default.publisher(for: ScriptLibrary.didChange)) { _ in reload() }
         .clashToolbarUnlessInPanel {
             ToolbarItemGroup(placement: .clashNavigationTrailing) {
-                 
-                 
-                 
-                 
-                Button { Task { await update(updatable) } } label: {
-                    Label("Update All", systemImage: ClashSymbol.arrowClockwise.name)
-                }
-                .disabled(updating)
-                .accessibilityIdentifier("scripts.update.all")
                 ClashEditButton()
-                Button { adding = ScriptLibrary.fresh() } label: {
+                Button {
+                    addingManually = true
+                } label: {
                     Label("Add Script", systemImage: ClashSymbol.plus.name)
                 }
             }
         }
-         
-        .clashProductModal(item: $editing, role: .page, immersive: { _ in true }) { script in
-            ScriptEditorView(script: script, showsImportInMenu: true, rename: { name in
-                try ScriptLibrary.rename(id: script.id, to: name)
-                scripts = ScriptLibrary.load()
+    }
+
+     
+    private var pageTitle: ClashDisplayText { "Override Library" }
+
+     
+    private func scriptRow(_ script: ConfigScript) -> some View {
+        HStack(spacing: ClashTheme.Spacing.row) {
+            ClashSymbolImage(symbol: .curlybraces)
+                .foregroundStyle(.purple)
+                .frame(width: 24)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
                  
-                 
-                 
-                if let renamed = scripts.first(where: { $0.id == script.id }) { editing?.label = renamed.label }
-            }) { save($0) }
-                .clashModalPresentation(.page)
+                Text(verbatim: script.label)
+                    .font(.body).foregroundStyle(.primary)
+                    .lineLimit(1).truncationMode(.tail)
+                Text(clash: ClashLibraryUsageCopy.text(ScriptLibrary.usage(ofScript: script.id, profiles: configurations)))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
-        .clashProductModal(item: $adding, role: .page, immersive: { _ in true }) { script in
-            ScriptEditorView(script: script, showsImportInMenu: true) { save($0) }
-                .clashModalPresentation(.page)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func reload() {
+        scripts = ScriptLibrary.load(from: library)
+        configurations = profileStore?.load() ?? []
+    }
+
+     
+     
+     
+     
+    private func saveCheck(for script: ConfigScript) -> ((ConfigScript) async -> ScriptSaveCheck.Verdict)? {
+        Self.saveCheck(running: ScriptLibrary.configurationsRunning(script.id, in: configurations),
+                       library: library, model: model)
+    }
+
+     
+     
+     
+    static func saveCheck(running: [Profile], library: UserDefaults,
+                          model: ProfilesViewModel) -> ((ConfigScript) async -> ScriptSaveCheck.Verdict)? {
+        guard !running.isEmpty else { return nil }
+        return { edited in
+            var scripts = ScriptLibrary.load(from: library)
+            if let index = scripts.firstIndex(where: { $0.id == edited.id }) {
+                scripts[index] = edited
+            } else {
+                scripts.append(edited)
+            }
+            for profile in running {
+                guard let raw = await model.loadUIProjectedYAML(for: profile) else { continue }
+                let verdict = await Task.detached(priority: .userInitiated) { [scripts] in
+                    ScriptSaveCheck.verdict(raw: raw, profile: profile, scripts: scripts)
+                }.value
+                if verdict != .accepted { return verdict }
+            }
+            return .accepted
         }
     }
 
-    private func save(_ script: ConfigScript) {
-        ScriptLibrary.upsert(script)
-        scripts = ScriptLibrary.load()
-        editing = nil
-        adding = nil
+     
+     
+     
+     
+    private func saved(_ script: ConfigScript) -> [ConfigScript] {
+        ScriptLibrary.load(from: library).filter { $0.id == script.id }
     }
 
      
@@ -719,8 +826,9 @@ struct ScriptLibraryView: View {
      
     private func removeWithUndo(_ targets: [ConfigScript]) {
         guard !targets.isEmpty else { return }
-        let removals = targets.compactMap { ScriptLibrary.removeRestorably(id: $0.id) }
-        scripts = ScriptLibrary.load()
+        let library = library, profileStore = profileStore
+        let removals = targets.compactMap { ScriptLibrary.removeRestorably(id: $0.id, in: library, profiles: profileStore) }
+        reload()
         let name = targets.map(\.label).joined(separator: ", ")
         let feedback = feedback
         feedback?.show(.success(title: ClashFeedbackCopy.deleted(name), action: .undo, accessibilityIdentifier: "feedback.scripts.delete"),
@@ -730,10 +838,10 @@ struct ScriptLibraryView: View {
              
             var failed: [(String, String)] = []
             for removal in removals.reversed() {
-                do { try ScriptLibrary.restore(removal) }
+                do { try ScriptLibrary.restore(removal, in: library, profiles: profileStore) }
                 catch { failed.append((removal.script.label, error.localizedDescription)) }
             }
-            scripts = ScriptLibrary.load()
+            reload()
             if failed.isEmpty {
                 feedback?.show(.success(title: ClashFeedbackCopy.restored(name), accessibilityIdentifier: "feedback.scripts.delete"),
                                operation: "scripts.delete")
@@ -770,7 +878,7 @@ struct ScriptLibraryView: View {
             do {
                 let refreshed = try await ScriptImport.refreshed(script)
                 if refreshed.body != script.body {
-                    ScriptLibrary.upsert(refreshed)
+                    ScriptLibrary.upsert(refreshed, in: library)
                     outcome.changed.append(script.label)
                 } else {
                     outcome.unchanged.append(script.label)
@@ -780,12 +888,13 @@ struct ScriptLibraryView: View {
                 failedIDs.insert(script.id)
             }
         }
-        scripts = ScriptLibrary.load()
+        scripts = ScriptLibrary.load(from: library)
          
          
          
+        let library = library
         let retry: @MainActor () -> Void = {
-            Task { await update(ScriptLibrary.load().filter { failedIDs.contains($0.id) && !($0.sourceURL ?? "").isEmpty }) }
+            Task { await update(ScriptLibrary.load(from: library).filter { failedIDs.contains($0.id) && !($0.sourceURL ?? "").isEmpty }) }
         }
         feedback?.answer(running, with: outcome.presentation(), operation: operation, perform: retry)
     }
@@ -796,11 +905,328 @@ struct ScriptLibraryView: View {
  
  
  
+ 
+struct ScriptLibraryDetailPage: View {
+    let script: ConfigScript
+    let library: UserDefaults
+    let usedBy: [String]
+    let update: (() -> Void)?
+    let delete: () -> Void
+     
+    let saveCheck: (ConfigScript) -> ((ConfigScript) async -> ScriptSaveCheck.Verdict)?
+
+    @State private var current: ConfigScript
+     
+    @State private var reading: ConfigScript?
+    @State private var editing: ConfigScript?
+    @State private var renaming: ConfigScript?
+    @State private var renameText = ""
+    @State private var renameFailure: String?
+    @Environment(\.clashPopRoute) private var popRoute
+    @StateObject private var dismiss = ClashDismissHandle()
+
+    init(script: ConfigScript, library: UserDefaults, usedBy: [String], update: (() -> Void)?, delete: @escaping () -> Void,
+         saveCheck: @escaping (ConfigScript) -> ((ConfigScript) async -> ScriptSaveCheck.Verdict)?) {
+        self.script = script
+        self.library = library
+        self.usedBy = usedBy
+        self.update = update
+        self.delete = delete
+        self.saveCheck = saveCheck
+        _current = State(initialValue: script)
+    }
+
+    private var followsALink: Bool { !(current.sourceURL ?? "").isEmpty }
+
+    var body: some View {
+        List {
+            Section {
+                Button {
+                    renameText = current.label
+                    renaming = current
+                } label: {
+                    ScriptDetailValueRow(title: "Name", value: current.label)
+                }
+                .accessibilityIdentifier("scripts.detail.rename")
+                if let link = current.sourceURL, !link.isEmpty {
+                     
+                    ScriptDetailValueRow(title: "Link", value: link)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("scripts.detail.link")
+                }
+            }
+            Section {
+                 
+                 
+                 
+                Button {
+                    if followsALink { reading = current } else { editing = current }
+                } label: {
+                    Text(ClashCopy.key(followsALink ? "View Content" : "Edit"))
+                }
+                .accessibilityIdentifier("scripts.detail.content")
+                if let update {
+                    Button(action: update) { Text(ClashCopy.key("Update")) }
+                        .accessibilityIdentifier("scripts.detail.update")
+                }
+            }
+            Section {
+                if usedBy.isEmpty {
+                    Text(clash: ClashLibraryUsageCopy.text(.none)).foregroundStyle(.secondary)
+                } else {
+                    ForEach(usedBy, id: \.self) { name in
+                         
+                        Text(verbatim: name)
+                    }
+                }
+            } header: {
+                ClashConfigurationLibraryHeader(title: .copy("Configurations Using It"))
+            }
+            Section {
+                Button(role: .destructive) {
+                     
+                     
+                     
+                    ClashPushedPageExit.leave(popRoute: popRoute, dismiss: dismiss)
+                    delete()
+                } label: {
+                    Text(ClashCopy.key("Delete Override Script"))
+                }
+                .accessibilityIdentifier("scripts.detail.delete")
+            } footer: {
+                if let note = ScriptLibraryCopy.deletionNote(usedBy: usedBy) {
+                    Text(clash: note)
+                }
+            }
+        }
+        .clashInsetGroupedListStyle()
+        .clashPageTitle(.verbatim(current.label), watchAs: "Script")
+        .accessibilityIdentifier("scripts.detail.screen")
+        .onReceive(NotificationCenter.default.publisher(for: ScriptLibrary.didChange)) { _ in
+            if let saved = ScriptLibrary.load(from: library).first(where: { $0.id == script.id }) { current = saved }
+        }
+        .clashProductModal(item: $reading, role: .page) { opened in
+            ScriptLibraryContentPage(id: opened.id, library: library, close: { reading = nil })
+                .clashModalPresentation(.page)
+        }
+         
+         
+        .clashProductModal(item: $editing, role: .page, immersive: { _ in true }) { opened in
+            ScriptEditorView(script: opened, check: saveCheck(opened), rename: { name in
+                try ScriptLibrary.rename(id: opened.id, to: name, in: library)
+                if let renamed = ScriptLibrary.load(from: library).first(where: { $0.id == opened.id }) {
+                    editing?.label = renamed.label
+                }
+            }) { saved in
+                ScriptLibrary.upsert(saved, in: library)
+                editing = nil
+            }
+            .clashModalPresentation(.page)
+        }
+         
+         
+        .clashTextFieldAlert("Rename…", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }),
+                             presenting: renaming, text: $renameText,
+                             field: ClashTextFieldAlertField(placeholder: "Script name",
+                                                             identifier: "scripts.detail.rename.name"),
+                             isConfirmEnabled: { script, name in
+                                 ScriptLibrary.editedScript(id: script.id, label: name, body: script.body,
+                                                            existing: ScriptLibrary.load(from: library)) != nil
+                             }) { script, name in
+            do { try ScriptLibrary.rename(id: script.id, to: name, in: library) }
+            catch { renameFailure = error.localizedDescription }
+        }
+        .alert(Text(ClashCopy.key("Rename…")), isPresented: Binding(get: { renameFailure != nil }, set: { if !$0 { renameFailure = nil } })) {
+            Button("OK") {}
+        } message: {
+            Text(verbatim: renameFailure ?? "")
+        }
+        .clashCapturesDismiss(dismiss)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct ScriptLibraryContentPage: View {
+    let id: String
+    let library: UserDefaults
+    let close: () -> Void
+     
+    @State private var script: ConfigScript?
+     
+    @State private var text: ClashModuleScriptSourceView.ScriptText?
+    @Environment(\.clashFeedback) private var feedback
+
+    init(id: String, library: UserDefaults, close: @escaping () -> Void) {
+        self.id = id
+        self.library = library
+        self.close = close
+    }
+
+    var body: some View {
+        ClashFeatureNavigationContainer {
+            ScrollView {
+                Group {
+                    if let text {
+                        numbered(text)
+                    } else {
+                        ProgressView()
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .accessibilityIdentifier("scripts.content.screen")
+            .clashPageTitle(script.map { ClashDisplayText.verbatim($0.label) } ?? "Script", watchAs: "Script")
+            .clashToolbarUnlessInPanel {
+                ToolbarItem(placement: .cancellationAction) {
+                    ClashSheetCloseButton(dismiss: close)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if let text {
+                        Button {
+                            ClashClipboard.copy(text.original, feedback: feedback, operation: "scripts.content.copy")
+                        } label: {
+                            Text("Copy")
+                        }
+                        .accessibilityIdentifier("scripts.content.copy")
+                    }
+                }
+            }
+            .onAppear { reread() }
+            .onReceive(NotificationCenter.default.publisher(for: ScriptLibrary.didChange)) { _ in reread() }
+            .task(id: script?.body) {
+                guard let source = script?.body else { return }
+                 
+                if text?.original != source { text = nil }
+                let rows = await Self.rows(source)
+                if !Task.isCancelled { text = rows }
+            }
+        }
+    }
+
+     
+     
+    private func reread() {
+        if let saved = ScriptLibrary.load(from: library).first(where: { $0.id == id }) { script = saved }
+    }
+
+    private func numbered(_ text: ClashModuleScriptSourceView.ScriptText) -> some View {
+        let width = String(text.lineCount).count
+        return LazyVStack(alignment: .leading, spacing: 2) {
+            ForEach(text.rows.indices, id: \.self) { index in
+                let row = text.rows[index]
+                HStack(alignment: .firstTextBaseline, spacing: ClashTheme.Spacing.compact) {
+                    Text(verbatim: row.line.map { ClashModuleScriptSourceView.number($0, width: width) }
+                                 ?? String(repeating: "\u{2007}", count: width))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(verbatim: row.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .font(.system(.footnote, design: .monospaced))
+            }
+        }
+    }
+
+     
+     
+     
+    static func rows(_ source: String) async -> ClashModuleScriptSourceView.ScriptText {
+        await Task.detached(priority: .userInitiated) { ClashModuleScriptSourceView.text(source) }.value
+    }
+}
+
+ 
+ 
+private struct ScriptDetailValueRow: View {
+    let title: String
+     
+    let value: String
+
+    var body: some View {
+        if #available(iOS 16.0, *) {
+            LabeledContent {
+                Text(verbatim: value).foregroundStyle(.secondary).lineLimit(2)
+            } label: {
+                Text(ClashCopy.key(title)).foregroundStyle(.primary)
+            }
+        } else {
+            HStack {
+                Text(ClashCopy.key(title)).foregroundStyle(.primary)
+                Spacer()
+                Text(verbatim: value).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct ScriptDetailsFromAConfiguration: View {
+    let script: ConfigScript
+    let library: UserDefaults
+    let profiles: ProfileStore?
+    let model: ProfilesViewModel?
+    let update: (ConfigScript) -> Void
+    let delete: (ConfigScript) -> Void
+    let pageCheck: (ConfigScript) -> ((ConfigScript) async -> ScriptSaveCheck.Verdict)?
+    @State private var configurations: [Profile] = []
+
+    var body: some View {
+        ScriptLibraryDetailPage(
+            script: script, library: library,
+            usedBy: configurations.filter { $0.selectedScriptID == script.id }.map(\.label),
+            update: (script.sourceURL ?? "").isEmpty ? nil : { if let saved = saved { update(saved) } },
+            delete: { if let saved = saved { delete(saved) } },
+            saveCheck: { edited in
+                guard let model else { return pageCheck(edited) }
+                return ScriptLibraryView.saveCheck(
+                    running: ScriptLibrary.configurationsRunning(edited.id, in: configurations), library: library, model: model)
+            })
+            .onAppear { reload() }
+            .onReceive(NotificationCenter.default.publisher(for: ScriptLibrary.didChange)) { _ in reload() }
+    }
+
+     
+    private var saved: ConfigScript? { ScriptLibrary.load(from: library).first { $0.id == script.id } }
+
+    private func reload() { configurations = profiles?.load() ?? [] }
+}
+#endif
+
+ 
+ 
+ 
+ 
+ 
 struct ScriptUpdateSummary {
+     
+     
+     
+     
+     
      
     static let nothingToFetch = ClashFeedbackPresentation.information(
         title: ClashFeedbackCopy.nothingToUpdate,
-        message: .copy("These scripts were imported before the app kept their link, so there is nothing to fetch yet. Import each from its link once more; Update works from then on."),
+        message: .copy("None of these scripts has a link to update from. For one that came from a link, add it again from the link."),
         isBatchSummary: true,
         accessibilityIdentifier: "feedback.scripts.update"
     )
@@ -1579,6 +2005,15 @@ enum ScriptAddOutcome {
     @discardableResult
     static func save(label: String, body: String, sourceURL: String? = nil,
                      in library: UserDefaults) throws -> ConfigScript {
+        let script = try candidate(label: label, body: body, sourceURL: sourceURL, in: library)
+        ScriptLibrary.upsert(script, in: library)
+        return script
+    }
+
+     
+     
+    static func candidate(label: String, body: String, sourceURL: String? = nil,
+                          in library: UserDefaults) throws -> ConfigScript {
         let existing = ScriptLibrary.load(from: library)
         let id = UUID().uuidString
         var candidate = label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1590,11 +2025,14 @@ enum ScriptAddOutcome {
             attempt += 1
         }
         guard let script else { throw ScriptImportError.empty }
-        ScriptLibrary.upsert(script, in: library)
         return script
     }
 
-    static func fromFile(_ outcome: Result<[URL], Error>, in library: UserDefaults) throws -> ConfigScript {
+     
+     
+     
+     
+    static func fromFile(_ outcome: Result<[URL], Error>, in library: UserDefaults) throws -> ScriptManualDraft {
         switch outcome {
         case let .success(urls):
             guard let url = urls.first else { throw ScriptImportError.empty }
@@ -1604,7 +2042,8 @@ enum ScriptAddOutcome {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             guard let text = try? String(contentsOf: url, encoding: .utf8) else { throw ScriptImportError.notText }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ScriptImportError.empty }
-            return try save(label: url.deletingPathExtension().lastPathComponent, body: text, in: library)
+            let named = try candidate(label: url.deletingPathExtension().lastPathComponent, body: text, in: library)
+            return ScriptManualDraft(name: named.label, body: text)
         case let .failure(error):
             throw error
         }
@@ -1631,6 +2070,12 @@ struct ScriptManualDraft: Codable, Equatable {
 
 struct ScriptManualPage: View {
     let library: UserDefaults
+     
+     
+     
+     
+     
+    let check: ((ConfigScript) async -> ScriptSaveCheck.Verdict?)?
     let close: () -> Void
     let added: (ConfigScript) -> Void
 
@@ -1642,17 +2087,44 @@ struct ScriptManualPage: View {
      
     @State private var draftSlot: ClashDraftSlot<ScriptManualDraft>
     @State private var showsRestoredDraft: Bool
+     
+    @State private var refusal: ScriptSaveRefusal?
+    @State private var checking = false
+     
+     
+    @State private var presence = ScriptEditorPresence()
+     
+     
+    private let usesDraftSlot: Bool
+#if os(iOS)
+     
+    @State private var asksBeforeLeaving = false
+#endif
 
-    init(library: UserDefaults, close: @escaping () -> Void, added: @escaping (ConfigScript) -> Void) {
+     
+     
+    init(library: UserDefaults, opening: ScriptManualDraft? = nil,
+         check: ((ConfigScript) async -> ScriptSaveCheck.Verdict?)? = nil,
+         close: @escaping () -> Void, added: @escaping (ConfigScript) -> Void) {
         self.library = library
+        self.check = check
         self.close = close
         self.added = added
+        self.usesDraftSlot = opening == nil
         let slot = Self.draftSlot(template: ScriptLibrary.fresh().body, store: SourceEditDrafts.shared)
         _draftSlot = State(initialValue: slot)
-        let opening = slot.opening()
-        _name = State(initialValue: opening.value.name)
-        _bodyText = State(initialValue: opening.value.body)
-        _showsRestoredDraft = State(initialValue: opening.needsNotice)
+        if let opening {
+             
+             
+            _name = State(initialValue: opening.name)
+            _bodyText = State(initialValue: opening.body)
+            _showsRestoredDraft = State(initialValue: false)
+        } else {
+            let restored = slot.opening()
+            _name = State(initialValue: restored.value.name)
+            _bodyText = State(initialValue: restored.value.body)
+            _showsRestoredDraft = State(initialValue: restored.needsNotice)
+        }
     }
 
     private var currentDraft: ScriptManualDraft { ScriptManualDraft(name: name, body: bodyText) }
@@ -1669,9 +2141,36 @@ struct ScriptManualPage: View {
     private func discardDraft() {
         name = draftSlot.original.name
         bodyText = draftSlot.original.body
-        draftSlot.clear()
+        if usesDraftSlot { draftSlot.clear() }
         showsRestoredDraft = false
     }
+
+     
+    private func leave() {
+        presence.isOpen = false
+        if usesDraftSlot { draftSlot.clear() }
+        close()
+    }
+#if os(iOS)
+
+     
+     
+     
+    private var holdsAnEntry: Bool {
+        UnsavedEditPolicy.decision(original: draftSlot.original.name, current: name) == .offerToSave
+            || UnsavedEditPolicy.decision(original: draftSlot.original.body, current: bodyText) == .offerToSave
+    }
+
+     
+     
+    private func leaveOrAsk() {
+        if holdsAnEntry {
+            asksBeforeLeaving = true
+        } else {
+            leave()
+        }
+    }
+#endif
 
     var body: some View {
         ClashFeatureNavigationContainer {
@@ -1700,12 +2199,17 @@ struct ScriptManualPage: View {
             .clashPageTitle("Add Script")
             .clashToolbarUnlessInPanel {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { draftSlot.clear(); close() }
+#if os(iOS)
+                    Button("Cancel") { leaveOrAsk() }
                         .accessibilityIdentifier("scripts.add.cancel")
+#else
+                    Button("Cancel") { leave() }
+                        .accessibilityIdentifier("scripts.add.cancel")
+#endif
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || checking)
                     .accessibilityIdentifier("scripts.add.save")
                 }
             }
@@ -1716,7 +2220,7 @@ struct ScriptManualPage: View {
             if insideProductModal {
                 ClashModalActionBar(
                     primaryTitle: "Save",
-                    primaryDisabled: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    primaryDisabled: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || checking,
                     onPrimary: { save() }
                 )
             }
@@ -1726,15 +2230,55 @@ struct ScriptManualPage: View {
         } message: {
             Text(verbatim: failure)
         }
-        .onChange(of: currentDraft) { draftSlot.record($0) }
+         
+        .scriptSaveRefusalAlert($refusal)
+        .onChange(of: currentDraft) { if usesDraftSlot { draftSlot.record($0) } }
+        .onAppear { presence.isOpen = true }
+        .onDisappear { presence.isOpen = false }
+#if os(iOS)
+         
+         
+         
+         
+        .clashUnsavedChangesAlert(isPresented: $asksBeforeLeaving,
+                                  message: .copy("This script has changes that have not been saved."),
+                                  isBusy: false, saveDisabled: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                                  save: { save() }, discard: { leave() })
+        .interactiveDismissDisabled(holdsAnEntry)
+         
+         
+        .background(ProxyNodeEditorPullDownAttempts { if holdsAnEntry { asksBeforeLeaving = true } })
+#endif
     }
 
+     
+     
     private func save() {
-        do {
-            let script = try ScriptAddOutcome.save(label: name, body: bodyText, in: library)
-            draftSlot.commit()
-            added(script)
-        } catch { failure = (error as NSError).localizedDescription; showsFailure = true }
+        guard !checking else { return }
+        let script: ConfigScript
+        do { script = try ScriptAddOutcome.candidate(label: name, body: bodyText, in: library) }
+        catch { failure = (error as NSError).localizedDescription; showsFailure = true; return }
+        guard let check else { return keep(script) }
+        checking = true
+        Task { @MainActor in
+            let verdict = await check(script)
+            checking = false
+            guard presence.isOpen else { return }
+            switch verdict {
+            case nil, .accepted?:
+                keep(script)
+            case .refused(let reason)?:
+                refusal = ScriptSaveRefusal(reason: reason, saveAnyway: { keep(script) }, keepEditing: {})
+            case .scriptFailed(let reason)?:
+                refusal = ScriptSaveRefusal(reason: reason, saveAnyway: nil, keepEditing: {})
+            }
+        }
+    }
+
+    private func keep(_ script: ConfigScript) {
+        ScriptLibrary.upsert(script, in: library)
+        if usesDraftSlot { draftSlot.commit() }
+        added(script)
     }
 }
 

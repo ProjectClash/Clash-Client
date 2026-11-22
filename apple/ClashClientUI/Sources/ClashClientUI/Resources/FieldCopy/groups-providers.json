@@ -7,8 +7,8 @@
     },
     "title": {
       "en": "Proxy Groups",
-      "zh-Hans": "代理分组",
-      "zh-Hant": "代理群組"
+      "zh-Hans": "策略组",
+      "zh-Hant": "策略群組"
     },
     "unset": {
       "en": "None",
@@ -1853,8 +1853,8 @@
     },
     "title": {
       "en": "Rule Sets",
-      "zh-Hans": "规则集合",
-      "zh-Hant": "規則集合"
+      "zh-Hans": "规则集",
+      "zh-Hant": "規則集"
     },
     "unset": {
       "en": "None",

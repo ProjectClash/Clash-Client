@@ -407,6 +407,10 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
              
              
              
+            && p.configurationPage == q.configurationPage
+             
+             
+             
              
              
             && p.browsingSuppressedByDirectMode == q.browsingSuppressedByDirectMode
@@ -504,9 +508,26 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
      
      
     private let latencyPulseSnapshot: (() -> ClashLatencyPulse)?
+     
+     
+     
+    private let nodeSourcesPage: (() -> AnyView)?
     private let icon: (ClashSymbol) -> Icon
 
-    @Environment(\.dismiss) private var dismiss
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @StateObject private var dismiss = ClashDismissHandle()
     @Environment(\.clashScrollToID) private var scrollToID
      
      
@@ -598,8 +619,10 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
         showsDismissControl: Bool = true,
         latencyPulse: AnyPublisher<ClashLatencyPulse, Never>? = nil,
         latencyPulseSnapshot: (() -> ClashLatencyPulse)? = nil,
+        nodeSourcesPage: (() -> AnyView)? = nil,
         @ViewBuilder icon: @escaping (ClashSymbol) -> Icon
     ) {
+        self.nodeSourcesPage = nodeSourcesPage
         self.snapshot = snapshot
         self.actions = actions
         self.presentationClass = presentationClass
@@ -691,24 +714,35 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                 placement: searchPlacement,
                 prompt: Text("Search proxies")
             )
+            .clashBottomSearchClearance()
             .clashToolbarUnlessInPanel { toolbarContent }
+    }
+
+     
+    private var heading: ClashDisplayText {
+        ClashProxiesConfigurationPage.heading(for: snapshot.proxies.configurationPage)
     }
 
     private var undecorated: some View {
         root
-            .clashContentHeading("Proxies")
+             
+            .clashContentHeading(heading, watchAs: snapshot.proxies.configurationPage == nil ? nil : "Proxies")
             .background(partialGroupSearch)
             .clashSheet(
                 isPresented: $showsDisplayOptions,
                 onDismiss: commitDisplayOptions
             ) {
+                 
+                 
+                 
+                 
+                 
                 ClashProxiesDisplayOptionsView(
                     preferences: displayOptionsDraft.value,
                     palette: palette,
-                    onDraftChange: { value in
-                        displayOptionsDraft.value = value
-                    }
+                    draft: displayOptionsDraft
                 )
+                .equatable()
                 .clashModalPresentation(.form)
             }
             .onAppear {
@@ -813,6 +847,11 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
              
             .clashFrameWatch("proxies-page")
             .environment(\.clashDetailCanvas, palette.canvas)
+             
+             
+             
+             
+            .clashCapturesDismiss(dismiss)
     }
 
      
@@ -913,18 +952,21 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
     private func applyDisplayPreferences(
         _ value: ClashProxiesDisplayPreferences
     ) {
-        guard preferences != value else { return }
          
          
          
          
          
          
-        pendingDisplayPreferences = value
+         
+         
+         
+        let pending = ClashProxiesDisplayCommit.pending(afterChoosing: value, shown: preferences)
+        if pendingDisplayPreferences != pending { pendingDisplayPreferences = pending }
     }
 
     private func beginDisplayOptions() {
-        displayOptionsDraft.value = preferences
+        displayOptionsDraft.value = ClashProxiesDisplayCommit.opening(shown: preferences, pending: pendingDisplayPreferences)
         showsDisplayOptions = true
     }
 
@@ -1042,6 +1084,7 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                 },
                 latencyPulse: latencyPulseSource,
                 latencyPulseSnapshot: latencyPulseSnapshot,
+                nodeSourcesPage: nodeSourcesPage,
                 density: ClashProxiesRowDensity.from(preferences),
                 showsIconImages: preferences.groupIconImages,
                 icon: icon,
@@ -1156,29 +1199,67 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             sweepCompleted: snapshot.proxies.latencyCompletedCount,
             sweepTotal: snapshot.proxies.latencyTotalCount,
             sweepPulse: latencyPulseSource,
-            onSweepStart: {
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                 
-                if isSearching {
-                    send(.testShown(snapshot.proxies.shownMembers(matching: effectiveQuery)))
-                } else {
-                    send(.testAll(
-                        visibleGroupNames: browsedGroups.map(\.name)
-                    ))
-                }
-            },
-            onSweepCancel: { send(.cancelLatency) },
+             
+            onSweepStart: sweepStart,
+            onSweepCancel: sweepCancel,
+             
+             
+            collectsIntoMore: snapshot.proxies.configurationPage != nil,
+            onAddNodes: addNodes,
+            onUpdateNodeSources: updateNodeSources,
+            onReorderGroups: reorderGroups,
             icon: icon
         )
+    }
+
+     
+    private var sweepStart: (() -> Void)? {
+        guard snapshot.proxies.offersLatencyTests else { return nil }
+        return { startSweep() }
+    }
+
+    private var sweepCancel: (() -> Void)? {
+        guard snapshot.proxies.offersLatencyTests else { return nil }
+        return { send(.cancelLatency) }
+    }
+
+     
+    private var addNodes: (() -> Void)? {
+        guard snapshot.proxies.configurationPage?.offersAddNodes == true else { return nil }
+        return { send(.addNodes) }
+    }
+
+    private var updateNodeSources: (() -> Void)? {
+        guard snapshot.proxies.configurationPage?.offersNodeSourcesUpdate == true else { return nil }
+        return { send(.updateNodeSources) }
+    }
+
+     
+    private var reorderGroups: (() -> Void)? {
+        guard snapshot.proxies.configurationPage?.offersGroupReorder == true else { return nil }
+        return { send(.reorderGroups) }
+    }
+
+     
+    private func startSweep() {
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        if isSearching {
+            send(.testShown(snapshot.proxies.shownMembers(matching: effectiveQuery)))
+        } else {
+            send(.testAll(
+                visibleGroupNames: browsedGroups.map(\.name)
+            ))
+        }
     }
 
      
@@ -1219,11 +1300,13 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
 
     @ViewBuilder
     private var browserSections: some View {
+        nodeSourcesCard
         if !failedProviders.isEmpty {
             failedProvidersCard
         }
         if !browsedGroups.isEmpty {
             groupsCard
+            newGroupCard
         } else if snapshot.proxies.browsingSuppressedByDirectMode {
              
              
@@ -1244,6 +1327,59 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
 
         if !snapshot.proxies.providers.isEmpty {
             providersCard
+        }
+    }
+
+     
+     
+     
+     
+     
+    @ViewBuilder
+    private var nodeSourcesCard: some View {
+        if !isSearching, let names = snapshot.proxies.configurationPage?.nodeSourceNames, let nodeSourcesPage {
+            ClashProxiesRowCard(fill: palette.card, separator: palette.separator) {
+                ClashRoutedViewLink {
+                    nodeSourcesPage()
+                } label: {
+                    HStack(spacing: ClashTheme.Spacing.row) {
+                        Text(ClashCopy.key("Node Sources"))
+                        Spacer(minLength: 8)
+                         
+                         
+                        Text(clash: ClashProfileSourcesSummary.value(names))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier("proxies.nodeSources")
+            }
+        }
+    }
+
+     
+     
+    @ViewBuilder
+    private var newGroupCard: some View {
+        if !isSearching, snapshot.proxies.configurationPage?.offersNewGroup == true {
+            ClashProxiesRowCard(fill: palette.card, separator: palette.separator) {
+                Button {
+                    send(.newGroup)
+                } label: {
+                    Label {
+                        Text(clash: .copy("New Policy Group…"))
+                    } icon: {
+                        icon(.plus)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
+                .accessibilityIdentifier("proxies.newGroup")
+            }
         }
     }
 
@@ -1488,7 +1624,14 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
         isTesting: Bool,
         selection: String?
     ) -> some View {
-        ClashProxyGroupHeader(
+         
+         
+        let shows = (
+             
+            showsLocate: selection.map { chosen in group.members.contains { $0.name == chosen } } ?? false,
+            showsUnpin: snapshot.proxies.offersUnpin(for: group) && selection != nil
+        )
+        return ClashProxyGroupHeader(
             group: group,
             isOpen: isOpen,
             isTesting: isTesting,
@@ -1501,10 +1644,8 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                 ClashLatencyGroupFace.reading(
                     $0, group: group, memberKeys: { ClashLatencyGroupFace.memberKeys(of: group) }, kept: .init())
             } ?? .init(),
-            showsUnpin: snapshot.proxies.offersUnpin(for: group)
-                && selection != nil,
-             
-            showsLocate: selection.map { chosen in group.members.contains { $0.name == chosen } } ?? false,
+            showsUnpin: shows.showsUnpin,
+            showsLocate: shows.showsLocate,
             showsIconImages: preferences.groupIconImages,
             icon: icon,
             onToggle: { toggle(group) },
@@ -1517,9 +1658,34 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                 }
             },
             onUnpin: { unpin(group) },
+            onInfo: snapshot.proxies.configurationPage?.offersGroupDetails == true
+                ? { send(.inspectGroup(name: group.name)) } : nil,
+            menu: ClashProxiesGroupMenu.items(isConnected: snapshot.proxies.isConnected,
+                                              showsLocate: shows.showsLocate,
+                                              showsUnpin: shows.showsUnpin,
+                                              page: snapshot.proxies.configurationPage),
+            onMenu: { item in groupMenu(item, group: group) },
             onLocate: { locate(group) }
         )
         .equatable()
+    }
+
+     
+    private func groupMenu(_ item: ClashProxiesGroupMenuItem, group: ClashProxyGroupSnapshot) {
+        switch item {
+        case .testLatency:
+            if isSearching {
+                send(.testShown([ClashProxiesShownMembers(group: group.name, members: group.members.map(\.name))]))
+            } else {
+                send(.testGroup(name: group.name))
+            }
+        case .jumpToCurrentNode: break  
+        case .unfix: unpin(group)
+        case .viewDetails: send(.inspectGroup(name: group.name))
+        case .collapseAllGroups: if hasExpandedGroups { toggleAllGroups() }
+        case .reorderGroups: send(.reorderGroups)
+        case .deleteGroup: send(.deleteGroup(name: group.name))
+        }
     }
 
     @ViewBuilder
@@ -1678,7 +1844,7 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
             }) {
                 let selection = visibleSelection(in: group)
                 HStack(spacing: 6) {
-                    Text(group.type)
+                    Text(clash: ClashProxyGroupKindName.text(for: group.type, locale: locale, otherwise: group.type))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                      
@@ -1899,7 +2065,21 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
          
          
          
-        if snapshot.proxies.canEdit(member) {
+        if snapshot.proxies.configurationPage?.offersNodeRemoval == true {
+             
+             
+            plainMemberCard(member, in: group)
+                .contextMenu {
+                    ForEach(nodeMenu(member, in: group), id: \.self) { item in
+                        if item == .deleteNode { Divider() }
+                        Button(role: item == .deleteNode ? .destructive : nil) {
+                            nodeMenuItem(item, member: member, in: group)
+                        } label: {
+                            Text(clash: ClashProxiesNodeMenu.title(item, configurationName: snapshot.proxies.configurationPage?.configurationName ?? ""))
+                        }
+                    }
+                }
+        } else if snapshot.proxies.canEdit(member) {
             plainMemberCard(member, in: group)
                 .contextMenu {
                     Button {
@@ -1914,6 +2094,32 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
                 }
         } else {
             plainMemberCard(member, in: group)
+        }
+    }
+
+     
+    private func nodeMenu(_ member: ClashProxyMemberSnapshot, in group: ClashProxyGroupSnapshot?) -> [ClashProxiesNodeMenuItem] {
+        ClashProxiesNodeMenu.items(
+            choosable: group?.allowsMemberChoice == true,
+            measures: snapshot.proxies.offersLatencyTests && !snapshot.proxies.isEmptyGroup(member),
+            isNode: ClashProxyBrowsing.inspects(member),
+            isEditable: snapshot.proxies.canEdit(member),
+            isSelfBuilt: snapshot.proxies.configurationPage?.selfBuiltNodes.contains(member.name) == true,
+            isRemovable: snapshot.proxies.configurationPage?.removableNodes.contains(member.name) == true,
+            page: snapshot.proxies.configurationPage
+        )
+    }
+
+     
+    private func nodeMenuItem(_ item: ClashProxiesNodeMenuItem, member: ClashProxyMemberSnapshot, in group: ClashProxyGroupSnapshot?) {
+        switch item {
+        case .use: choose(member, in: group)
+        case .testLatency: send(.testMember(name: member.name, group: group?.name))
+        case .viewDetails: send(.inspectMember(name: member.name))
+        case .editNode: send(.editMember(name: member.name))
+        case .copyYAML: send(.copyNodeYAML(name: member.name))
+        case .remove: send(.removeNode(name: member.name))
+        case .deleteNode: send(.deleteNode(name: member.name))
         }
     }
 
@@ -2597,13 +2803,15 @@ public struct ClashProxiesView<Icon: View>: View, Equatable {
         {
             return detail
         }
+         
+        let kind = ClashProxyGroupKindName.name(for: member.type, locale: locale) ?? member.type
         if snapshot.proxies.isEmptyGroup(member) {
-            return "\(member.type) " + ClashCopy.string("· No nodes", locale: locale)
+            return "\(kind) " + ClashCopy.string("· No nodes", locale: locale)
         }
         guard member.isGroup, let route = memberRouteForDisplay(member) else {
-            return member.type
+            return kind
         }
-        return "\(member.type) → \(route)"
+        return "\(kind) → \(route)"
     }
 
      
@@ -3316,11 +3524,41 @@ private final class ClashEntryRoutineBox {
  
  
  
-private final class ClashProxiesDisplayDraftBox {
+enum ClashProxiesDisplayCommit {
+     
+    static func opening(
+        shown: ClashProxiesDisplayPreferences, pending: ClashProxiesDisplayPreferences?
+    ) -> ClashProxiesDisplayPreferences {
+        pending ?? shown
+    }
+
+     
+     
+     
+    static func pending(
+        afterChoosing value: ClashProxiesDisplayPreferences, shown: ClashProxiesDisplayPreferences
+    ) -> ClashProxiesDisplayPreferences? {
+        value == shown ? nil : value
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+final class ClashProxiesDisplayDraftBox {
     var value = ClashProxiesDisplayPreferences()
 }
 
 private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
+    @Environment(\.locale) private var locale
     let group: ClashProxyGroupSnapshot
     let isOpen: Bool
     let isTesting: Bool
@@ -3351,6 +3589,12 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
     let onToggle: () -> Void
     let onTestGroup: () -> Void
     let onUnpin: () -> Void
+     
+     
+    var onInfo: (() -> Void)? = nil
+     
+    var menu: [ClashProxiesGroupMenuItem] = []
+    var onMenu: (ClashProxiesGroupMenuItem) -> Void = { _ in }
      
     let onLocate: () -> String?
      
@@ -3386,6 +3630,8 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
              
              
             && a.showsIconImages == b.showsIconImages
+            && (a.onInfo == nil) == (b.onInfo == nil)
+            && a.menu == b.menu
     }
 
      
@@ -3570,10 +3816,27 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
                     .accessibilityIdentifier(
                         "proxies.testGroup.\(group.name)"
                     )
+
+                     
+                     
+                    if let onInfo {
+                        Button(action: onInfo) {
+                            icon(.infoCircle)
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: ClashTheme.Control.pointerRowTarget,
+                                       height: ClashTheme.Control.pointerRowTarget)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(Text(clash: .copy("Policy Group Details")))
+                        .accessibilityLabel(Text(clash: .copy("Policy Group Details")))
+                        .accessibilityIdentifier("proxies.group.info.\(group.name)")
+                    }
                 }
 
                 HStack(spacing: 6) {
-                    Text(group.type)
+                    Text(clash: ClashProxyGroupKindName.text(for: group.type, locale: locale, otherwise: group.type))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                      
@@ -3629,6 +3892,23 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
             }
             .padding(.vertical, ClashTheme.Spacing.compact)
         }
+         
+         
+         
+        .contextMenu {
+            ForEach(menu, id: \.self) { item in
+                if item == .deleteGroup { Divider() }
+                Button(role: item == .deleteGroup ? .destructive : nil) {
+                    if item == .jumpToCurrentNode, let scrollToID, let anchor = onLocate() {
+                        DispatchQueue.main.async { scrollToID(AnyHashable(anchor), anchor: .center) }
+                    } else {
+                        onMenu(item)
+                    }
+                } label: {
+                    Text(clash: ClashProxiesGroupMenu.title(item))
+                }
+            }
+        }
         .onReceive(latencyPulse ?? Empty<ClashLatencyPulse, Never>().eraseToAnyPublisher()) { batch in
             guard gate?.isOpen ?? true else { return }
             let next = ClashLatencyGroupFace.reading(
@@ -3640,35 +3920,49 @@ private struct ClashProxyGroupHeader<Icon: View>: View, Equatable {
     }
 }
 
-private struct ClashProxiesDisplayOptionsView: View {
+struct ClashProxiesDisplayOptionsView: View {
      
      
      
      
     @State private var preferences: ClashProxiesDisplayPreferences
     let palette: ClashProductPalette
-    let onDraftChange: (ClashProxiesDisplayPreferences) -> Void
+     
+     
+     
+    let draft: ClashProxiesDisplayDraftBox
 
-    @Environment(\.dismiss) private var dismiss
+     
+     
+     
+     
+    @StateObject private var dismiss = ClashDismissHandle()
 
     init(
         preferences: ClashProxiesDisplayPreferences,
         palette: ClashProductPalette,
-        onDraftChange: @escaping (ClashProxiesDisplayPreferences) -> Void
+        draft: ClashProxiesDisplayDraftBox
     ) {
         _preferences = State(initialValue: preferences)
         self.palette = palette
-        self.onDraftChange = onDraftChange
+        self.draft = draft
     }
 
     var body: some View {
+         
+         
+         
+        let _ = ClashPerf.count("proxies.display.body")
         ClashSingleColumnNavigationContainer {
             content
         }
         .accessibilityIdentifier("proxies.display.sheet")
         .onChange(of: preferences) { _ in
-            onDraftChange(preferences)
+            draft.value = preferences
         }
+         
+         
+        .clashCapturesDismiss(dismiss)
     }
 
     private var content: some View {
@@ -3835,6 +4129,22 @@ private struct ClashProxiesDisplayOptionsView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
         }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+extension ClashProxiesDisplayOptionsView: @MainActor Equatable {
+    static func == (a: Self, b: Self) -> Bool {
+        a.draft === b.draft && a.palette == b.palette
     }
 }
 
@@ -4366,5 +4676,22 @@ private struct ClashProxiesPageScrollReader: View {
         Color.clear
             .onAppear { scroll.request = request }
             .onChange(of: request) { scroll.request = $0 }
+    }
+}
+
+ 
+ 
+ 
+ 
+struct ClashProxiesRowCard<Content: View>: View {
+    let fill: Color
+    let separator: Color
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ClashCardSurface(fill: fill, separator: separator) {
+            content()
+                .padding(ClashTheme.Spacing.standard)
+        }
     }
 }

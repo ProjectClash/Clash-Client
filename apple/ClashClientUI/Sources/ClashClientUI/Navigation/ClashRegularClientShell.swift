@@ -1404,7 +1404,7 @@ public struct ClashRegularClientShell<
             \.clashRegularRootLargeTitle,
             shellDrawsHeading
                 ? nil
-                : (usesInContentRegularRootTitle ? regularRootTitle : nil)
+                : (usesInContentRegularRootTitle ? ClashRootLargeTitle.published(.copy(regularRootTitle)) : nil)
         )
         .environment(\.clashRegularShellOwnsCanvas, true)
         .environment(\.clashShellDrawsRootHeading, shellDrawsHeading)

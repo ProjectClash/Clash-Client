@@ -31,6 +31,10 @@ public struct ClashMacOriginalProvidersActions {
      
      
     public var updateNote: ClashDisplayText?
+     
+     
+     
+    public var proxiesPage: ClashMacRelatedPage?
 
     public init(
         load: @escaping @MainActor () async throws -> [ClashMacOriginalNode]?,
@@ -142,6 +146,17 @@ public struct ClashMacOriginalProvidersPage: View {
                         .accessibilityIdentifier("configuration-center.original-providers.add")
                 } else if failure == nil {
                     ProgressView().controlSize(.small)
+                }
+            }
+             
+            if let proxiesPage = actions.proxiesPage {
+                Section {
+                    ClashRoutedViewLink { proxiesPage.open() } label: {
+                        Text(clash: proxiesPage.title)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("configuration-center.original-providers.proxies-page")
                 }
             }
         }
@@ -304,10 +319,18 @@ public struct ClashMacOriginalProvidersPage: View {
         let written: Bool
         switch Self.libraryWrite(on, source: library?.first { $0.id == id }) {
         case .add(let source): written = await apply { say(try await actions.addFromLibrary(source)) }
-        case .delete(let name): written = await apply { try await actions.delete(name) }
+        case .delete(let name): written = await apply(refusal: Self.turningOff) { try await actions.delete(name) }
         case .nothing: return
         }
         if !written { throw ClashStoredWriteSaidElsewhere() }
+    }
+
+     
+     
+     
+     
+    nonisolated static func turningOff(_ error: Error, locale: Locale) -> String {
+        (error as? ClashMacStillUsedRefusal)?.turningOff(locale: locale) ?? ClashErrorCopy.message(error, locale: locale)
     }
 
      
@@ -324,13 +347,14 @@ public struct ClashMacOriginalProvidersPage: View {
      
      
      
-    private func apply(_ work: @escaping @MainActor () async throws -> Void) async -> Bool {
+    private func apply(refusal says: (Error, Locale) -> String = ClashErrorCopy.message,
+                       _ work: @escaping @MainActor () async throws -> Void) async -> Bool {
         var refusal: String?
         do {
             try await work()
         } catch is CancellationError {
         } catch {
-            refusal = ClashErrorCopy.message(error, locale: locale)
+            refusal = says(error, locale)
         }
         await load()
         if let refusal { failure = refusal }
@@ -349,7 +373,7 @@ public struct ClashMacOriginalProvidersPage: View {
                               operation: Self.deleteOperation)
             } catch is CancellationError {
             } catch {
-                feedback?.say(ClashMacFeedbackSentences.couldNotDelete(provider.name, reason: ClashErrorCopy.message(error, locale: locale),
+                feedback?.say(ClashMacFeedbackSentences.couldNotDelete(provider.name, reason: ClashMacFeedbackSentences.whyNotDeleted(error, locale: locale),
                                                                       id: Self.deleteOperation),
                               operation: Self.deleteOperation)
             }

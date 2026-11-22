@@ -18,6 +18,7 @@ enum ClashLogTextPlatform {
          
          
          
+         
         ClashLogTextView.platformView = { request in
             AnyView(ClashLogTextPlatformView(request: request).ignoresSafeArea(.container, edges: .bottom))
         }
@@ -314,6 +315,9 @@ private struct ClashLogTextPlatformView: View {
             view.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
             view.textColor = .label
             view.accessibilityIdentifier = "logs.text"
+             
+             
+            view.contentInsetAdjustmentBehavior = .never
             return view
         }
 
@@ -321,6 +325,17 @@ private struct ClashLogTextPlatformView: View {
             let coordinator = context.coordinator
             let followsEnd = followsEnd
             let entries = entries
+             
+             
+             
+            if let host = view as? ClashLogTextViewHost {
+                host.followsEnd = followsEnd
+                let clearance = context.environment.clashSearchFieldClearance
+                if host.clearance != clearance { host.clearance = clearance }
+                 
+                 
+                host.setNeedsLayout()
+            }
             Self.render(entries, followsEnd: followsEnd, in: view, coordinator: coordinator)
              
              
@@ -353,7 +368,7 @@ private struct ClashLogTextPlatformView: View {
         }
 
          
-        private static func isAtEnd(_ view: UITextView) -> Bool {
+        fileprivate static func isAtEnd(_ view: UITextView) -> Bool {
             if view.isTracking || view.isDragging || view.isDecelerating { return false }
             let bottom = view.contentSize.height - view.bounds.height + view.adjustedContentInset.bottom
             return bottom <= 0 || view.contentOffset.y >= bottom - 44
@@ -362,7 +377,7 @@ private struct ClashLogTextPlatformView: View {
          
          
          
-        private static func scrollToEnd(_ view: UITextView) {
+        fileprivate static func scrollToEnd(_ view: UITextView) {
             if #available(iOS 16.0, *), let layout = view.textLayoutManager {
                 layout.ensureLayout(for: NSTextRange(location: layout.documentRange.endLocation))
             }
@@ -376,8 +391,88 @@ private struct ClashLogTextPlatformView: View {
 
      
      
-    private final class ClashLogTextViewHost: UITextView {
+    final class ClashLogTextViewHost: UITextView {
         var onAppearanceChange: (() -> Void)?
+         
+         
+        var clearance: CGFloat = 0 {
+            didSet { if clearance != oldValue { setNeedsLayout() } }
+        }
+         
+         
+        var followsEnd = false
+         
+         
+        private weak var page: UIView?
+
+         
+         
+         
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            page = window == nil ? nil : Self.page(of: self)
+            setNeedsLayout()
+             
+             
+             
+            guard window != nil else { return }
+            DispatchQueue.main.async { [weak self] in self?.setNeedsLayout() }
+        }
+
+         
+         
+        override func didMoveToSuperview() {
+            super.didMoveToSuperview()
+            if window != nil { page = Self.page(of: self) }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            leave(Self.pageRoom(for: self, on: page) + clearance)
+        }
+
+         
+         
+         
+         
+        private func leave(_ room: CGFloat) {
+            guard contentInset.bottom != room || verticalScrollIndicatorInsets.bottom != room else { return }
+            let restedAtEnd = window != nil && bounds.height > 0 && ClashLogTextViewIOS.isAtEnd(self)
+            contentInset.bottom = room
+            verticalScrollIndicatorInsets.bottom = room
+             
+             
+            if followsEnd, restedAtEnd {
+                DispatchQueue.main.async { [weak self] in
+                     
+                    guard let self, self.followsEnd, !self.isTracking, !self.isDragging, !self.isDecelerating else { return }
+                    ClashLogTextViewIOS.scrollToEnd(self)
+                }
+            }
+        }
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        static func pageRoom(for view: UIView, on page: UIView?) -> CGFloat {
+            guard view.window != nil, let page, page.window === view.window else { return 0 }
+            let frame = view.convert(view.bounds, to: page)
+             
+            return max(0, frame.maxY - (page.bounds.maxY - page.safeAreaInsets.bottom))
+        }
+
+         
+        static func page(of view: UIView) -> UIView? {
+            var responder = view.next
+            while let next = responder, !(next is UIViewController) { responder = next.next }
+            return (responder as? UIViewController)?.view
+        }
 
         override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
             super.traitCollectionDidChange(previousTraitCollection)

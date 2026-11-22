@@ -79,3 +79,78 @@ struct PacketTunnelIPStackSettings: Equatable, Sendable {
 #endif
     }
 }
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct TunnelIPv6PathFlapBreaker: Equatable {
+    static let window: TimeInterval = 10
+    static let flipsToTrip = 4
+    static let settle: TimeInterval = 30
+     
+    static let heldPathIPv6 = true
+
+    enum Verdict: Equatable {
+         
+        case follow
+         
+        case trip(flips: Int)
+         
+        case hold
+    }
+
+    private(set) var isHolding = false
+     
+    private var recentFlips: [TimeInterval] = []
+    private var lastFlip: TimeInterval?
+
+     
+     
+    mutating func noteFlip(at now: TimeInterval) -> Verdict {
+        lastFlip = now
+        guard !isHolding else { return .hold }
+        recentFlips.removeAll { now - $0 >= Self.window }
+        recentFlips.append(now)
+        guard recentFlips.count >= Self.flipsToTrip else { return .follow }
+        let flips = recentFlips.count
+        recentFlips.removeAll()
+        isHolding = true
+        return .trip(flips: flips)
+    }
+
+     
+    mutating func reset() {
+        self = Self()
+    }
+
+     
+     
+    mutating func resumeIfSettled(at now: TimeInterval) -> Bool {
+        guard isHolding, let lastFlip, now - lastFlip >= Self.settle else { return false }
+        isHolding = false
+        recentFlips.removeAll()
+        return true
+    }
+
+     
+     
+    func pathIPv6ToDeclare(pathHasIPv6: Bool) -> Bool {
+        isHolding ? Self.heldPathIPv6 : pathHasIPv6
+    }
+
+     
+     
+    func secondsUntilSettled(at now: TimeInterval) -> TimeInterval? {
+        guard isHolding, let lastFlip else { return nil }
+        return max(0, Self.settle - (now - lastFlip))
+    }
+}

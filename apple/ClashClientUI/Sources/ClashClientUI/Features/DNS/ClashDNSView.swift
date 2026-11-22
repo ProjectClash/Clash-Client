@@ -3524,6 +3524,7 @@ private struct ClashDNSGeoPickerChrome: ViewModifier {
                         text: searchText,
                         prompt: "Search code or name"
                     )
+                    .clashBottomSearchClearance()
             } else {
                 content
                     .clashPageTitle(.copy(title))

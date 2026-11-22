@@ -21,10 +21,13 @@ extension ConfigurationEditorSession {
     }
 
      
-    func editOriginalReporting(steps: [ConfigurationTextStep], readDigest: String? = nil) async -> RunOutcome {
+    func editOriginalReporting(steps: [ConfigurationTextStep], readDigest: String? = nil,
+                               retriedWhenChanged: Bool = false) async -> RunOutcome {
         var ended = RunOutcome.failedOutright
         _ = await handingOn(steps) {
-            ended = await self.runReporting { try await self.model.editOriginalConfiguration(self.profileID, steps: steps, readDigest: readDigest) }
+            ended = await self.runReporting(retriedWhenChanged: retriedWhenChanged) {
+                try await self.model.editOriginalConfiguration(self.profileID, steps: steps, readDigest: readDigest)
+            }
             return ended == .saved
         }
         return ended
@@ -48,7 +51,7 @@ extension ConfigurationEditorSession {
         let locale = AppPreferences.language().locale
         var said = Set<String>()
         failure = refused.filter { said.insert($0.name).inserted }.map { item in
-            let sentence = ClashCopy.string(for: .format("“%@” is still in use. Change these first.", [item.name]), locale: locale)
+            let sentence = ClashCopy.string(for: .format("Can’t delete “%@”: it’s still used in the places below. Change them first.", [item.name]), locale: locale)
             return ([sentence] + item.places.prefix(5)).joined(separator: "\n")
         }.joined(separator: "\n\n")
     }
@@ -140,6 +143,7 @@ struct ConfigurationOriginalRulesView: View {
             }
         }
         .searchable(text: $search)
+        .clashBottomSearchClearance()
         .navigationTitle(Text(clash: title))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -196,6 +200,8 @@ struct ConfigurationOriginalRulesView: View {
  
  
  
+ 
+ 
 struct ConfigurationKeptRulesView: View {
     let kept: ProfilesViewModel.ConfigurationEditorPage.KeptRules
     let title: ClashDisplayText
@@ -242,6 +248,7 @@ struct ConfigurationKeptRulesView: View {
             }
         }
         .searchable(text: $search)
+        .clashBottomSearchClearance()
         .navigationTitle(Text(clash: title))
         .task(id: search) {
              
@@ -299,125 +306,6 @@ struct ConfigurationRawRuleEditor: View {
         }
         .clashCapturesDismiss(dismiss)
         .onAppear { if text.isEmpty { text = raw } }
-    }
-}
-
- 
-
- 
-struct ConfigurationOriginalSubRulesView: View {
-    @ObservedObject var session: ConfigurationEditorSession
-    @State private var search = ""
-    @State private var adding = false
-
-    private var branches: [(name: String, count: Int)] {
-        guard case .object(let pairs)? = session.value(at: ["sub-rules"]) else { return [] }
-        return pairs.map { pair in
-            if case .array(let rules) = pair.value { return (pair.key, rules.count) }
-            return (pair.key, 0)
-        }
-    }
-
-    private var shown: [(name: String, count: Int)] { matching(branches, search) { [$0.name] } }
-
-    var body: some View {
-        List {
-            Section {
-                if branches.isEmpty {
-                    ConfigurationEmptyListRows(key: "sub-rules") {
-                        Button { adding = true } label: {
-                            Label { Text(clash: .copy("Add Sub-rule")) } icon: { Image(systemName: ClashSymbol.plus.name) }
-                        }
-                        .accessibilityIdentifier("configuration-editor.original-sub-rules.add-first")
-                    }
-                }
-                ForEach(shown, id: \.name) { branch in
-                    ClashNativeNavigationLink {
-                        ConfigurationOriginalRulesView(session: session, base: ["sub-rules", branch.name],
-                                                       title: .verbatim(branch.name))
-                            .configurationPushedAlertHost(session)
-                    } label: {
-                        HStack {
-                            Text(verbatim: branch.name)
-                            Spacer()
-                            Text(verbatim: String(branch.count)).foregroundStyle(.secondary)
-                        }
-                    }
-                    .accessibilityIdentifier("configuration-editor.original-sub-rules.branch")
-                }
-                .onDelete { offsets in delete(offsets.map { shown[$0].name }) }
-            }
-        }
-        .searchable(text: $search)
-        .navigationTitle(Text(clash: .copy(ConfigurationEditorCopy.title(of: .subRules))))
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                ControlGroup {
-                    Button { adding = true } label: { Image(systemName: ClashSymbol.plus.name) }
-                        .accessibilityLabel(Text(clash: .copy("Add")))
-                        .accessibilityIdentifier("configuration-editor.original-sub-rules.add")
-                }
-                .clashReaderControlGroupStyle()
-            }
-        }
-        .disabled(session.isSaving)
-        .clashSheet(isPresented: $adding) {
-            ConfigurationNewSubRuleSheet(taken: Set(branches.map(\.name))) { name in
-                let step = OriginalListEdits.adding(name, .array([]), toMappingAt: "sub-rules",
-                                                    exists: session.value(at: ["sub-rules"]) != nil)
-                Task { await session.editOriginal(steps: [step]) }
-            }
-            .clashModalPresentation(.form)
-        }
-    }
-
-    private func delete(_ names: [String]) {
-        guard let document = session.page?.document else { return }
-        for name in names {
-            let places = OriginalListEdits.uses(ofSubRule: name, in: document)
-            if !places.isEmpty { return session.refuseDeleting(name, usedBy: places) }
-        }
-        Task {
-            guard await !session.keptRulesRefuseDeleting(names) else { return }
-            await session.editOriginal(steps: OriginalListEdits.deleting(names, fromMappingAt: "sub-rules"))
-        }
-    }
-}
-
- 
-struct ConfigurationNewSubRuleSheet: View {
-    let taken: Set<String>
-    let save: (String) -> Void
-    @State private var name = ""
-    @StateObject private var dismiss = ClashDismissHandle()
-
-    private var trimmed: String { name.trimmingCharacters(in: .whitespaces) }
-
-    var body: some View {
-        ClashFeatureNavigationContainer {
-            Form {
-                TextField(text: $name) { Text(clash: .copy("Name")) }
-                    .textInputAutocapitalization(.never)
-                    .disableAutocorrection(true)
-                    .accessibilityIdentifier("configuration-editor.original-sub-rules.new.name")
-            }
-            .navigationTitle(Text(clash: .copy("Add Sub-rule")))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button { dismiss() } label: { Text(clash: .copy("Cancel")) }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        save(trimmed)
-                        dismiss()
-                    } label: { Text(clash: .copy("Save")) }
-                    .disabled(trimmed.isEmpty || taken.contains(trimmed))
-                    .accessibilityIdentifier("configuration-editor.original-sub-rules.new.save")
-                }
-            }
-        }
-        .clashCapturesDismiss(dismiss)
     }
 }
 
@@ -484,6 +372,7 @@ struct ConfigurationOriginalProxiesView: View {
             }
         }
         .searchable(text: $search)
+        .clashBottomSearchClearance()
         .navigationTitle(Text(clash: .copy(ConfigurationEditorCopy.title(of: .proxies))))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -609,6 +498,11 @@ struct ConfigurationOriginalProxiesView: View {
 struct ConfigurationOriginalNodePage: View {
     @ObservedObject var session: ConfigurationEditorSession
     let name: String
+     
+     
+    var saved: (() -> Void)? = nil
+     
+    var onDone: (() -> Void)? = nil
 
      
     static func node(named name: String, in session: ConfigurationEditorSession) -> (index: Int, value: OrderedJSON)? {
@@ -629,7 +523,8 @@ struct ConfigurationOriginalNodePage: View {
                     allowsRename: false,
                     showsTesting: false,
                     dialerRouting: .payloadField,
-                    dialerCandidates: { Self.candidates(excluding: name, in: session) }
+                    dialerCandidates: { Self.candidates(excluding: name, in: session) },
+                    onDone: onDone
                 )
             } else {
                  
@@ -655,6 +550,7 @@ struct ConfigurationOriginalNodePage: View {
         let steps = try OriginalListEdits.nodeEdits(written: node.value, formOriginalJSON: original, formEditedJSON: edited,
                                                     at: [.key("proxies"), .index(node.index)])
         try await Self.saveFromForm(steps, session: session)
+        saved?()
     }
 
      
@@ -794,6 +690,7 @@ struct ConfigurationOriginalProxyProvidersView: View {
             }
         }
         .searchable(text: $search)
+        .clashBottomSearchClearance()
         .navigationTitle(Text(clash: .copy(ConfigurationEditorCopy.title(of: .proxyProviders))))
         .clashSheet(isPresented: $adding) { ConfigurationNewProxyProviderSheet(session: session).clashModalPresentation(.form) }
          
@@ -1152,6 +1049,7 @@ struct ConfigurationOriginalMembersView: View {
             options("Not Found", filtered(notFound))
         }
         .searchable(text: $query)
+        .clashBottomSearchClearance()
         .navigationTitle(Text(verbatim: group))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

@@ -70,6 +70,11 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
      
      
      
+    @State private var pageHeight = ClashModulePageHeight()
+     
+     
+     
+     
     @State private var pendingDeletion: ClashModulesSnapshot.ModuleRow?
      
     @State private var openedPlace: ClashModulesSnapshot.NoticePlace?
@@ -122,6 +127,7 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
             quickAdd { addMode = $0 }
         }
         .modifier(ClashModulesFormStyle())
+        .clashReadsHeight(pageHeightReport)
         .modifier(ClashLibraryPullToUpdate(action: snapshot.canRefreshAll ? pullToUpdate : nil))
         .clashPageTitle("Modules")
         .clashToolbarUnlessInPanel {
@@ -151,6 +157,7 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
                 openedModule = nil
             }
             .modifier(ClashModuleDetailResultInset(place: detailResultPlace?(opened.id)))
+            .modifier(ClashModuleDetailSheetBound(pageHeight: pageHeight.value))
             .clashModalPresentation(Self.detailPresentation)
         }
         .clashSheet(item: $addMode) { mode in
@@ -175,6 +182,18 @@ public struct ClashModulesView<AddModule: View, QuickAdd: View>: View {
         .accessibilityIdentifier("modules.page")
     }
 
+     
+     
+    private var pageHeightReport: ((CGFloat) -> Void)? {
+#if os(macOS)
+        let box = pageHeight
+        return { height in box.value = height }
+#else
+        return nil
+#endif
+    }
+
+     
      
      
     static var detailPresentation: ClashModalPresentationRole {
@@ -735,6 +754,52 @@ struct ClashModulesReorderView: View {
         guard modules.indices.contains(index), modules.indices.contains(destination) else { return }
         modules.swapAt(index, destination)
         perform(.moveModules(modules.map(\.id)))
+    }
+}
+
+#if os(macOS)
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashModuleDetailSheetHeight {
+    static let windowMargin: CGFloat = 8
+     
+     
+    static var floor: CGFloat { ClashModuleDetailView.Mac.minimumHeight }
+
+    static func maximum(pageHeight: CGFloat) -> CGFloat? {
+        guard pageHeight > 0 else { return nil }
+        return max(pageHeight - windowMargin, floor)
+    }
+}
+#endif
+
+ 
+ 
+ 
+ 
+final class ClashModulePageHeight {
+    var value: CGFloat = 0
+}
+
+ 
+struct ClashModuleDetailSheetBound: ViewModifier {
+    let pageHeight: CGFloat
+
+    func body(content: Content) -> some View {
+#if os(macOS)
+        if let maximum = ClashModuleDetailSheetHeight.maximum(pageHeight: pageHeight) {
+            content.frame(maxHeight: maximum)
+        } else {
+            content
+        }
+#else
+        content
+#endif
     }
 }
 

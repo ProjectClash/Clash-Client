@@ -36,6 +36,10 @@ struct ClashTVProductState {
      
     var autoConnectIssue: String?
      
+     
+     
+    var onDemandPausedForRefusal = false
+     
     var iCloudRestoreLine: String?
      
      

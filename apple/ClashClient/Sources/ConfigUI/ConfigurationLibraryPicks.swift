@@ -558,6 +558,7 @@ struct ConfigurationLibraryNodePicker: View {
                 }
             }
             .searchable(text: $query)
+            .clashBottomSearchClearance()
             .navigationTitle(Text(clash: .copy("Choose from the Node Library")))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

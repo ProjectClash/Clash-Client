@@ -156,6 +156,9 @@ enum ConfigurationFailureKind: Equatable {
     case invalidURL
     case invalidTextEncoding
     case yamlSyntax
+     
+     
+    case overrideScript
     case mihomoSchema
     case resourcePlan
     case providerMaterialization
@@ -213,6 +216,37 @@ struct ConfigurationFailure: LocalizedError, Equatable {
      
      
     let detail: String?
+     
+     
+     
+     
+     
+    let transport: Transport?
+     
+     
+     
+     
+    private(set) var putBackTitle: ClashDisplayText? = nil
+
+    struct Transport: Equatable {
+        let code: URLError.Code
+         
+        let failingURL: String?
+         
+         
+         
+         
+         
+         
+        let throughTheTunnel: Bool?
+         
+         
+        let serverAnswered: Bool
+         
+         
+         
+        let handshakeRefused: Bool
+    }
 
     init(
         kind: ConfigurationFailureKind,
@@ -223,7 +257,8 @@ struct ConfigurationFailure: LocalizedError, Equatable {
         recoveryActions: [ConfigurationRecoveryAction],
         preservesLastKnownGood: Bool,
         providerFailures: [ProviderFailureLine] = [],
-        detail: String? = nil
+        detail: String? = nil,
+        transport: Transport? = nil
     ) {
         self.kind = kind
         self.context = context
@@ -234,16 +269,33 @@ struct ConfigurationFailure: LocalizedError, Equatable {
         self.preservesLastKnownGood = preservesLastKnownGood
         self.providerFailures = providerFailures
         self.detail = detail
+        self.transport = transport
     }
 
     func carrying(_ lines: [ProviderFailureLine]) -> ConfigurationFailure {
-        ConfigurationFailure(
+        var failure = ConfigurationFailure(
             kind: kind, context: context, title: title, message: message,
             diagnosticCode: diagnosticCode, recoveryActions: recoveryActions,
             preservesLastKnownGood: preservesLastKnownGood,
             providerFailures: lines,
-            detail: detail
+            detail: detail,
+            transport: transport
         )
+         
+        failure.putBackTitle = putBackTitle
+        return failure
+    }
+
+     
+     
+     
+    func putBack(as putBackTitle: ClashDisplayText) -> ConfigurationFailure {
+        var failure = ConfigurationFailure(
+            kind: kind, context: context, title: title, message: message, diagnosticCode: diagnosticCode,
+            recoveryActions: recoveryActions.filter { $0 != .retry }, preservesLastKnownGood: preservesLastKnownGood,
+            providerFailures: providerFailures, detail: detail, transport: transport)
+        failure.putBackTitle = putBackTitle
+        return failure
     }
 
     var errorDescription: String? { "\(title): \(message)" }
@@ -382,6 +434,9 @@ enum ConfigurationFailureClassifier {
              
              
             return make(refusalKind(reason), context, preservesLastKnownGood, detail: reason)
+        }
+        if case .overrideScript? = error as? ProxyImportBridgeError {
+            return make(.overrideScript, context, preservesLastKnownGood)
         }
         if let finding = error as? IOSExternalResourceFinding {
             return externalResourceFailure(
@@ -634,17 +689,33 @@ enum ConfigurationFailureClassifier {
         default:
             kind = .connection
         }
+         
+         
+         
+        var handshakeRefused = false
+        if case .tls = kind { handshakeRefused = ResourceDownloader.serverRefusedTheHandshake(error) }
         return make(
             kind, context, preservesLastKnownGood,
-            detail: urlErrorDetail(error)
+            detail: urlErrorDetail(error),
+            transport: ConfigurationFailure.Transport(
+                code: error.code, failingURL: failingURL(of: error),
+                throughTheTunnel: ResourceDownloader.throughTheTunnel(error),
+                serverAnswered: ResourceDownloader.serverAnswered(error),
+                handshakeRefused: handshakeRefused
+            )
         )
+    }
+
+     
+    private static func failingURL(of error: URLError) -> String? {
+        (error.userInfo[NSURLErrorFailingURLStringErrorKey] as? String)
+            ?? error.failingURL?.absoluteString
     }
 
      
     private static func urlErrorDetail(_ error: URLError) -> String? {
         let sentence = error.localizedDescription
-        let failing = (error.userInfo[NSURLErrorFailingURLStringErrorKey] as? String)
-            ?? error.failingURL?.absoluteString
+        let failing = failingURL(of: error)
         switch (sentence.isEmpty, failing) {
         case (true, .none): return nil
         case (true, .some(let url)): return url
@@ -685,7 +756,8 @@ enum ConfigurationFailureClassifier {
         _ preservesLastKnownGood: Bool?,
         diagnosticCode overrideCode: String? = nil,
         message overrideMessage: String? = nil,
-        detail: String? = nil
+        detail: String? = nil,
+        transport: ConfigurationFailure.Transport? = nil
     ) -> ConfigurationFailure {
         let presentation = presentation(for: kind)
         return ConfigurationFailure(
@@ -697,7 +769,8 @@ enum ConfigurationFailureClassifier {
             recoveryActions: recoveryActions(for: kind),
             preservesLastKnownGood: preservesLastKnownGood
                 ?? (context == .activation || context == .subscription || context == .provider),
-            detail: detail.map(readableDetail(from:))
+            detail: detail.map(readableDetail(from:)),
+            transport: transport
         )
     }
 
@@ -774,7 +847,7 @@ enum ConfigurationFailureClassifier {
              
              
             return [.retry, .editProfile, .viewDiagnostics]
-        case .invalidURL, .invalidTextEncoding, .yamlSyntax, .mihomoSchema,
+        case .invalidURL, .invalidTextEncoding, .yamlSyntax, .overrideScript, .mihomoSchema,
              .resourcePlan, .preflight, .sourceMissing, .bodyTooLarge:
             return [.editProfile, .viewDiagnostics]
         case .legacyRelay:
@@ -825,6 +898,8 @@ enum ConfigurationFailureClassifier {
             return (title: "Unreadable configuration", message: "The profile URL response is not UTF-8 YAML.", code: "config.encoding")
         case .yamlSyntax:
             return (title: "YAML syntax error", message: "The downloaded text is not valid configuration YAML. Edit the profile or contact the provider.", code: "config.yaml")
+        case .overrideScript:
+            return (title: "This is an override script", message: ProxyImportBridgeError.overrideScriptMessage, code: "config.override-script")
         case .mihomoSchema:
             return (title: "Unsupported configuration", message: "The core rejected the configuration structure or one of its fields.", code: "config.schema")
         case .resourcePlan:
@@ -892,7 +967,30 @@ enum DirectFetchFallback {
 
  
  
-struct DirectFetchUnavailable: Error {}
+struct DirectFetchUnavailable: Error {
+#if os(iOS)
+     
+     
+     
+     
+     
+     
+     
+     
+    var tunnelNotRunning = false
+#endif
+
+     
+     
+     
+    var tunnelAsTheTryEnded: Bool? {
+#if os(iOS)
+        tunnelNotRunning ? false : nil
+#else
+        nil
+#endif
+    }
+}
 
 protocol HTTPFetching {
     func fetch(
@@ -1187,6 +1285,7 @@ final class ResourceDownloader: HTTPFetching {
      
      
      
+     
     func fetch(
         _ request: URLRequest,
         maxBytes: Int,
@@ -1222,10 +1321,16 @@ final class ResourceDownloader: HTTPFetching {
                     "download through the tunnel failed (\(error.localizedDescription)); fetched over DIRECT instead (\(request.url?.absoluteString ?? "?"))",
                     stream: .app, level: .info)
                 return result
-            } catch is DirectFetchUnavailable {
+            } catch let unavailable as DirectFetchUnavailable {
                  
                  
-                guard reservesDirect else { throw error }
+                guard reservesDirect else {
+                     
+                     
+                     
+                     
+                    throw Self.marking(error, throughTheTunnel: unavailable.tunnelAsTheTryEnded)
+                }
                 return try await fetchThroughTheTunnel(request, maxBytes: maxBytes, redirectPolicy: redirectPolicy,
                                                        reservesDirect: false)
             } catch is CancellationError {
@@ -1234,8 +1339,83 @@ final class ResourceDownloader: HTTPFetching {
                 ClashLogStore.shared.append(
                     "download over DIRECT failed too: \(directFailure.localizedDescription) (\(request.url?.absoluteString ?? "?"))",
                     stream: .app, level: .warning)
-                throw error
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                throw Self.marking(error, throughTheTunnel: true)
             }
+        }
+    }
+
+     
+     
+     
+     
+     
+    static let throughTheTunnelKey = "ClashThroughTheTunnel"
+    static let serverAnsweredKey = "ClashServerAnswered"
+
+     
+     
+     
+     
+     
+     
+    static func marking(_ error: Error, throughTheTunnel: Bool?) -> Error {
+        guard let urlError = error as? URLError, let throughTheTunnel else { return error }
+        var userInfo = urlError.userInfo
+        userInfo[throughTheTunnelKey] = throughTheTunnel
+        return URLError(urlError.code, userInfo: userInfo)
+    }
+
+     
+     
+    static func throughTheTunnel(_ error: Error) -> Bool? {
+        (error as? URLError)?.userInfo[throughTheTunnelKey] as? Bool
+    }
+
+     
+     
+     
+    static func markingServerAnswered(_ error: URLError) -> URLError {
+        var userInfo = error.userInfo
+        userInfo[serverAnsweredKey] = true
+        return URLError(error.code, userInfo: userInfo)
+    }
+
+     
+    static func serverAnswered(_ error: Error) -> Bool {
+        ((error as? URLError)?.userInfo[serverAnsweredKey] as? Bool) ?? false
+    }
+
+     
+     
+     
+     
+     
+    static func noServerAnswered(_ code: URLError.Code) -> Bool {
+        switch code {
+        case .timedOut, .cannotConnectToHost, .networkConnectionLost: return true
+        default: return false
+        }
+    }
+
+     
+     
+     
+     
+    static func serverAnsweredUnreadably(_ code: URLError.Code) -> Bool {
+        switch code {
+        case .httpTooManyRedirects, .redirectToNonExistentLocation, .badServerResponse, .userCancelledAuthentication,
+             .zeroByteResource, .cannotDecodeRawData, .cannotDecodeContentData, .cannotParseResponse,
+             .dataLengthExceedsMaximum:
+            return true
+        default:
+            return false
         }
     }
 
@@ -1282,6 +1462,86 @@ final class ResourceDownloader: HTTPFetching {
             let code = (error.userInfo["_kCFStreamErrorCodeKey"] as? NSNumber)?.intValue
             return code.map { [-9807, -9808, -9812, -9813, -9814, -9815, -9843].contains($0) } ?? false
         default:
+            return false
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func serverRefusedTheHandshake(_ error: URLError) -> Bool {
+        guard error.code == .secureConnectionFailed else { return false }
+        let underneath = error.userInfo[NSUnderlyingErrorKey] as? NSError
+        guard let code = ((error.userInfo["_kCFStreamErrorCodeKey"] as? NSNumber)
+            ?? (underneath?.userInfo["_kCFStreamErrorCodeKey"] as? NSNumber))?.intValue else { return false }
+        switch code {
+        case -9800,    
+             -9801,    
+             -9802,    
+             -9818,    
+             -9819,    
+             -9820,    
+             -9821,    
+             -9822,    
+             -9823,    
+             -9824,    
+             -9825,    
+             -9826,    
+             -9827,    
+             -9828,    
+             -9829,    
+             -9831,    
+             -9832,    
+             -9833,    
+             -9834,    
+             -9835,    
+             -9836,    
+             -9837,    
+             -9838,    
+             -9839,    
+             -9840,    
+             -9842,    
+             -9845,    
+             -9846,    
+             -9847,    
+             -9849,    
+             -9850,    
+             -9855,    
+             -9856,    
+             -9857,    
+             -9858,    
+             -9859,    
+             -9860,    
+             -9861,    
+             -9862,    
+             -9863,    
+             -9864,    
+             -9865,    
+             -9880,    
+             -9881,    
+             -9882,    
+             -9890:    
+            return true
+        default:
+             
+             
+             
+             
+             
+             
             return false
         }
     }
@@ -1425,12 +1685,19 @@ final class ResourceDownloader: HTTPFetching {
         }
         var data = Data()
         data.reserveCapacity(min(maxBytes, max(0, Int(http.expectedContentLength))))
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < maxBytes else {
-                throw DownloadError.tooLarge(data.count + 1)
+        do {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < maxBytes else {
+                    throw DownloadError.tooLarge(data.count + 1)
+                }
+                data.append(byte)
             }
-            data.append(byte)
+        } catch let cut as URLError {
+             
+             
+             
+            throw Self.markingServerAnswered(cut)
         }
         return DownloadResult(data: data, etag: header(http, "Etag"),
                               lastModified: header(http, "Last-Modified"),

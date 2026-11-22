@@ -260,6 +260,7 @@ public struct ClashActivityPageView<
                  
                  
                 content.searchable(text: $query, placement: .toolbar, prompt: lens.searchPrompt)
+                    .clashBottomSearchClearance()
                     .toolbar { DefaultToolbarItem(kind: .search, placement: .bottomBar) }
                     .toolbar(.hidden, for: .tabBar)
             } else {
@@ -268,12 +269,15 @@ public struct ClashActivityPageView<
                     placement: .navigationBarDrawer(displayMode: .always),
                     prompt: lens.searchPrompt
                 )
+                .clashBottomSearchClearance()
             }
             #else
             content.searchable(text: $query, prompt: lens.searchPrompt)
+                .clashBottomSearchClearance()
             #endif
         case .standard:
             content.searchable(text: $query, prompt: lens.searchPrompt)
+                .clashBottomSearchClearance()
         }
     }
 

@@ -158,15 +158,23 @@ enum NodeLibraries {
          
          
          
+         
+         
         struct Reference {
             let key: String
             let bytes: [UInt8]
+            let readsEveryPath: Bool
             var mentioned = false
             var inBlock = false
-            var path: String?
-            init(_ key: String) { self.key = key; self.bytes = Array(key.utf8) }
+            var paths: [String] = []
+             
+            var unreadPath = false
+            init(_ key: String, readsEveryPath: Bool = false) {
+                self.key = key; self.bytes = Array(key.utf8); self.readsEveryPath = readsEveryPath
+            }
         }
-        var tracked = [Reference(ConfigTransforms.nodeLibraryKey), Reference(ConfigTransforms.ruleIndexKey)]
+        var tracked = [Reference(ConfigTransforms.nodeLibraryKey),
+                       Reference(ConfigTransforms.ruleIndexKey, readsEveryPath: true)]
         var pending: [UInt8] = []
         var pendingIsLineStart = true
 
@@ -210,8 +218,8 @@ enum NodeLibraries {
                 }
                 let field = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if let path = ConfigTransforms.nodeLibraryPathField(field) {
-                    if let path { reference.path = path }
-                    reference.inBlock = false
+                    if let path { reference.paths.append(path) } else { reference.unreadPath = true }
+                    if !reference.readsEveryPath { reference.inBlock = false }
                 }
                 return
             }
@@ -273,7 +281,7 @@ enum NodeLibraries {
             return text
         }
         let library = tracked[0], index = tracked[1]
-        if let path = library.path {
+        if let path = library.paths.first {
             references.libraries.insert(path)
         } else if library.mentioned {
             let text = try wholeText()
@@ -287,15 +295,18 @@ enum NodeLibraries {
                 references.libraryNames.formUnion(libraryFileNames(in: text))
             }
         }
-        if let path = index.path {
-            references.ruleIndexes.insert(path)
-        } else if index.mentioned {
+        references.ruleIndexes.formUnion(index.paths)
+         
+         
+        if index.paths.isEmpty || index.unreadPath, index.mentioned {
             let text = try wholeText()
             if let path = ConfigTransforms.ruleIndexPath(in: text) {
                 references.ruleIndexes.insert(path)
-            } else {
-                references.ruleIndexNames.formUnion(ruleIndexFileNames(in: text))
             }
+             
+             
+             
+            references.ruleIndexNames.formUnion(ruleIndexFileNames(in: text))
         }
     }
 

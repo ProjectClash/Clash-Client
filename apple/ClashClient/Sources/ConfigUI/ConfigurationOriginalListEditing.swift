@@ -28,6 +28,25 @@ extension ConfigurationTextEditing {
 enum OriginalListEdits {
      
      
+     
+     
+     
+    static func insertion(of json: String, named name: String, groups: Bool, into section: OrderedJSON?)
+        -> (path: [ConfigurationTextPathStep], edit: ConfigurationTextEdit) {
+        let key = groups ? "proxy-groups" : "rule-providers"
+        switch section {
+        case .array(let items)? where groups && !items.isEmpty:
+            return ([.key(key), .index(items.count)], .insert(json: json))
+        case .object(let entries)? where !groups && !entries.isEmpty:
+            return ([.key(key), .key(name)], .insert(json: json))
+        default:
+            let whole = groups ? "[\(json)]" : "{\(OrderedJSON.string(name).serialized()):\(json)}"
+            return ([.key(key)], section == nil ? .insert(json: whole) : .set(json: whole))
+        }
+    }
+
+     
+     
     static func deleting(_ indices: [Int], under base: [ConfigurationTextPathStep]) -> [ConfigurationTextStep] {
         Set(indices).sorted(by: >).map { ConfigurationTextStep(path: base + [.index($0)], edit: .delete) }
     }
@@ -112,30 +131,11 @@ enum OriginalListEdits {
      
      
      
+     
+     
+     
     static func uses(ofNode name: String, in document: OrderedJSON) -> [String] {
-        var places: [String] = []
-        if case .array(let groups)? = document.topLevelValue("proxy-groups") {
-            for group in groups {
-                guard case .array(let members)? = group.node(at: ["proxies"]),
-                      members.contains(.string(name)), case .string(let groupName)? = group.node(at: ["name"]) else { continue }
-                places.append(groupName)
-            }
-        }
-        if case .array(let proxies)? = document.topLevelValue("proxies") {
-            for proxy in proxies where proxy.node(at: ["dialer-proxy"]) == .string(name) {
-                if case .string(let proxyName)? = proxy.node(at: ["name"]) { places.append(proxyName) }
-            }
-        }
-        if case .array(let rules)? = document.topLevelValue("rules") {
-            for case .string(let rule) in rules where namesTarget(rule, name) { places.append(rule) }
-        }
-        if case .object(let branches)? = document.topLevelValue("sub-rules") {
-            for branch in branches {
-                guard case .array(let rules) = branch.value else { continue }
-                for case .string(let rule) in rules where namesTarget(rule, name) { places.append(rule) }
-            }
-        }
-        return places
+        ConfigurationNodeUses.places(ofNode: name, in: document)
     }
 
      
@@ -143,7 +143,7 @@ enum OriginalListEdits {
      
      
     static func namesTarget(_ rule: String, _ name: String) -> Bool {
-        rule.split(separator: ",").dropFirst().contains { $0.trimmingCharacters(in: .whitespaces) == name }
+        ConfigurationNodeUses.namesTarget(rule, name)
     }
 }
 

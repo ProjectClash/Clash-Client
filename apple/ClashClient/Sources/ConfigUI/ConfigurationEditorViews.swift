@@ -712,7 +712,7 @@ final class ConfigurationEditorSession: ObservableObject {
             }
             if !run.isEmpty {
                  
-                let ended = await editOriginalReporting(steps: steps, readDigest: page.readDigest)
+                let ended = await editOriginalReporting(steps: steps, readDigest: page.readDigest, retriedWhenChanged: true)
                  
                 if ended != .saved { for index in readOnRun { outcome[index] = false } }
                 switch ended {
@@ -862,7 +862,12 @@ final class ConfigurationEditorSession: ObservableObject {
      
      
      
-    func runReporting(handedOn: Bool = false, _ work: @escaping () async throws -> Void) async -> RunOutcome {
+     
+     
+     
+     
+    func runReporting(handedOn: Bool = false, retriedWhenChanged: Bool = false,
+                      _ work: @escaping () async throws -> Void) async -> RunOutcome {
         let appliesBefore = model.lastTunnelApply.sequence
         runsUnderWay += 1
         defer { runEnded() }
@@ -890,13 +895,17 @@ final class ConfigurationEditorSession: ObservableObject {
                                   editTheSourceInstead: refused.editTheSourceInstead)
             } catch {
                 failed = Self.outcome(of: error)
-                failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                if !(retriedWhenChanged && failed == .changedSinceRead) {
+                    failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                }
             }
         } catch let refused as OriginalEditingError where refused == .notYAMLText {
             refusal = Refusal(sentence: refused.errorDescription ?? "", coreWords: nil, editTheSourceInstead: true)
         } catch {
             failed = Self.outcome(of: error)
-            failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            if !(retriedWhenChanged && failed == .changedSinceRead) {
+                failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
         let reloaded = await reload()
          
@@ -1427,6 +1436,7 @@ struct ConfigurationSettingsSectionView: View {
             }
         }
         .searchable(text: $search)
+        .clashBottomSearchClearance()
         .navigationTitle(basePath == ConfigurationSectionLayout.base(of: section)
                          ? Text(clash: .copy(ConfigurationEditorCopy.title(of: section)))
                          : Text(verbatim: fieldCopy.title(for: session.field(at: basePath.map(ConfigurationDocumentStep.key),
@@ -1760,6 +1770,10 @@ extension ConfigurationLANShareStatus {
  
 enum ConfigurationLinkedPage: Equatable {
     case owner(ConfigurationKeyOwner)
+     
+     
+     
+    case proxies(profileID: String)
 }
 
  
@@ -2678,6 +2692,7 @@ struct ConfigurationKnownValuesPage: View {
             }
         }
         .searchable(text: $search)
+        .clashBottomSearchClearance()
         .navigationTitle(Text(verbatim: title))
         .task {
             values = await ConfigurationKnownValues.values(for: set)
@@ -2846,6 +2861,7 @@ struct ConfigurationKnownValuePickPage: View {
             ConfigurationKnownValueChoices(set: set, title: title, text: $text, search: search)
         }
         .searchable(text: $search)
+        .clashBottomSearchClearance()
         .navigationTitle(Text(verbatim: title))
     }
 }
@@ -2888,6 +2904,7 @@ struct ConfigurationKnownValueSearch: ViewModifier {
         if ConfigurationFieldEditor.picksOneKnownValue(field) {
             content
                 .searchable(text: $search)
+                .clashBottomSearchClearance()
                 .environment(\.configurationKnownValueSearch, search)
         } else {
             content
@@ -3441,6 +3458,9 @@ struct ConfigurationSchemeRulesLoader: View {
 struct ConfigurationOriginalEntriesView: View {
     @ObservedObject var session: ConfigurationEditorSession
     let section: ConfigurationOutlineSection
+     
+     
+    var startsReordering = false
     @State private var search = ""
     @State private var adding = false
      
@@ -3449,6 +3469,7 @@ struct ConfigurationOriginalEntriesView: View {
     @State private var editMode: EditMode = .inactive
     @Environment(\.configurationFieldCopy) private var fieldCopy
     @Environment(\.locale) private var locale
+    @Environment(\.clashFeedback) private var feedback
 
     private var isGroups: Bool { section == .proxyGroups }
     private var key: String { isGroups ? "proxy-groups" : "rule-providers" }
@@ -3464,6 +3485,13 @@ struct ConfigurationOriginalEntriesView: View {
     var body: some View {
         let types = ConfigurationTypeWords.names(isGroups ? .proxyGroups : .ruleProviders, copy: fieldCopy, locale: locale)
         List {
+             
+             
+            if let note = session.linkNote(locale: locale) {
+                Section {} footer: {
+                    Text(verbatim: note).accessibilityIdentifier("configuration-editor.original.link-note")
+                }
+            }
             if entries.isEmpty {
                 ConfigurationEmptyListRows(key: key) {
                     Button { adding = true } label: {
@@ -3501,6 +3529,7 @@ struct ConfigurationOriginalEntriesView: View {
             .moveDisabled(session.isSaving || session.hasOriginalChangesOwed)
         }
         .searchable(text: $search)
+        .clashBottomSearchClearance()
         .navigationTitle(Text(clash: .copy(ConfigurationEditorCopy.title(of: section))))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -3521,8 +3550,9 @@ struct ConfigurationOriginalEntriesView: View {
             }
         }
         .environment(\.editMode, $editMode)
+        .onAppear { if startsReordering, isGroups, entries.count > 1 { editMode = .active } }
         .clashSheet(isPresented: $adding) {
-            ConfigurationOriginalNewEntryForm(section: section, catalog: session.catalog,
+            ConfigurationOriginalNewEntryForm(section: section, catalog: session.catalog, note: session.linkNote(locale: locale),
                                               taken: Set(entries.map(\.name))) { name, json in
                 let insertion = Self.insertion(of: json, named: name, groups: isGroups, into: session.value(at: [key]))
                 Task { await session.editOriginal(insertion.path, insertion.edit) }
@@ -3533,6 +3563,16 @@ struct ConfigurationOriginalEntriesView: View {
 
     private func delete(_ offsets: IndexSet) {
         let names = offsets.map { shown[$0].name }
+         
+         
+        if isGroups {
+            Task {
+                for name in names {
+                    guard await ConfigurationOriginalGroupDeletion.delete(name, session: session, feedback: feedback) else { return }
+                }
+            }
+            return
+        }
          
          
          
@@ -3560,20 +3600,9 @@ struct ConfigurationOriginalEntriesView: View {
 
      
      
-     
-     
     static func insertion(of json: String, named name: String, groups: Bool, into section: OrderedJSON?)
         -> (path: [ConfigurationTextPathStep], edit: ConfigurationTextEdit) {
-        let key = groups ? "proxy-groups" : "rule-providers"
-        switch section {
-        case .array(let items)? where groups && !items.isEmpty:
-            return ([.key(key), .index(items.count)], .insert(json: json))
-        case .object(let entries)? where !groups && !entries.isEmpty:
-            return ([.key(key), .key(name)], .insert(json: json))
-        default:
-            let whole = groups ? "[\(json)]" : "{\(OrderedJSON.string(name).serialized()):\(json)}"
-            return ([.key(key)], section == nil ? .insert(json: whole) : .set(json: whole))
-        }
+        OriginalListEdits.insertion(of: json, named: name, groups: groups, into: section)
     }
 
     private func move(_ offsets: IndexSet, _ destination: Int) {
@@ -3597,6 +3626,10 @@ struct ConfigurationOriginalEntryView: View {
     let section: ConfigurationOutlineSection
     @State var name: String
     @State private var renaming = false
+    @StateObject private var dismiss = ClashDismissHandle()
+    @Environment(\.clashFeedback) private var feedback
+    @Environment(\.configurationFieldCopy) private var fieldCopy
+    @Environment(\.locale) private var locale
      
     @State private var visitMembers: [String]?
     private var isGroups: Bool { section == .proxyGroups }
@@ -3636,6 +3669,12 @@ struct ConfigurationOriginalEntryView: View {
                 .buttonStyle(.plain)
                 .disabled(session.isSaving || session.hasOriginalChangesOwed)
                 .accessibilityIdentifier("configuration-editor.original.rename")
+            } footer: {
+                 
+                 
+                if let note = session.linkNote(locale: locale) {
+                    Text(verbatim: note).accessibilityIdentifier("configuration-editor.original.link-note")
+                }
             }
              
              
@@ -3646,13 +3685,17 @@ struct ConfigurationOriginalEntryView: View {
                                                            fieldIdentifier: "configuration-editor.original.field",
                                                            useDefaultIdentifier: "configuration-editor.original.use-default"),
                                         isSaving: session.isSaving,
-                                        members: isGroups ? { value in AnyView(membersRow(value)) } : nil) { field, value, _ in
+                                        members: isGroups ? { value in AnyView(membersRow(value)) } : nil,
+                                        excludes: isGroups ? { pattern, types in AnyView(excludesRow(pattern: pattern, types: types)) } : nil) { field, value, _ in
                  
                  
                 Task { await session.queueOriginal { document in entrySteps(document, field: field, to: value) } }
             }
+            if isGroups { deletionSection }
+            if section == .ruleProviders { ruleSetDeletionSection }
         }
         .navigationTitle(Text(verbatim: name))
+        .clashCapturesDismiss(dismiss)
          
          
          
@@ -3666,6 +3709,88 @@ struct ConfigurationOriginalEntryView: View {
                 }
             }
             .clashModalPresentation(.form)
+        }
+    }
+
+     
+     
+     
+    private func excludesRow(pattern: OrderedJSON?, types: OrderedJSON?) -> some View {
+        ClashNativeNavigationLink {
+            ConfigurationGroupExcludesPage(group: name, pattern: ConfigurationGroupExcludes.text(pattern),
+                                           types: ConfigurationGroupExcludes.text(types), schemeNote: session.linkNote(locale: locale),
+                                           reading: false) { field, value in
+                 
+                 
+                let written = await session.queueOriginal { document in entrySteps(document, field: field, to: value) }
+                return written ? nil : ""
+            }
+            .configurationPushedAlertHost(session)
+        } label: {
+            ConfigurationRowLabel(title: .verbatim(ConfigurationGroupExcludes.title(fieldCopy, locale: locale)),
+                                  value: ConfigurationGroupExcludes.summary(pattern: pattern, types: types),
+                                  isDefault: pattern == nil && types == nil)
+        }
+        .accessibilityIdentifier("configuration-editor.original.excludes")
+    }
+
+     
+     
+     
+     
+     
+    private var deletionSection: some View {
+        let places = OriginalListEdits.uses(ofNode: name, in: document)
+        let refusal = ClashTowerGroupDeletionCopy.refusal(
+            ConfigurationOriginalGroupDeletion.users(of: name, in: document, places: places), group: name, locale: locale)
+        return Section {
+            Button(role: .destructive) {
+                Task {
+                    if await ConfigurationOriginalGroupDeletion.delete(name, session: session, feedback: feedback) { dismiss() }
+                }
+            } label: {
+                Text(clash: .copy("Delete Policy Group"))
+            }
+            .disabled(!places.isEmpty || session.isSaving || session.hasOriginalChangesOwed)
+            .accessibilityIdentifier("configuration-editor.original.group.delete")
+        } footer: {
+            if let refusal {
+                Text(verbatim: refusal)
+                    .accessibilityIdentifier("configuration-editor.original.group.delete.note")
+            }
+        }
+    }
+
+     
+     
+     
+     
+     
+    private var ruleSetDeletionSection: some View {
+        let places = OriginalListEdits.uses(ofRuleSet: name, in: document)
+        return Section {
+            Button(role: .destructive) {
+                Task {
+                    if await ConfigurationOriginalRuleSetDeletion.delete(name, session: session, feedback: feedback) { dismiss() }
+                }
+            } label: {
+                Text(clash: .copy("Delete Rule Set"))
+            }
+            .disabled(!places.isEmpty || session.isSaving || session.hasOriginalChangesOwed)
+            .accessibilityIdentifier("configuration-editor.original.rule-set.delete")
+        } footer: {
+            if let refusal = ConfigurationOriginalRuleSetsSnapshot.refusal(name, places: places, locale: locale) {
+                VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
+                    Text(verbatim: refusal)
+                    ForEach(Array(ConfigurationOriginalRuleSetsSnapshot.shownPlaces(places, in: document).enumerated()), id: \.offset) { _, place in
+                        switch place {
+                        case .rule(let rule): ConfigurationRuleRow(rule, showsChevron: false)
+                        case .elsewhere(let path): Text(verbatim: path)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("configuration-editor.original.rule-set.delete.note")
+            }
         }
     }
 
@@ -3813,7 +3938,14 @@ struct ConfigurationEntryFieldRows: View {
      
      
     var providers: ((OrderedJSON?) -> AnyView?)? = nil
+     
+     
+     
+    var excludes: ((_ pattern: OrderedJSON?, _ types: OrderedJSON?) -> AnyView)? = nil
     let write: (_ key: String, _ value: OrderedJSON?, _ written: Bool) -> Void
+
+     
+    static let excludeKeys: Set<String> = ["exclude-filter", "exclude-type"]
 
      
      
@@ -3877,9 +4009,19 @@ struct ConfigurationEntryFieldRows: View {
         let rows = Self.rows(entry: entry, steps: steps, document: document, catalog: catalog, skip: skip)
         let byKey = Dictionary(rows.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
         let layout = Self.layoutPath(of: rows).flatMap { fieldCopy.layout(forPath: $0, locale: locale) } ?? []
-        ForEach(ConfigurationFieldCopy.arrange(rows.map(\.key), in: layout)) { section in
+        let sections = ConfigurationFieldCopy.arrange(rows.map(\.key), in: layout)
+         
+         
+        let anchor = excludes == nil ? nil : sections.flatMap(\.keys).first { Self.excludeKeys.contains($0) && byKey[$0] != nil }
+        ForEach(sections) { section in
             Section {
-                ForEach(section.keys.compactMap { byKey[$0] }) { row in rowView(row) }
+                ForEach(section.keys.compactMap { byKey[$0] }.filter { anchor == nil || !Self.excludeKeys.contains($0.key) || $0.key == anchor }) { row in
+                    if row.key == anchor, let excludes {
+                        excludes(byKey["exclude-filter"]?.value, byKey["exclude-type"]?.value)
+                    } else {
+                        rowView(row)
+                    }
+                }
             } header: {
                 if let title = section.title { Text(clash: title) }
             } footer: {
@@ -3946,26 +4088,46 @@ struct ConfigurationEntryFieldRows: View {
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 struct ConfigurationSchemeGroupPage: View {
     let catalog: ProfilesViewModel.SyntaxCatalog?
+     
+     
+     
+    let schemeNote: String?
     @StateObject private var editor: ConfigurationSchemeGroupEditor
      
     @State private var visitMembers: [String]?
      
     @State private var visitProviders: [String]?
+    @StateObject private var dismiss = ClashDismissHandle()
+    @Environment(\.locale) private var locale
+    @Environment(\.configurationFieldCopy) private var fieldCopy
 
-    init(request: ClashTowerGroupPageRequest, catalog: ProfilesViewModel.SyntaxCatalog?) {
+    init(request: ClashTowerGroupPageRequest, catalog: ProfilesViewModel.SyntaxCatalog?, schemeNote: String? = nil) {
         self.catalog = catalog
+        self.schemeNote = schemeNote
         _editor = StateObject(wrappedValue: ConfigurationSchemeGroupEditor(request: request))
     }
 
     private var request: ClashTowerGroupPageRequest { editor.request }
+    private var reading: Bool { request.mode.isReading }
 
+     
      
      
     private var context: OrderedJSON {
         var groups = request.all.map(\.document)
         if groups.indices.contains(request.index) { groups[request.index] = editor.document }
+        else if request.index == groups.count { groups.append(editor.document) }
         return .object([("proxy-groups", .array(groups))])
     }
 
@@ -3975,20 +4137,42 @@ struct ConfigurationSchemeGroupPage: View {
                 TextField("Group Name", text: $editor.name)
                     .onSubmit { Task { await editor.rename() } }
                     .accessibilityIdentifier("configuration.rules.group.name")
+                TextField("Icon URL", text: $editor.icon, prompt: Text(verbatim: "https://…"))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .onSubmit { Task { await editor.setIcon() } }
+                    .accessibilityIdentifier("configuration.rules.group.icon")
+                ClashTowerGroupIconEchoRow(icon: editor.icon)
+            } footer: {
+                if let schemeNote {
+                    Text(verbatim: schemeNote).accessibilityIdentifier("configuration.rules.group.scheme-note")
+                }
             }
+            .disabled(reading)
              
             ConfigurationEntryFieldRows(entry: editor.document, steps: [.key("proxy-groups"), .index(request.index)],
-                                        document: context, catalog: catalog,
+                                        document: context, catalog: catalog, skip: ["name", "icon"],
                                         identifiers: .init(inlineIdentifier: "configuration.rules.group.inline",
                                                            fieldIdentifier: "configuration.rules.group.field",
                                                            useDefaultIdentifier: "configuration.rules.group.use-default"),
                                         members: { value in AnyView(membersRow(value)) },
-                                        providers: { value in providersRow(value) }) { key, value, _ in
+                                        providers: { value in providersRow(value) },
+                                        excludes: { pattern, types in AnyView(excludesRow(pattern: pattern, types: types)) }) { key, value, _ in
                 Task { await editor.write(key, value) }
             }
+            .disabled(reading)
+            if !request.mode.isAdding, let deletion = request.deletion {
+                deletionSection(deletion)
+            }
         }
-        .navigationTitle(Text(verbatim: editor.name.isEmpty ? request.group.name : editor.name))
-        .onDisappear { Task { await editor.rename() } }
+        .navigationTitle(title)
+        .toolbar { toolbar }
+        .onDisappear {
+            guard !request.mode.isAdding, !reading else { return }
+            Task { await editor.rename(); await editor.setIcon() }
+        }
+        .clashCapturesDismiss(dismiss)
+         
          
         .alert(Text(clash: .copy("Not Saved")),
                isPresented: Binding(get: { editor.refusal != nil }, set: { if !$0 { editor.refusal = nil } })) {
@@ -3996,6 +4180,84 @@ struct ConfigurationSchemeGroupPage: View {
         } message: {
             Text(verbatim: editor.refusal ?? "")
         }
+        .onAppear { editor.locale = locale }
+    }
+
+    private var title: Text {
+        if request.mode.isAdding { return Text(clash: .copy("New Policy Group")) }
+        return Text(verbatim: editor.name.isEmpty ? request.group.name : editor.name)
+    }
+
+     
+    private var cancel: (() -> Void)? {
+        if case .adding(let cancel) = request.mode { return cancel }
+        return nil
+    }
+
+     
+     
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            if let cancel {
+                Button { cancel() } label: { Text(clash: .copy("Cancel")) }
+                    .accessibilityIdentifier("configuration.rules.group.cancel")
+            }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            if cancel != nil {
+                Button { Task { await editor.add() } } label: { ClashActionProgressLabel(.copy("Add"), isBusy: editor.adding) }
+                    .disabled(!editor.canAdd || editor.adding)
+                    .accessibilityIdentifier("configuration.rules.group.add.confirm")
+            } else if let close = request.close {
+                Button {
+                    Task { await editor.rename(); await editor.setIcon(); close() }
+                } label: { Text(clash: .copy("Done")) }
+                    .accessibilityIdentifier("configuration.rules.group.done")
+            }
+        }
+    }
+
+     
+     
+     
+     
+    private func deletionSection(_ deletion: ClashTowerGroupPageDeletion) -> some View {
+        let refusal = ClashTowerGroupDeletionCopy.refusal(deletion.users, group: request.group.name, locale: locale)
+        return Section {
+            Button(role: .destructive) {
+                deletion.delete()
+                if deletion.dismissesPage { dismiss() }
+            } label: {
+                Text(clash: .copy("Delete Policy Group"))
+            }
+            .disabled(refusal != nil)
+            .accessibilityIdentifier("configuration.rules.group.delete")
+        } footer: {
+            Text(verbatim: refusal ?? ClashCopy.string(ClashTowerGroupDeletionCopy.consequence, locale: locale))
+                .accessibilityIdentifier("configuration.rules.group.delete.note")
+        }
+    }
+
+     
+     
+    private func excludesRow(pattern: OrderedJSON?, types: OrderedJSON?) -> some View {
+        let group = editor.name.isEmpty ? request.group.name : editor.name
+        return ClashNativeNavigationLink {
+            ConfigurationGroupExcludesPage(group: group, pattern: ConfigurationGroupExcludes.text(pattern),
+                                           types: ConfigurationGroupExcludes.text(types), schemeNote: schemeNote,
+                                           reading: reading) { key, value in
+                 
+                if await editor.write(key, value) { return nil }
+                defer { editor.refusal = nil }
+                return editor.refusal ?? ""
+            }
+        } label: {
+            ConfigurationRowLabel(title: .verbatim(ConfigurationGroupExcludes.title(fieldCopy, locale: locale)),
+                                  value: ConfigurationGroupExcludes.summary(pattern: pattern, types: types),
+                                  isDefault: pattern == nil && types == nil)
+        }
+        .accessibilityIdentifier("configuration.rules.group.excludes")
     }
 
      
@@ -4022,7 +4284,9 @@ struct ConfigurationSchemeGroupPage: View {
             }
             ClashNativeNavigationLink {
                 ConfigurationMembersChecklist(title: editor.name, members: members, options: memberOptions,
-                                              allowsEmpty: ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: [], use: writtenUses)) { chosen in
+                                              allowsEmpty: request.mode.isAdding
+                                                || ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: [], use: writtenUses),
+                                              search: request.targetSearch) { chosen in
                     await editor.write("proxies", chosen.isEmpty ? nil : .array(chosen.map(OrderedJSON.string)))
                 }
             } label: {
@@ -4037,7 +4301,8 @@ struct ConfigurationSchemeGroupPage: View {
     private func setMember(_ member: String, on: Bool, members: [String], shown: [String]) {
         if visitMembers == nil { visitMembers = shown }
         let next = ConfigurationMemberSwitches.switching(member, on: on, members: members, shown: shown)
-        guard next != members, ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: next, use: writtenUses) else { return }
+        guard next != members,
+              request.mode.isAdding || ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: next, use: writtenUses) else { return }
         Task { await editor.write("proxies", next.isEmpty ? nil : .array(next.map(OrderedJSON.string))) }
     }
 
@@ -4067,7 +4332,8 @@ struct ConfigurationSchemeGroupPage: View {
             }
             ClashNativeNavigationLink {
                 ConfigurationMembersChecklist(title: editor.name, members: uses, options: providerOptions,
-                                              allowsEmpty: ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: writtenMembers, use: [])) { chosen in
+                                              allowsEmpty: request.mode.isAdding
+                                                || ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: writtenMembers, use: [])) { chosen in
                     await editor.write("use", chosen.isEmpty ? nil : .array(chosen.map(OrderedJSON.string)))
                 }
             } label: {
@@ -4084,7 +4350,8 @@ struct ConfigurationSchemeGroupPage: View {
     private func setProvider(_ provider: String, on: Bool, uses: [String], shown: [String]) {
         if visitProviders == nil { visitProviders = shown }
         let next = ConfigurationMemberSwitches.switching(provider, on: on, members: uses, shown: shown)
-        guard next != uses, ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: writtenMembers, use: next) else { return }
+        guard next != uses,
+              request.mode.isAdding || ConfigurationMemberSwitches.drawsFromSomething(editor.document, proxies: writtenMembers, use: next) else { return }
         Task { await editor.write("use", next.isEmpty ? nil : .array(next.map(OrderedJSON.string))) }
     }
 
@@ -4112,13 +4379,20 @@ struct ConfigurationSchemeGroupPage: View {
  
  
  
+ 
+ 
 @MainActor
 final class ConfigurationSchemeGroupEditor: ObservableObject {
     let request: ClashTowerGroupPageRequest
     @Published private(set) var document: OrderedJSON
     @Published var name: String
+    @Published var icon: String
      
     @Published var refusal: String?
+     
+    @Published private(set) var adding = false
+     
+    var locale = Locale.current
      
     private var saved: OrderedJSON
 
@@ -4127,13 +4401,24 @@ final class ConfigurationSchemeGroupEditor: ObservableObject {
         document = request.group.document
         saved = request.group.document
         name = request.group.name
+        icon = ClashTowerGroupIcon.read(request.group.document)
     }
 
      
      
+     
     @discardableResult
     func write(_ key: String, _ value: OrderedJSON?) async -> Bool {
-        await commit(value.map { saved.settingTopLevel(key, to: $0) } ?? saved.removingTopLevel(key))
+        var next = value.map { saved.settingTopLevel(key, to: $0) } ?? saved.removingTopLevel(key)
+         
+        if key == "type" || key == "use" { next = Self.completingHealthCheck(next) }
+        guard !request.mode.isReading else { return false }
+        if request.mode.isAdding {
+            document = next
+            saved = next
+            return true
+        }
+        return await commit(next)
     }
 
      
@@ -4141,8 +4426,51 @@ final class ConfigurationSchemeGroupEditor: ObservableObject {
     @discardableResult
     func rename() async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, saved.topLevelValue("name") != .string(trimmed) else { return true }
+        guard !request.mode.isAdding, !request.mode.isReading,
+              !trimmed.isEmpty, saved.topLevelValue("name") != .string(trimmed) else { return true }
         return await commit(saved.settingTopLevel("name", to: .string(trimmed)))
+    }
+
+     
+     
+    @discardableResult
+    func setIcon() async -> Bool {
+        guard !request.mode.isAdding, !request.mode.isReading else { return true }
+        let next = ClashTowerGroupIcon.apply(icon, to: saved)
+        guard next != saved else { return true }
+        return await commit(next)
+    }
+
+     
+     
+     
+    var canAdd: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && ConfigurationMemberSwitches.drawsFromSomething(
+                document, proxies: document.topLevelValue("proxies").flatMap(ConfigurationOriginalMembersView.names) ?? [],
+                use: document.topLevelValue("use").flatMap(ConfigurationOriginalMembersView.names) ?? [])
+    }
+
+     
+     
+     
+    @discardableResult
+    func add() async -> Bool {
+        guard request.mode.isAdding, canAdd, !adding else { return false }
+        adding = true
+        defer { adding = false }
+        var next = ClashTowerGroupIcon.apply(icon, to: document.settingTopLevel(
+            "name", to: .string(name.trimmingCharacters(in: .whitespacesAndNewlines))))
+        if case .array(let members)? = next.topLevelValue("proxies"), members.isEmpty { next = next.removingTopLevel("proxies") }
+        next = Self.completingHealthCheck(next)
+        do {
+            try await request.save(next)
+            refusal = nil
+            return true
+        } catch {
+            refusal = Self.sentence(error, locale: locale)
+            return false
+        }
     }
 
     private func commit(_ next: OrderedJSON) async -> Bool {
@@ -4155,9 +4483,35 @@ final class ConfigurationSchemeGroupEditor: ObservableObject {
         } catch {
             document = saved
             if case .string(let current)? = saved.topLevelValue("name") { name = current }
-            refusal = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            icon = ClashTowerGroupIcon.read(saved)
+            refusal = Self.sentence(error, locale: locale)
             return false
         }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    static func completingHealthCheck(_ document: OrderedJSON) -> OrderedJSON {
+        guard case .string(let type)? = document.topLevelValue("type"), type == "url-test" || type == "fallback",
+              case .array(let use)? = document.topLevelValue("use"), !use.isEmpty,
+              document.topLevelValue("url") == nil else { return document }
+        var completed = document.settingTopLevel("url", to: .string("https://www.gstatic.com/generate_204"))
+        if completed.topLevelValue("interval") == nil { completed = completed.settingTopLevel("interval", to: .scalar("300")) }
+        return completed
+    }
+
+     
+     
+     
+    static func sentence(_ error: Error, locale: Locale) -> String {
+        error is ConfigurationRuleGroupError
+            ? ClashConfigurationRuleGroupCopy.message(error, locale: locale)
+            : ClashErrorCopy.message(error, locale: locale)
     }
 }
 
@@ -4260,15 +4614,25 @@ struct ConfigurationMembersChecklist: View {
      
      
     let allowsEmpty: Bool
+     
+     
+     
+     
+    let search: ClashRuleTargetSearchHook?
     let save: ([String]) async -> Bool
     @State private var members: [String]
     @State private var editMode: EditMode = .inactive
+     
+     
+    @State private var query = ""
+    @State private var found: [(title: ClashDisplayText, names: [String])] = []
 
     init(title: String, members: [String], options: [(title: ClashDisplayText, names: [String])],
-         allowsEmpty: Bool = false, save: @escaping ([String]) async -> Bool) {
+         allowsEmpty: Bool = false, search: ClashRuleTargetSearchHook? = nil, save: @escaping ([String]) async -> Bool) {
         self.title = title
         self.options = options
         self.allowsEmpty = allowsEmpty
+        self.search = search
         self.save = save
         _members = State(initialValue: members)
     }
@@ -4282,13 +4646,14 @@ struct ConfigurationMembersChecklist: View {
                     .onDelete(perform: editMode.isEditing ? nil : { offsets in change { $0.remove(atOffsets: offsets) } })
                     .onMove { from, to in change { $0.move(fromOffsets: from, toOffset: to) } }
             } header: { Text("Selected (in priority order)") }
-            ForEach(Array(sections.enumerated()), id: \.offset) { _, option in
+            ForEach(Array(shownSections.enumerated()), id: \.offset) { _, option in
                 if !option.names.isEmpty {
                     Section {
                          
                          
                         ForEach(option.names, id: \.self) { name in
                             Toggle(isOn: Binding(get: { chosen.contains(name) }, set: { on in
+                                if on { search?.recordUse(name) }
                                 change { list in
                                     if on, !list.contains(name) { list.append(name) }
                                     if !on { list.removeAll { $0 == name } }
@@ -4311,7 +4676,29 @@ struct ConfigurationMembersChecklist: View {
             }
         }
         .environment(\.editMode, $editMode)
+        .searchable(text: $query)
+        .clashBottomSearchClearance()
+         
+        .task(id: query) {
+            guard let search, !query.isEmpty else { found = []; return }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let sections = await search.sections(query, members)
+            guard !Task.isCancelled else { return }
+            found = sections.filter { $0.kind != .providers }.map { (title: ClashDisplayText.verbatim($0.sourceLabel ?? $0.id), names: $0.names) }
+        }
         .accessibilityIdentifier("configuration-editor.members.list")
+    }
+
+     
+     
+    private var shownSections: [(title: ClashDisplayText, names: [String])] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return sections }
+        let listed = Set(sections.flatMap(\.names))
+        let filtered = sections.map { (title: $0.title, names: $0.names.filter { $0.localizedCaseInsensitiveContains(query) }) }
+        let extra = found.map { (title: $0.title, names: $0.names.filter { !listed.contains($0) }) }
+        return filtered + extra
     }
 
      
@@ -4734,6 +5121,12 @@ struct ConfigurationOriginalValueView: View {
 struct ConfigurationOriginalNewEntryForm: View {
     let section: ConfigurationOutlineSection
     let catalog: ProfilesViewModel.SyntaxCatalog?
+     
+     
+    var note: String? = nil
+     
+     
+    var confirmTitle: String = "Save"
     let taken: Set<String>
     let save: (String, String) -> Void
     @State private var name = ""
@@ -4831,6 +5224,10 @@ struct ConfigurationOriginalNewEntryForm: View {
                                 .accessibilityIdentifier("configuration-editor.original.new.location")
                         }
                     }
+                } footer: {
+                    if let note {
+                        Text(verbatim: note).accessibilityIdentifier("configuration-editor.original.new.link-note")
+                    }
                 }
             }
             .navigationTitle(Text(clash: .copy("Add")))
@@ -4844,7 +5241,7 @@ struct ConfigurationOriginalNewEntryForm: View {
                         save(trimmedName, Self.json(groups: isGroups, name: trimmedName, type: type, behavior: behavior,
                                                     format: format, location: location.trimmingCharacters(in: .whitespaces)))
                         dismiss()
-                    } label: { Text(clash: .copy("Save")) }
+                    } label: { Text(clash: .copy(confirmTitle)) }
                     .disabled(!valid)
                     .accessibilityIdentifier("configuration-editor.original.new.save")
                 }

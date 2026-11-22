@@ -6,6 +6,10 @@ public struct PreparedConfigurationCreation: Sendable {
     public let composition: ConfigurationComposition
     public let candidate: ConfigurationLibrarySnapshot
     public let payloads: [ConfigurationSourcePayload]
+     
+     
+     
+    public var renamedIdentifiers: [String: String] = [:]
 }
 
 public struct PreparedConfigurationSourceUpdate: Sendable {
@@ -16,6 +20,10 @@ public struct PreparedConfigurationSourceUpdate: Sendable {
      
      
     public var pageRefusals: [String: String] = [:]
+     
+     
+     
+    public var nodeRemoval: ConfigurationNodeRemoval? = nil
 }
 
  
@@ -242,14 +250,25 @@ extension ConfigurationLibraryStore {
         return .init(recipe: existing, composition: prepared.composition, candidate: candidate, payloads: prepared.payloads)
     }
 
+     
+     
+     
+     
+     
     public func prepareSourceUpdate(_ replacement: ConfigurationSourcePayload,
                                     expectedGeneration: UInt64, updatingPinnedConsumers: Bool = false,
                                     replaceEditedRules: Bool = false,
+                                    restoringNamedNodesOf schemes: [ConfigurationRuleScheme] = [],
                                     resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput = {
                                         .init(id: $0.record.id, document: try OrderedJSON.parse($0.documentJSON))
                                     }) throws -> PreparedConfigurationSourceUpdate {
-        let current = try snapshot()
+        var current = try snapshot()
         guard current.generation == expectedGeneration else { throw ConfigurationLibraryError.staleGeneration }
+        for scheme in schemes {
+            guard let index = current.rules.firstIndex(where: { $0.id == scheme.id }) else { continue }
+            current.rules[index].namedNodes = scheme.namedNodes
+            current.rules[index].namedNodesSourceID = scheme.namedNodesSourceID
+        }
         return try prepareSourceUpdate(replacement, from: current, updatingPinnedConsumers: updatingPinnedConsumers,
             replaceEditedRules: replaceEditedRules, resolveInput: resolveInput)
     }
@@ -1407,12 +1426,8 @@ extension ConfigurationLibraryStore {
         let original = try payload(.init(record))
         guard scheme.collectionKey != nil else { return original }
         let document = try scheme.projectingCollection(OrderedJSON.parse(original.documentJSON))
-        var metadata = original.record; metadata.nodeCount = 0; metadata.providerCount = 0
-        metadata.groupCount = 1; metadata.ruleCount = 2; metadata.ruleProviderCount = 1; metadata.suppliesNodes = false
-         
-         
-        metadata.rulesWrittenInOriginal = nil
-        return .init(record: metadata, original: original.original, documentJSON: document.serialized(), resourceFiles: original.resourceFiles)
+        return .init(record: original.record.projectedAsCollectionScheme, original: original.original,
+                     documentJSON: document.serialized(), resourceFiles: original.resourceFiles)
     }
 
      
@@ -1710,11 +1725,15 @@ extension ConfigurationLibraryStore {
         recipe.settingsRuleDependencies = references.isEmpty ? nil : references
     }
 
+     
+     
+     
     private func settingsProviders(_ references: [String: ConfigurationSourceVersion]?,
+        held: [ConfigurationSourcePayload] = [],
         resolveInput: (ConfigurationSourcePayload) throws -> ConfigurationInput) throws -> OrderedJSON {
         var entries: [(key: String, value: OrderedJSON)] = []
         for (name, reference) in (references ?? [:]).sorted(by: { $0.key < $1.key }) {
-            let input = try resolveInput(payload(reference))
+            let input = try resolveInput(held.first { ConfigurationSourceVersion($0.record) == reference } ?? payload(reference))
             guard var definition = input.document.topLevelValue("rule-providers")?.topLevelValue(name) else {
                 throw ConfigurationCompositionError.unresolvedDependency(source: "Advanced settings", name: name)
             }
@@ -1921,7 +1940,7 @@ extension ConfigurationLibraryStore {
         return try composeInputs(recipe.sources.map(input), ruleInput: input(recipe.ruleSource),
             schemeID: recipe.ruleSchemeID, scheme: scheme,
             page: try ConfigurationSchemePage.effective(of: recipe, scheme: scheme), nodeScopes: recipe.nodeScopes,
-            settingsProviders: try settingsProviders(recipe.settingsRuleDependencies, resolveInput: resolveInput),
+            settingsProviders: try settingsProviders(recipe.settingsRuleDependencies, held: held, resolveInput: resolveInput),
             ruleSchemes: snapshot.rules)
     }
 
@@ -2172,6 +2191,40 @@ public extension ConfigurationBuiltins {
     static func isNative(_ id: String) -> Bool { id == basicRuleID || id == lazyRuleID }
 
      
+     
+     
+     
+    static func customizedName(_ base: String) -> String {
+        String(format: NSLocalizedString("%@ (Modified)", comment: "A built-in rule scheme the reader changed"), base)
+    }
+
+     
+     
+     
+     
+    static func ownViewName(_ scheme: String) -> String {
+        String(format: NSLocalizedString("%@ · This configuration only",
+                                         comment: "A configuration's own customized copy of a rule scheme"), scheme)
+    }
+
+     
+     
+     
+     
+    static var legacyCustomSuffix: String { " · " + NSLocalizedString("Custom", comment: "Customized rule scheme") }
+
+     
+     
+     
+     
+     
+    static func legacyDisplayNames(for id: String) -> [String] {
+        if id == basicRuleID { return ["默认配置", "預設設定檔"] }
+        if id == lazyRuleID { return ["懒人配置", "懶人設定檔"] }
+        return []
+    }
+
+     
     static func displayName(for id: String) -> String? {
         if id == basicRuleID { return NSLocalizedString("Default Configuration", comment: "Built-in routing template") }
         if id == lazyRuleID { return NSLocalizedString("Lazy Configuration", comment: "Built-in routing template") }
@@ -2244,6 +2297,30 @@ public extension ConfigurationBuiltins {
 
 public extension ConfigurationRuleScheme {
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    var builtinNamedAfter: String? {
+        if ConfigurationBuiltins.isNative(id) { return id }
+        if let base = baseSchemeID {
+            return ConfigurationBuiltins.schemes.contains(where: { $0.id == base && $0.label == label }) ? base : nil
+        }
+        guard ownViewOfCustomScheme == true, ownViewBaseID != nil else { return nil }
+        return ConfigurationBuiltins.schemes.first(where: { $0.label == label })?.id
+    }
+
+     
+    private var nameAsRead: String { builtinNamedAfter.flatMap(ConfigurationBuiltins.displayName(for:)) ?? label }
+
+     
     var displayLabel: String {
         if let builtin = ConfigurationBuiltins.displayName(for: id) { return builtin }
          
@@ -2252,12 +2329,15 @@ public extension ConfigurationRuleScheme {
          
          
          
+         
+         
+         
         if let base = ownViewBaseID {
-            let custom = " · " + NSLocalizedString("Custom", comment: "Customized rule scheme")
-            let scheme = ConfigurationBuiltins.displayName(for: base) ?? label + (ownViewOfCustomScheme == true ? custom : "")
-            return plainViewBaseID != nil ? scheme : scheme + custom
+            let scheme = ConfigurationBuiltins.displayName(for: base)
+                ?? (ownViewOfCustomScheme == true ? ConfigurationBuiltins.customizedName(nameAsRead) : nameAsRead)
+            return plainViewBaseID != nil ? scheme : ConfigurationBuiltins.ownViewName(scheme)
         }
-        if baseSchemeID.map(ConfigurationBuiltins.isNative) == true { return label + " · " + NSLocalizedString("Custom", comment: "Customized rule scheme") }
+        if baseSchemeID.map(ConfigurationBuiltins.isNative) == true { return ConfigurationBuiltins.customizedName(nameAsRead) }
         return label
     }
 }

@@ -84,6 +84,13 @@ struct ModuleRecord: Equatable, Identifiable, Sendable {
     var scriptFailureCount: [String: Int] = [:]
      
      
+    var scriptValidators: [String: ModuleScriptValidators] = [:]
+     
+     
+     
+    var scriptMisses: [String: ModuleDownloadMiss] = [:]
+     
+     
      
     var linkFailureCount = 0
      
@@ -140,6 +147,23 @@ struct ModuleHeldScriptBody: Codable, Equatable, Sendable {
     var fetchedAt: Date?
 }
 
+ 
+ 
+ 
+ 
+ 
+struct ModuleScriptValidators: Codable, Equatable, Sendable {
+    var sha256: String
+    var etag: String?
+    var lastModified: String?
+
+     
+    static func of(_ sha256: String, etag: String?, lastModified: String?) -> ModuleScriptValidators? {
+        guard etag != nil || lastModified != nil else { return nil }
+        return ModuleScriptValidators(sha256: sha256, etag: etag, lastModified: lastModified)
+    }
+}
+
 struct ModuleFileState: Codable, Equatable, Sendable {
     var sha256: String?
     var fetchedAt: Date?
@@ -149,6 +173,82 @@ struct ModuleFileState: Codable, Equatable, Sendable {
     var failures = 0
     var etag: String?
     var lastModified: String?
+     
+     
+    var lastMiss: ModuleDownloadMiss?
+
+    enum CodingKeys: String, CodingKey {
+        case sha256, fetchedAt, attemptedAt, failures, etag, lastModified, lastMiss
+    }
+}
+
+extension ModuleFileState {
+     
+     
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sha256 = try c.decodeIfPresent(String.self, forKey: .sha256)
+        fetchedAt = try c.decodeIfPresent(Date.self, forKey: .fetchedAt)
+        attemptedAt = try c.decodeIfPresent(Date.self, forKey: .attemptedAt)
+        failures = try c.decode(Int.self, forKey: .failures)
+        etag = try c.decodeIfPresent(String.self, forKey: .etag)
+        lastModified = try c.decodeIfPresent(String.self, forKey: .lastModified)
+        lastMiss = try? c.decodeIfPresent(ModuleDownloadMiss.self, forKey: .lastMiss)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+struct ModuleDownloadMiss: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case status(Int)
+        case unreached(connected: Bool?)
+        case unusable
+
+         
+        func connected(_ connected: Bool?) -> Kind {
+            if case .unreached = self { return .unreached(connected: connected) }
+            return self
+        }
+    }
+
+    var kind: Kind
+    var at: Date
+}
+
+extension ModuleDownloadMiss: Codable {
+    private enum CodingKeys: String, CodingKey { case kind, status, connected, at }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Date.self, forKey: .at)
+        switch try c.decode(String.self, forKey: .kind) {
+        case "status": kind = .status(try c.decode(Int.self, forKey: .status))
+        case "unreached": kind = .unreached(connected: try c.decodeIfPresent(Bool.self, forKey: .connected))
+        case "unusable": kind = .unusable
+        case let other: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "a kind this build does not know: \(other)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch kind {
+        case .status(let status):
+            try c.encode("status", forKey: .kind)
+            try c.encode(status, forKey: .status)
+        case .unreached(let connected):
+            try c.encode("unreached", forKey: .kind)
+            try c.encodeIfPresent(connected, forKey: .connected)
+        case .unusable:
+            try c.encode("unusable", forKey: .kind)
+        }
+        try c.encode(at, forKey: .at)
+    }
 }
 
 extension ModuleRecord.Origin: Codable {
@@ -187,7 +287,7 @@ extension ModuleRecord: Codable {
     private enum CodingKeys: String, CodingKey {
         case id, origin, enabled, name, label, updateInterval, lastCheckedAt, lastUpdatedAt, lastFailure
         case scriptFetchedAt, sourceSHA256, scriptAttemptedAt, scriptFailureCount, linkFailureCount, fileStates, appScriptAddresses
-        case argumentValues, storedValues, heldScriptBodies
+        case argumentValues, storedValues, heldScriptBodies, scriptValidators, scriptMisses
         case countedWithoutSizeCaps
         case schemaVersion
     }
@@ -229,14 +329,19 @@ extension ModuleRecord: Codable {
         argumentValues = try c.decodeIfPresent([String: String].self, forKey: .argumentValues) ?? [:]
         storedValues = try c.decodeIfPresent([String: String].self, forKey: .storedValues) ?? [:]
         heldScriptBodies = (try? c.decodeIfPresent([String: ModuleHeldScriptBody].self, forKey: .heldScriptBodies)) ?? [:]
+        scriptValidators = (try? c.decodeIfPresent([String: ModuleScriptValidators].self, forKey: .scriptValidators)) ?? [:]
+         
+        scriptMisses = (try? c.decodeIfPresent([String: ModuleDownloadMiss].self, forKey: .scriptMisses)) ?? [:]
         if try c.decodeIfPresent(Bool.self, forKey: .countedWithoutSizeCaps) != true {
             scriptAttemptedAt = [:]
             scriptFailureCount = [:]
+            scriptMisses = [:]
             linkFailureCount = 0
             fileStates = fileStates.mapValues { state in
                 var state = state
                 state.failures = 0
                 state.attemptedAt = nil
+                state.lastMiss = nil
                 return state
             }
         }
@@ -271,6 +376,8 @@ extension ModuleRecord: Codable {
         if !argumentValues.isEmpty { try c.encode(argumentValues, forKey: .argumentValues) }
         if !storedValues.isEmpty { try c.encode(storedValues, forKey: .storedValues) }
         if !heldScriptBodies.isEmpty { try c.encode(heldScriptBodies, forKey: .heldScriptBodies) }
+        if !scriptValidators.isEmpty { try c.encode(scriptValidators, forKey: .scriptValidators) }
+        if !scriptMisses.isEmpty { try c.encode(scriptMisses, forKey: .scriptMisses) }
         try c.encode(countedWithoutSizeCaps, forKey: .countedWithoutSizeCaps)
         try c.encode(schemaVersion, forKey: .schemaVersion)
     }
@@ -279,8 +386,8 @@ extension ModuleRecord: Codable {
     static let knownKeys: Set<String> = Set(["id", "origin", "enabled", "name", "label", "updateInterval", "lastCheckedAt", "lastUpdatedAt",
                                               "lastFailure", "scriptFetchedAt", "sourceSHA256", "scriptAttemptedAt",
                                               "scriptFailureCount", "linkFailureCount", "fileStates", "appScriptAddresses",
-                                              "argumentValues", "storedValues", "heldScriptBodies", "countedWithoutSizeCaps",
-                                              "schemaVersion"])
+                                              "argumentValues", "storedValues", "heldScriptBodies", "scriptValidators",
+                                              "scriptMisses", "countedWithoutSizeCaps", "schemaVersion"])
 }
 
 extension ModuleRecord {
@@ -294,6 +401,7 @@ extension ModuleRecord {
         return link.hasPrefix("http://")
     }
 
+     
      
      
      
@@ -311,11 +419,14 @@ extension ModuleRecord {
         fileStates = other.fileStates
         appScriptAddresses = other.appScriptAddresses
         heldScriptBodies = other.heldScriptBodies
+        scriptValidators = other.scriptValidators
+        scriptMisses = other.scriptMisses
     }
 
      
     mutating func absorb(_ prepared: ModuleStore.Prepared) {
         scriptFetchedAt = prepared.scriptFetchedAt
+        scriptValidators = prepared.scriptValidators
         for (address, at) in prepared.attemptedAt {
             scriptAttemptedAt[address] = at
             if prepared.failedAddresses.contains(address) {
@@ -323,11 +434,14 @@ extension ModuleRecord {
             } else {
                 scriptFailureCount[address] = nil
             }
+             
+            scriptMisses[address] = prepared.scriptMisses[address]
         }
         let current = Set(prepared.ir.scripts.map(\.scriptURL)).union(prepared.ir.appScripts.map(\.scriptURL))
             .union(prepared.failedAddresses).union(prepared.waiting)
         scriptAttemptedAt = scriptAttemptedAt.filter { current.contains($0.key) }
         scriptFailureCount = scriptFailureCount.filter { current.contains($0.key) }
+        scriptMisses = scriptMisses.filter { current.contains($0.key) }
         fileStates = prepared.fileStates
         appScriptAddresses = prepared.appScriptAddresses
         heldScriptBodies = prepared.heldScriptBodies
@@ -1251,6 +1365,30 @@ actor ModuleStore {
      
      
      
+     
+     
+    static func missKind(for error: Error, connected: Bool?) -> ModuleDownloadMiss.Kind? {
+        switch error as? DownloadError {
+        case .badStatus(let status)? where status >= 0, .refusedAuthorization(let status)?, .linkRefused(let status, _)?:
+            return .status(status)
+        case .badStatus?, .tooLarge?, .invalidPayload?:
+             
+            return .unusable
+        case .invalidLimit?:
+            return nil
+        case nil:
+            break
+        }
+        switch error as? ModuleStoreError {
+        case .notAScript?, .emptyScript?: return .unusable
+        default: break
+        }
+        return reachedNoAnswer(error) ? .unreached(connected: connected) : nil
+    }
+
+     
+     
+     
     static func reachedNoAnswer(_ error: Error) -> Bool {
         if case ModuleStoreError.serverNotVerified? = error as? ModuleStoreError { return true }
         if error is URLError { return true }
@@ -1527,6 +1665,7 @@ actor ModuleStore {
      
      
      
+     
     func download(_ url: URL, maxBytes: Int, etag: String?, lastModified: String?, headers: [String: String] = [:],
                   redirects: DownloadRedirectPolicy = .followAcrossOrigins(maxHops: 5), agent: String) async throws -> DownloadResult {
         var request = URLRequest(url: url)
@@ -1592,8 +1731,23 @@ actor ModuleStore {
         var appScriptAddresses: Set<String> = []
          
         var heldScriptBodies: [String: ModuleHeldScriptBody] = [:]
+         
+         
+        var scriptValidators: [String: ModuleScriptValidators] = [:]
+         
+        var scriptMisses: [String: ModuleDownloadMiss] = [:]
     }
 
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
      
      
      
@@ -1619,7 +1773,7 @@ actor ModuleStore {
     func prepare(data: Data, sourceURL: String?, fetchedAt: Date, id: String, previous: ModuleIR?,
                  previousFetchedAt: [String: Date], retrying record: ModuleRecord? = nil,
                  fetchingScripts: Bool = true, argumentValues given: [String: String]? = nil,
-                 readerAsked: Bool = false) async throws -> Prepared {
+                 readerAsked: Bool = false, connected: Bool? = nil) async throws -> Prepared {
          
          
          
@@ -1652,6 +1806,8 @@ actor ModuleStore {
         var failed: [String: ModuleSentence] = [:]
         var attempted: [String: Date] = [:]
         var failedAddresses = Set<String>()
+         
+        var misses: [String: ModuleDownloadMiss] = [:]
         var waiting = Set<String>()
          
          
@@ -1673,6 +1829,16 @@ actor ModuleStore {
          
         func earlierFetchedAt(_ address: String) -> Date? {
             previousFetchedAt[address] ?? record?.heldScriptBodies[address]?.fetchedAt
+        }
+         
+         
+        var validators: [String: ModuleScriptValidators] = [:]
+        func knownValidators(_ address: String, of sha: String) -> ModuleScriptValidators? {
+            guard let known = record?.scriptValidators[address], known.sha256 == sha else { return nil }
+            return known
+        }
+        func keepValidators(_ address: String, of sha: String) {
+            if let known = knownValidators(address, of: sha) { validators[address] = known }
         }
          
          
@@ -1712,10 +1878,13 @@ actor ModuleStore {
             }
             let earlier = earlierBody(address)
             let earlierOnDisk = earlier.map { FileManager.default.fileExists(atPath: locations.script(id, sha256: $0).path) } ?? false
-            if let earlier, earlierOnDisk, failed[address] == nil, let at = earlierFetchedAt(address),
+             
+             
+            if !readerAsked, let earlier, earlierOnDisk, failed[address] == nil, let at = earlierFetchedAt(address),
                now().timeIntervalSince(at) < ModuleLineSyntax.scriptCheckInterval(script.updateInterval) {
                 shas[address] = earlier
                 fetched[address] = at
+                keepValidators(address, of: earlier)
                 script.bodySHA256 = earlier
                 keptAt[index] = script
                 continue
@@ -1732,6 +1901,7 @@ actor ModuleStore {
                 if let earlier, earlierOnDisk {
                     shas[address] = earlier
                     if let at = previousFetchedAt[address] { fetched[address] = at }
+                    keepValidators(address, of: earlier)
                     script.bodySHA256 = earlier
                     keptAt[index] = script
                     waiting.insert(address)
@@ -1803,13 +1973,36 @@ actor ModuleStore {
             attempted[address] = now()
              
              
+             
+            let asking = readerAsked && earlierOnDisk
+                ? earlier.flatMap { knownValidators(address, of: $0) }.flatMap { $0.etag != nil || $0.lastModified != nil ? $0 : nil }
+                : nil
+             
+             
             do {
-                let body = try await download(try Self.address(address), maxBytes: .max, agent: ModuleUserAgent.forModule(ir.manifest))
+                let answer = try await download(try Self.address(address), maxBytes: .max, etag: asking?.etag,
+                                                lastModified: asking?.lastModified, agent: ModuleUserAgent.forModule(ir.manifest))
+                if answer.notModified {
+                     
+                     
+                     
+                    guard let asking, let earlier else { throw DownloadError.badStatus(-1) }
+                    shas[address] = earlier
+                    fetched[address] = now()
+                    validators[address] = ModuleScriptValidators(sha256: earlier, etag: answer.etag ?? asking.etag,
+                                                                 lastModified: answer.lastModified ?? asking.lastModified)
+                    script.bodySHA256 = earlier
+                    keptAt[index] = script
+                    log("module \(id): script \(script.name) has not changed at \(address); the copy downloaded before stays")
+                    continue
+                }
+                let body = answer.data
                 try Self.checkScript(body)
                 let sha = ModuleJSON.sha256(body)
                 newBodies[sha] = body
                 shas[address] = sha
                 fetched[address] = now()
+                validators[address] = ModuleScriptValidators.of(sha, etag: answer.etag, lastModified: answer.lastModified)
                 script.bodySHA256 = sha
                 keptAt[index] = script
                 log("module \(id): script \(script.name) downloaded from \(address), \(body.count) bytes, sha256 \(sha)")
@@ -1833,11 +2026,15 @@ actor ModuleStore {
                     continue
                 }
                 failedAddresses.insert(address)
+                if let at = attempted[address], let kind = Self.missKind(for: error, connected: connected) {
+                    misses[address] = ModuleDownloadMiss(kind: kind, at: at)
+                }
                 let why = Self.scriptFailureText(for: error)
                 let message = why.englishText
                 if let earlier, earlierOnDisk {
                     shas[address] = earlier
                     if let at = previousFetchedAt[address] { fetched[address] = at }
+                    keepValidators(address, of: earlier)
                     script.bodySHA256 = earlier
                     keptAt[index] = script
                     log("module \(id): script \(script.name) was not updated from \(address) (\(message)); the copy downloaded before stays")
@@ -1856,7 +2053,7 @@ actor ModuleStore {
         let files = try await resolveFiles(ir, id: id, previous: previous, states: record?.fileStates ?? [:],
                                            interval: record?.updateInterval ?? Self.defaultUpdateInterval, at: fetchedAt,
                                            fetchingFiles: fetchingScripts && !ranOutOfTime, fetchingSets: !ranOutOfTime,
-                                           readerAsked: readerAsked)
+                                           readerAsked: readerAsked, connected: connected)
         ir = files.ir
         if files.ranOutOfTime { ranOutOfTime = true }
          
@@ -1866,7 +2063,8 @@ actor ModuleStore {
         return Prepared(ir: ir, scriptFetchedAt: fetched, bodies: newBodies, attemptedAt: attempted,
                         failedAddresses: failedAddresses, waiting: waiting, ranOutOfTime: ranOutOfTime, fileStates: files.states,
                         appScriptAddresses: appAddresses,
-                        heldScriptBodies: heldBodies(ir, id: id, previous: previous, previousFetchedAt: previousFetchedAt, record: record))
+                        heldScriptBodies: heldBodies(ir, id: id, previous: previous, previousFetchedAt: previousFetchedAt, record: record),
+                        scriptValidators: validators, scriptMisses: misses)
     }
 
      
@@ -2079,9 +2277,12 @@ actor ModuleStore {
      
      
      
+     
+     
     func resolveFiles(_ ir: ModuleIR, id: String, previous: ModuleIR?, states: [String: ModuleFileState] = [:],
                       interval: Int = ModuleStore.defaultUpdateInterval, at passTime: Date? = nil,
-                      fetchingFiles: Bool, fetchingSets: Bool, readerAsked: Bool = false) async throws -> ResolvedFiles {
+                      fetchingFiles: Bool, fetchingSets: Bool, readerAsked: Bool = false,
+                      connected: Bool? = nil) async throws -> ResolvedFiles {
         guard !ir.answerFiles.isEmpty || ir.ruleSets.contains(where: { $0.url != nil }) else { return ResolvedFiles(ir: ir, states: [:]) }
          
         preparing[id, default: 0] += 1
@@ -2151,8 +2352,11 @@ actor ModuleStore {
             let tried = item.place == .sets ? fetchingSets : fetchingFiles
             let due: Bool = {
                  
+                 
+                 
+                if readerAsked { return true }
+                 
                 if state.failures > 0, let at = state.attemptedAt {
-                    if readerAsked { return true }
                     let widest = Self.retryInterval(item.interval, module: interval)
                     return now().timeIntervalSince(at) >= Self.fileRetryDelay(failures: state.failures, interval: widest)
                 }
@@ -2194,7 +2398,9 @@ actor ModuleStore {
                         log("module \(id): \(item.url) is not a jq program Clash reads (\(jqWords ?? #"not text"#))")
                         failure = .unusable
                         state.failures += 1
-                        state.attemptedAt = now()
+                        let at = now()
+                        state.attemptedAt = at
+                        state.lastMiss = ModuleDownloadMiss(kind: .unusable, at: at)
                     }
                 case .notModified(let etag, let lastModified):
                     state.sha256 = earlier
@@ -2203,10 +2409,14 @@ actor ModuleStore {
                     state.failures = 0
                     state.etag = etag
                     state.lastModified = lastModified
-                case .failed(let why):
+                    state.lastMiss = nil
+                case .failed(let why, let kind):
                     failure = why
                     state.failures += 1
-                    state.attemptedAt = now()
+                    let at = now()
+                    state.attemptedAt = at
+                     
+                    state.lastMiss = kind.map { ModuleDownloadMiss(kind: $0.connected(connected), at: at) }
                 case .notTried:
                     ranOutOfTime = true
                 }
@@ -3061,8 +3271,13 @@ extension ModuleStore {
      
      
      
+     
+     
+     
+     
+     
     func refresh(_ id: String, refetchModule: Bool = true, fetchingScripts: Bool = true,
-                 movingClocks: Bool = true, readerAsked: Bool = false) async -> RefreshResult {
+                 movingClocks: Bool = true, readerAsked: Bool = false, connected: Bool? = nil) async -> RefreshResult {
         let list: ModuleState
         do { list = try state() } catch {
             log("module \(id) was not checked: the module list could not be used right now")
@@ -3094,7 +3309,8 @@ extension ModuleStore {
             let previous = publishedModule(id)
             let prepared = try await prepare(data: data, sourceURL: link, fetchedAt: checkedAt, id: id,
                                              previous: previous, previousFetchedAt: record.scriptFetchedAt,
-                                             retrying: record, fetchingScripts: fetchingScripts, readerAsked: readerAsked)
+                                             retrying: record, fetchingScripts: fetchingScripts, readerAsked: readerAsked,
+                                             connected: connected)
             guard generations[id] == mine else { return .superseded }
             var updated = record
             if movesClock {

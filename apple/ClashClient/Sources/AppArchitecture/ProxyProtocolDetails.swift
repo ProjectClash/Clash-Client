@@ -1042,6 +1042,16 @@ enum ProxyProtocolEditorSchema {
      
      
      
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
     static let auditedCoreRevision = "c8f2fc1d58bf9ac856a0bf161bc9489591821f45"
 
     static let fieldsByType: [String: [ProxyEditorSchemaField]] = {

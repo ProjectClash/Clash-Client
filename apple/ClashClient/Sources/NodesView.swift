@@ -118,6 +118,7 @@ struct NodesContent: View {
             }
         }
         .searchable(text: $query, prompt: "Search groups and nodes")
+        .clashBottomSearchClearance()
         .clashToolbarUnlessInPanel {
              
              

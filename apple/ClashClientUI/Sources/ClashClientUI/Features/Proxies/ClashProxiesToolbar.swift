@@ -29,6 +29,20 @@ public struct ClashProxiesToolbar<Icon: View>: ToolbarContent {
     let sweepPulse: AnyPublisher<ClashLatencyPulse, Never>?
     let onSweepStart: (() -> Void)?
     let onSweepCancel: (() -> Void)?
+     
+     
+     
+     
+    let collectsIntoMore: Bool
+     
+    let onAddNodes: (() -> Void)?
+     
+    let onUpdateNodeSources: (() -> Void)?
+     
+    let onReorderGroups: (() -> Void)?
+     
+    let addItems: [ClashProxiesAddItem]
+    let onAdd: (ClashProxiesAddItem) -> Void
     let icon: (ClashSymbol) -> Icon
 
     public init(
@@ -48,8 +62,20 @@ public struct ClashProxiesToolbar<Icon: View>: ToolbarContent {
         sweepPulse: AnyPublisher<ClashLatencyPulse, Never>? = nil,
         onSweepStart: (() -> Void)? = nil,
         onSweepCancel: (() -> Void)? = nil,
+        collectsIntoMore: Bool = false,
+        onAddNodes: (() -> Void)? = nil,
+        onUpdateNodeSources: (() -> Void)? = nil,
+        onReorderGroups: (() -> Void)? = nil,
+        addItems: [ClashProxiesAddItem] = [],
+        onAdd: @escaping (ClashProxiesAddItem) -> Void = { _ in },
         @ViewBuilder icon: @escaping (ClashSymbol) -> Icon
     ) {
+        self.addItems = addItems
+        self.onAdd = onAdd
+        self.collectsIntoMore = collectsIntoMore
+        self.onAddNodes = onAddNodes
+        self.onUpdateNodeSources = onUpdateNodeSources
+        self.onReorderGroups = onReorderGroups
         self.showsDismissControl = showsDismissControl
         self.hasExpandedGroups = hasExpandedGroups
         self.canRefreshCatalog = canRefreshCatalog
@@ -95,102 +121,245 @@ public struct ClashProxiesToolbar<Icon: View>: ToolbarContent {
          
         ToolbarItem(placement: .primaryAction) {
             ControlGroup {
-                if let onSweepStart, let onSweepCancel,
-                   ClashPlatformLayout.proxiesSweepLivesInToolbar {
-                     
-                    ClashSweepToolbarButton(
-                        initialIsTesting: isTestingLatency,
-                        initialCompleted: sweepCompleted,
-                        initialTotal: sweepTotal,
-                        disabled: sweepDisabled,
-                        pulse: sweepPulse,
-                        onStart: onSweepStart,
-                        onCancel: onSweepCancel,
-                        icon: icon
-                    )
-                    .clashToolbarCapsuleEnd(.leading)
-
-                    ClashToolbarDivider()
-                }
-
-                 
-                 
-                 
-                 
-                 
-                Button {
-                    onToggleFold()
-                } label: {
-                    icon(
-                        hasExpandedGroups
-                            ? .arrowUpRightAndArrowDownLeft
-                            : .arrowDownLeftAndArrowUpRight
-                    )
-                    .clashToolbarGlyph()
-                }
-                 
-                .clashToolbarCapsuleEnd(sweepLivesHere ? [] : .leading)
-                .accessibilityLabel(
-                     
-                     
-                     
-                     
-                     
-                    hasExpandedGroups
-                        ? "Collapse All Groups"
-                        : "Expand Last Group"
-                )
-                .accessibilityIdentifier("proxies.toggleAllGroups")
-
-                 
-                 
-                 
-                 
-                 
-                ClashToolbarDivider()
-
-                if canRefreshCatalog {
-                    ClashRefreshToolbarButton(
-                        heldByHost: refreshDisabled,
-                        initialIsTesting: isTestingLatency,
-                        pulse: sweepPulse,
-                        onRefresh: onRefresh,
-                        icon: icon
-                    )
-
-                    ClashToolbarDivider()
-                }
-
-                 
-                if ClashPlatformLayout.immediateDisplayOptionsUseMenu {
-                    Menu {
-                        displayOptionsMenu
-                    } label: {
-                        icon(.sliderHorizontal3)
-                            .clashToolbarGlyph()
-                            .clashToolbarCapsuleEnd(.trailing)
-                    }
-                    .accessibilityLabel("Display Options")
-                    .accessibilityIdentifier("proxies.display.options")
-                     
-                     
-                     
-                     
-                     
-                    .id(preferences.menuIdentity)
+                if collectsIntoMore {
+                    configurationControls
                 } else {
-                    Button {
-                        onShowDisplayOptions()
-                    } label: {
-                        icon(.sliderHorizontal3)
-                            .clashToolbarGlyph()
-                            .clashToolbarCapsuleEnd(.trailing)
-                    }
-                    .accessibilityLabel("Display Options")
-                    .accessibilityIdentifier("proxies.display.options")
+                    legacyControls
+                     
+                     
+                    if !addItems.isEmpty { addMenu }
+                    if onUpdateNodeSources != nil || onReorderGroups != nil { moreMenu }
                 }
             }
             .clashReaderControlGroupStyle()
+        }
+    }
+
+     
+     
+     
+    @ViewBuilder
+    private var configurationControls: some View {
+        if let onSweepStart, let onSweepCancel,
+           ClashPlatformLayout.proxiesSweepLivesInToolbar {
+            ClashSweepToolbarButton(
+                initialIsTesting: isTestingLatency,
+                initialCompleted: sweepCompleted,
+                initialTotal: sweepTotal,
+                disabled: sweepDisabled,
+                pulse: sweepPulse,
+                onStart: onSweepStart,
+                onCancel: onSweepCancel,
+                icon: icon
+            )
+            .clashToolbarCapsuleEnd(.leading)
+
+            ClashToolbarDivider()
+        }
+        if let onAddNodes {
+            Button {
+                onAddNodes()
+            } label: {
+                icon(.plus)
+                    .clashToolbarGlyph()
+            }
+            .clashToolbarCapsuleEnd(sweepLivesHere ? [] : .leading)
+            .accessibilityLabel("Add Nodes")
+            .accessibilityIdentifier("proxies.addNodes")
+
+            ClashToolbarDivider()
+        }
+         
+         
+         
+        Menu {
+            moreMenuItems
+        } label: {
+            Label {
+                Text(ClashCopy.key("More"))
+            } icon: {
+                icon(.ellipsis)
+            }
+        }
+        .clashToolbarGlyph()
+        .clashToolbarCapsuleEnd(sweepLivesHere || onAddNodes != nil ? .trailing : [.leading, .trailing])
+        .accessibilityIdentifier("proxies.more")
+    }
+
+     
+     
+    @ViewBuilder
+    private var moreMenuItems: some View {
+        let items = ClashProxiesMoreMenu.items(canRefreshCatalog: canRefreshCatalog,
+                                               updatesNodeSources: onUpdateNodeSources != nil,
+                                               reordersGroups: onReorderGroups != nil)
+        if items.contains(.updateNodeSources), let onUpdateNodeSources {
+            Section {
+                Button(action: onUpdateNodeSources) {
+                    Label(ClashCopy.key("Update Node Sources"), systemImage: ClashSymbol.arrowClockwise.rawValue)
+                }
+                .accessibilityIdentifier("proxies.updateNodeSources")
+            }
+        }
+        if items.contains(.reorderGroups), let onReorderGroups {
+            Button(action: onReorderGroups) {
+                Label(ClashCopy.key("Reorder Policy Groups"), systemImage: "arrow.up.arrow.down")
+            }
+            .accessibilityIdentifier("proxies.reorderGroups")
+        }
+         
+         
+         
+         
+         
+        Button(action: onToggleFold) {
+            Label(ClashCopy.key(hasExpandedGroups ? "Collapse All Groups" : "Expand Last Group"),
+                  systemImage: (hasExpandedGroups ? ClashSymbol.arrowUpRightAndArrowDownLeft
+                                : ClashSymbol.arrowDownLeftAndArrowUpRight).rawValue)
+        }
+        .accessibilityIdentifier("proxies.toggleAllGroups")
+        Button(action: onShowDisplayOptions) {
+            Label(ClashCopy.key("Display Options"), systemImage: ClashSymbol.sliderHorizontal3.rawValue)
+        }
+        .accessibilityIdentifier("proxies.display.options")
+        if items.contains(.refresh) {
+            Section {
+                Button(action: onRefresh) {
+                    Label(ClashCopy.key("Refresh Proxies"), systemImage: ClashSymbol.arrowClockwise.rawValue)
+                }
+                 
+                 
+                .disabled(refreshDisabled || isTestingLatency)
+                .accessibilityIdentifier("proxies.refresh")
+            }
+        }
+    }
+
+     
+    private var addMenu: some View {
+        Menu {
+            ForEach(addItems, id: \.self) { item in
+                Button { onAdd(item) } label: { Text(clash: item.title) }
+            }
+        } label: {
+            Label { Text(clash: .copy("Add")) } icon: { icon(.plus) }
+        }
+        .help(Text(clash: .copy("Add")))
+        .accessibilityIdentifier("proxies.toolbar.add")
+    }
+
+     
+     
+    private var moreMenu: some View {
+        Menu {
+            if let onUpdateNodeSources {
+                Button(action: onUpdateNodeSources) { Text(clash: .copy("Update Node Sources")) }
+            }
+            if let onReorderGroups {
+                Button(action: onReorderGroups) { Text(clash: .copy("Reorder Policy Groups")) }
+            }
+        } label: {
+            Label { Text(clash: .copy("More")) } icon: { icon(.ellipsisCircle) }
+        }
+        .help(Text(clash: .copy("More")))
+        .accessibilityIdentifier("proxies.toolbar.more")
+    }
+
+    @ViewBuilder
+    private var legacyControls: some View {
+        if let onSweepStart, let onSweepCancel,
+           ClashPlatformLayout.proxiesSweepLivesInToolbar {
+             
+            ClashSweepToolbarButton(
+                initialIsTesting: isTestingLatency,
+                initialCompleted: sweepCompleted,
+                initialTotal: sweepTotal,
+                disabled: sweepDisabled,
+                pulse: sweepPulse,
+                onStart: onSweepStart,
+                onCancel: onSweepCancel,
+                icon: icon
+            )
+            .clashToolbarCapsuleEnd(.leading)
+
+            ClashToolbarDivider()
+        }
+
+         
+         
+         
+         
+         
+        Button {
+            onToggleFold()
+        } label: {
+            icon(
+                hasExpandedGroups
+                    ? .arrowUpRightAndArrowDownLeft
+                    : .arrowDownLeftAndArrowUpRight
+            )
+            .clashToolbarGlyph()
+        }
+         
+        .clashToolbarCapsuleEnd(sweepLivesHere ? [] : .leading)
+        .accessibilityLabel(
+             
+             
+             
+             
+             
+            hasExpandedGroups
+                ? "Collapse All Groups"
+                : "Expand Last Group"
+        )
+        .accessibilityIdentifier("proxies.toggleAllGroups")
+
+         
+         
+         
+         
+         
+        ClashToolbarDivider()
+
+        if canRefreshCatalog {
+            ClashRefreshToolbarButton(
+                heldByHost: refreshDisabled,
+                initialIsTesting: isTestingLatency,
+                pulse: sweepPulse,
+                onRefresh: onRefresh,
+                icon: icon
+            )
+
+            ClashToolbarDivider()
+        }
+
+         
+        if ClashPlatformLayout.immediateDisplayOptionsUseMenu {
+            Menu {
+                displayOptionsMenu
+            } label: {
+                icon(.sliderHorizontal3)
+                    .clashToolbarGlyph()
+                    .clashToolbarCapsuleEnd(.trailing)
+            }
+            .accessibilityLabel("Display Options")
+            .accessibilityIdentifier("proxies.display.options")
+             
+             
+             
+             
+             
+            .id(preferences.menuIdentity)
+        } else {
+            Button {
+                onShowDisplayOptions()
+            } label: {
+                icon(.sliderHorizontal3)
+                    .clashToolbarGlyph()
+                    .clashToolbarCapsuleEnd(.trailing)
+            }
+            .accessibilityLabel("Display Options")
+            .accessibilityIdentifier("proxies.display.options")
         }
     }
 
@@ -230,6 +399,25 @@ public struct ClashProxiesToolbar<Icon: View>: ToolbarContent {
             Text("Minimal").tag(ClashProxiesDisplayPreferences.Size.minimal)
         }
             .accessibilityIdentifier("proxies.display.size")
+    }
+}
+
+ 
+ 
+ 
+ 
+public enum ClashProxiesMoreMenu {
+    public enum Item: Equatable, Sendable {
+        case updateNodeSources, reorderGroups, toggleFold, displayOptions, refresh
+    }
+
+    public static func items(canRefreshCatalog: Bool, updatesNodeSources: Bool, reordersGroups: Bool = false) -> [Item] {
+        var items: [Item] = []
+        if updatesNodeSources { items.append(.updateNodeSources) }
+        if reordersGroups { items.append(.reorderGroups) }
+        items += [.toggleFold, .displayOptions]
+        if canRefreshCatalog { items.append(.refresh) }
+        return items
     }
 }
 

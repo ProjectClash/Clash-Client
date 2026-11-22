@@ -114,7 +114,7 @@ public struct ClashModalActionBar: View {
          
          
         .accessibilityValue(
-            isBusy ? ClashCopy.string(busyTitle ?? "Saving", locale: .current) : (primaryDisabled ? (primaryHint.map { ClashDisplayText.copy($0).resolved(locale: Locale.current) } ?? "") : "")
+            isBusy ? ClashCopy.string(busyTitle ?? "Saving…", locale: .current) : (primaryDisabled ? (primaryHint.map { ClashDisplayText.copy($0).resolved(locale: Locale.current) } ?? "") : "")
         )
     }
 }

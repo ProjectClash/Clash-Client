@@ -39,6 +39,7 @@ public enum ConfigurationSourceContents {
         if let scope {
             if !scope.includesInlineNodes { nodes = [] }
             else if let names = scope.inlineNodeNames.map(Set.init) { nodes = nodes.filter { names.contains($0.name) } }
+            if let excluded = scope.excludedNodeNames.map(Set.init) { nodes = nodes.filter { !excluded.contains($0.name) } }
             let keys = Set(scope.providerKeys)
             providers = providers.filter { keys.contains($0.name) }
         }

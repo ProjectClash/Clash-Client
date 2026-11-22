@@ -6,6 +6,22 @@ import ClashClientUI
  
  
  
+public struct ClashMacPutBack: Equatable {
+     
+    public var title: ClashDisplayText
+     
+    public var saidByTheWindow: Bool
+
+    public init(title: ClashDisplayText, saidByTheWindow: Bool) {
+        self.title = title
+        self.saidByTheWindow = saidByTheWindow
+    }
+}
+
+ 
+ 
+ 
+ 
  
  
 public struct ClashMacConfigurationLibraryActions {
@@ -51,6 +67,13 @@ public struct ClashMacConfigurationLibraryActions {
     public var updateSourceReplacingRules: @MainActor (String, String?) async throws -> Void = { _, _ in
         throw ConfigurationLibraryError.unreadable
     }
+     
+     
+     
+     
+     
+     
+    public var putBack: (@MainActor (String) -> ClashMacPutBack?)?
      
      
      
@@ -297,6 +320,17 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
         }
     }
 
+     
+     
+     
+     
+     
+    public func rereadCollections() {
+        guard phase == .ready else { return }
+        collectionsGeneration = nil
+        refreshCollections(snapshot)
+    }
+
     private func refreshCollections(_ next: ConfigurationLibrarySnapshot) {
         guard collectionsGeneration != next.generation else { return }
         collectionsGeneration = next.generation
@@ -360,6 +394,7 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
 
      
      
+     
     @discardableResult
     public func updateSourceSaying(_ id: String, replacingRules: Bool = false, label named: String? = nil) async -> Bool {
          
@@ -367,7 +402,16 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
         let before = snapshot.sources.first { $0.id == id }?.version
         let ok = await updateSource(id, replacingRules: replacingRules)
         let operation = "source.update." + id
-        if ok {
+        if ok, let putBack = actions.putBack?(id) {
+             
+             
+             
+             
+             
+            if !putBack.saidByTheWindow {
+                feedback?.say(ClashMacFeedbackSentences.putBack(putBack.title, id: "source.update"), operation: operation)
+            }
+        } else if ok {
             let after = snapshot.sources.first { $0.id == id }?.version
             feedback?.say(after == before
                 ? ClashMacFeedbackSentences.upToDate(label, id: "source.update")
@@ -903,9 +947,17 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
      
      
      
+     
+     
+     
+     
     public func configurations(usingScheme id: String) -> [String] {
-        let family = Self.family(of: id, in: snapshot)
-        return snapshot.recipes.filter { family.contains($0.ruleSchemeID) }.map(\.id)
+        Self.readers(ofScheme: id, in: snapshot)
+    }
+
+    nonisolated static func readers(ofScheme id: String, in snapshot: ConfigurationLibrarySnapshot) -> [String] {
+        let running = Set(family(of: id, in: snapshot).flatMap { snapshot.recipes(runningScheme: $0).map(\.id) })
+        return snapshot.recipes.filter { running.contains($0.id) }.map(\.id)
     }
 
      
@@ -923,14 +975,14 @@ public final class ClashMacConfigurationLibraryModel: ObservableObject {
 
      
      
+     
+     
     nonisolated static func schemeUsage(_ snapshot: ConfigurationLibrarySnapshot) -> [String: Int] {
+        let ids = Set(snapshot.rules.map(\.id) + snapshot.recipes.map(\.ruleSchemeID) + ConfigurationBuiltins.schemes.map(\.id))
         var counts: [String: Int] = [:]
-        var families: [String: Set<String>] = [:]
-        for recipe in snapshot.recipes {
-            let members = families[recipe.ruleSchemeID] ?? {
-                let f = family(of: recipe.ruleSchemeID, in: snapshot); families[recipe.ruleSchemeID] = f; return f
-            }()
-            for member in members { counts[member, default: 0] += 1 }
+        for id in ids {
+            let count = readers(ofScheme: id, in: snapshot).count
+            if count > 0 { counts[id] = count }
         }
         return counts
     }
@@ -977,29 +1029,19 @@ public enum ClashMacConfigurationUsageFacts {
 }
 
  
+ 
+ 
+ 
+ 
 public enum ClashMacSubscriptionUsageCopy {
      
-     
-    @MainActor private static let bytes: ByteCountFormatter = {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .binary
-        return formatter
-    }()
-    private static let dateFormatters = ClashMacDateFormatterCache(dateStyle: .medium, timeStyle: .none)
-
-     
-    @MainActor public static func traffic(_ usage: ConfigurationSubscriptionUsage) -> ClashDisplayText {
-        let formatter = bytes
-        let used = formatter.string(fromByteCount: usage.used)
-        guard usage.total > 0 else { return .format("Used %@", [used]) }
-        return .format("%@ of %@ used", [used, formatter.string(fromByteCount: usage.total)])
+    public static func traffic(_ usage: ConfigurationSubscriptionUsage) -> ClashDisplayText {
+        ClashSubscriptionUsageFormat.used(usage)
     }
 
      
     public static func expiry(_ usage: ConfigurationSubscriptionUsage, locale: Locale) -> ClashDisplayText? {
-        guard usage.expire > 0 else { return nil }
-        let date = Date(timeIntervalSince1970: TimeInterval(usage.expire))
-        return .format("Expires %@", [dateFormatters.formatter(for: locale).string(from: date)])
+        ClashSubscriptionUsageFormat.expiry(usage, locale: locale)
     }
 }
 

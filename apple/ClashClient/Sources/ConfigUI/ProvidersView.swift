@@ -269,24 +269,43 @@ final class RunningProvidersReader: ObservableObject {
     @Published private(set) var current: Running?
     private let container: @MainActor () -> URL?
     private let read: @Sendable (URL?) async -> Running?
+    private let followTunnel: @Sendable (URL?) async -> Bool
     private var generation: UInt64 = 0
     private let watcher = ProviderRefreshStateWatcher()
 
     init(container: @escaping @MainActor () -> URL?,
          read: @escaping @Sendable (URL?) async -> Running? = { container in
              await Task.detached { Running.load(container: container) }.value
+         },
+          
+         followTunnel: @escaping @Sendable (URL?) async -> Bool = { container in
+             await ConfigurationCollectionContentBridge.followTunnelOnce(container: container)
          }) {
         self.container = container
         self.read = read
+        self.followTunnel = followTunnel
     }
 
+     
+     
+     
+     
+     
      
     func reload() async {
         generation &+= 1
         let token = generation
-        let next = await read(container())
+        let container = container()
+        let next = await read(container)
         guard token == generation else { return }
         current = next
+        let followTunnel = followTunnel
+        Task.detached(priority: .utility) {
+            guard await followTunnel(container) else { return }
+            await MainActor.run {
+                NotificationCenter.default.post(name: ConfigurationCollectionContentBridge.libraryCopiesDidFollow, object: nil)
+            }
+        }
     }
 
      

@@ -869,6 +869,8 @@ enum HomeProxiesEntryPolicy {
  
  
  
+ 
+ 
 enum HomeProxiesCardPolicy {
      
     struct Count: Equatable {
@@ -906,21 +908,34 @@ enum HomeProxiesCardPolicy {
         return Count(value: inline, unit: "proxies")
     }
 
+     
+     
+     
+     
     static func domainSnapshot(
         mode: Profile.OutboundMode,
         standard: ClashHomeDomainSnapshot,
-        globalNode: String?
+        globalNode: String?,
+        namesReadIn reading: HomeGroupName.Reading? = nil
     ) -> ClashHomeDomainSnapshot {
-        guard mode == .global else { return standard }
+        func read(_ name: String) -> String {
+            reading.map { HomeGroupName.asRead(name, profileID: $0.profileID, locale: $0.locale) } ?? name
+        }
+        let names = standard.names.map(read)
+        guard mode == .global else {
+            return ClashHomeDomainSnapshot(
+                count: standard.count, countUnit: standard.countUnit, breakdown: standard.breakdown, names: names)
+        }
         return ClashHomeDomainSnapshot(
             count: standard.count,
             countUnit: standard.countUnit,
             breakdown: ProxyBrowsingVisibility.kernelGlobalGroupName,
-            names: globalNode.map { [$0] } ?? []
+            names: globalNode.map { [read($0)] } ?? []
         )
     }
 }
 
+ 
  
  
  
@@ -1002,6 +1017,52 @@ enum HomeNamedRoute {
         guard let target = overview?.fallback.first?.target.trimmingCharacters(in: .whitespacesAndNewlines),
               !target.isEmpty else { return nil }
         return target
+    }
+}
+
+extension HomeNamedRoute.Route {
+     
+     
+     
+    func groupAsRead(profileID: String?, locale: Locale) -> Self {
+        Self(group: group.map { HomeGroupName.asRead($0, profileID: profileID, locale: locale) }, node: node, delay: delay)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+enum HomeGroupName {
+     
+     
+    struct Reading {
+        let profileID: String?
+        let locale: Locale
+    }
+
+     
+     
+    static let builtinFinalRuleGroupRow = "Default Route (built-in group)"
+
+    static func isTheBuiltinFinalRuleGroup(_ name: String?, profileID: String?) -> Bool {
+        profileID == LocalDefaultProfileProvisioner.profileID && name == DirectProfileTemplate.finalRuleGroup
+    }
+
+    static func asRead(_ name: String, profileID: String?, locale: Locale) -> String {
+        isTheBuiltinFinalRuleGroup(name, profileID: profileID)
+            ? ClashCopy.string(builtinFinalRuleGroupRow, locale: locale) : name
     }
 }
 

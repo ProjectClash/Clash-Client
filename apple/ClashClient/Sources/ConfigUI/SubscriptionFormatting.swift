@@ -1,3 +1,4 @@
+import ClashClientKit
 import ClashClientUI
 import SwiftUI
 
@@ -69,44 +70,43 @@ extension SubscriptionInfo {
      
      
      
-    func humanSummary(locale: Locale) -> String {
-        [usageSentence(locale: locale), expirySentence(locale: locale)]
+    func humanSummary(locale: Locale, timeZone: TimeZone = .current) -> String {
+        [usageSentence(locale: locale), expirySentence(locale: locale, timeZone: timeZone)]
             .compactMap { $0 }
             .joined(separator: " · ")
     }
 
+     
+     
+     
     func usageSentence(locale: Locale) -> String {
-        let used = ByteCountFormatter.string(usedBytes)
-        if total > 0 {
-            return ClashCopy.format("%@ of %@ used", locale: locale, used, ByteCountFormatter.string(total))
-        }
-        return ClashCopy.format("%@ used", locale: locale, used)
+        let usage = ConfigurationSubscriptionUsage(upload: upload, download: download, total: total, expire: expire)
+        return ClashCopy.string(for: ClashSubscriptionUsageFormat.used(usage), locale: locale)
     }
 
-    func expirySentence(locale: Locale) -> String? {
+     
+     
+     
+     
+     
+    func expirySentence(locale: Locale, timeZone: TimeZone = .current) -> String? {
         guard expire > 0 else { return nil }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        let day = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(expire)))
+        let day = ClashSubscriptionUsageFormat.expiryDay(expire, locale: locale, timeZone: timeZone)
         return ClashCopy.format("Expires %@", locale: locale, day)
     }
 
-    func expiryPresentation(now: Date = Date()) -> SubscriptionExpiryPresentation {
+     
+     
+     
+    func expiryPresentation(now: Date = Date(), timeZone: TimeZone = .current) -> SubscriptionExpiryPresentation {
         guard expire > 0 else {
             return SubscriptionExpiryPresentation(status: .never, text: "No expiry")
         }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC") ?? TimeZone(secondsFromGMT: 0)!
         let expiryDate = Date(timeIntervalSince1970: TimeInterval(expire))
-        let start = calendar.startOfDay(for: now)
-        let expiryStart = calendar.startOfDay(for: expiryDate)
-        let days = calendar.dateComponents([.day], from: start, to: expiryStart).day ?? 0
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = calendar.timeZone
-        let date = formatter.string(from: expiryDate)
+         
+         
+        let days = ClashSubscriptionUsageFormat.daysUntilExpiry(expiryDate, now: now, timeZone: timeZone)
+        let date = ClashSubscriptionUsageFormat.compactExpiryDay(expiryDate, timeZone: timeZone)
         if days < 0 {
             return SubscriptionExpiryPresentation(status: .expired, text: "Expired \(date)")
         }

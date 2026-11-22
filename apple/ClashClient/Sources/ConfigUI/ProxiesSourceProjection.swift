@@ -164,6 +164,12 @@ struct ProxiesOverviewModel: Equatable, Sendable {
         var note: ProviderNote? = nil
          
         var url: String? = nil
+         
+         
+         
+         
+         
+        var updatedAt: Date? = nil
     }
 
     let proxies: [Proxy]
@@ -201,6 +207,7 @@ struct ProxiesOverviewModel: Equatable, Sendable {
      
      
      
+     
     func annotatingEmptyProviders(unusable: [String: String] = [:], downloading: Set<String> = [],
                                   failures: [String: ProviderNote] = [:]) -> ProxiesOverviewModel {
         var annotated = ProxiesOverviewModel(
@@ -216,7 +223,7 @@ struct ProxiesOverviewModel: Equatable, Sendable {
                     provider.note = .downloading
                 } else if let url = provider.url, let failure = failures[url] {
                     provider.note = failure
-                } else if provider.note == nil, provider.type == "http" {
+                } else if provider.note == nil, provider.type == "http", provider.updatedAt == nil {
                     provider.note = .notDownloadedYet
                 }
                 return provider
@@ -1047,6 +1054,9 @@ extension ProxiesOverviewModel {
         }
         for proxy in proxies { nodeTypes[proxy.name] = proxy.type }
         let groupNames = Set(groups.map(\.name))
+#if os(iOS)
+        let reads = Self.providerReads(kernelProviders)
+#endif
 
         let rebuilt = groups.map { group -> Group in
             guard let kernel = kernelProxies[group.name] as? [String: Any],
@@ -1163,6 +1173,11 @@ extension ProxiesOverviewModel {
                      
                     if !nodes.isEmpty, provider.note?.isTunnelWord != true { provider.note = nil }
                 }
+#if os(iOS)
+                 
+                 
+                if let read = reads[provider.name] { provider.take(read) }
+#endif
                 if let failure = providerErrors[provider.name] { provider.note = .failed(.verbatim(failure)) }
                 return provider
             },
@@ -1196,10 +1211,6 @@ extension ProxiesOverviewModel {
      
      
      
-    func resolvedWithKernelCatalog(profileID: String?) -> ProxiesOverviewModel {
-        resolvedWithKernelCatalog(input: OfflineProxyCatalogLoader.input(preferredProfileID: profileID))
-    }
-
      
      
     func resolvedWithKernelCatalog(input: OfflineProxyCatalogInput?) -> ProxiesOverviewModel {
@@ -1219,3 +1230,57 @@ extension ProxiesOverviewModel {
         }
     }
 }
+
+#if os(iOS)
+extension ProxiesOverviewModel {
+     
+     
+     
+     
+     
+     
+     
+    struct ProviderRead: Equatable {
+        let nodeCount: Int
+         
+         
+         
+        let updatedAt: Date?
+    }
+
+     
+     
+    static func providerReads(_ kernelProviders: [String: Any]) -> [String: ProviderRead] {
+        var reads: [String: ProviderRead] = [:]
+        for (name, value) in kernelProviders {
+            guard let provider = value as? [String: Any] else { continue }
+            let vehicle = provider["vehicleType"] as? String
+            guard vehicle != "Compatible" else { continue }
+            let listed = (provider["proxies"] as? [Any])?.count ?? 0
+            let fromFile = vehicle == "HTTP" || vehicle == "File"
+            reads[name] = ProviderRead(
+                nodeCount: max(provider["total"] as? Int ?? 0, listed),
+                updatedAt: fromFile ? ProviderRuntimeCatalogParser.parseDate(provider["updatedAt"] as? String) : nil
+            )
+        }
+        return reads
+    }
+}
+
+extension ProxiesOverviewModel.Provider {
+     
+     
+     
+     
+     
+    mutating func take(_ read: ProxiesOverviewModel.ProviderRead) {
+        nodeCount = read.nodeCount
+        updatedAt = read.updatedAt
+        if read.nodeCount > 0 {
+            if note?.isTunnelWord != true { note = nil }
+        } else if read.updatedAt != nil, note == .notDownloadedYet {
+            note = nil
+        }
+    }
+}
+#endif

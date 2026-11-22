@@ -419,39 +419,136 @@ extension ModuleReinjectAuthorization {
 }
 
  
+final class ModuleSharedLogLimiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var limiter = ModuleLogLimiter()
+
+    func admit(_ now: Date) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return limiter.admit(now)
+    }
+}
+
+ 
 enum ModuleReinject {
      
-    static func open(port: UInt16, queue: DispatchQueue, timeout: TimeInterval = 15,
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func open(port: UInt16, queue: DispatchQueue, timeout: TimeInterval = 15, log: ModuleEngineLog = .silent,
+                     limiter: ModuleSharedLogLimiter = collisions,
+                     decide: @escaping (Seen, Int) -> Step = step,
                      completion: @escaping (Result<ModuleStream, ModuleUpstreamFailure>) -> Void) {
         guard port != 0, let endpointPort = NWEndpoint.Port(rawValue: port) else {
             return completion(.failure(.unreachable("no re-inject port")))
         }
-        let connection = NWConnection(host: .ipv4(.loopback), port: endpointPort, using: .tcp)
-        let stream = ModuleConnectionStream(connection)
          
          
          
         var pending: ((Result<ModuleStream, ModuleUpstreamFailure>) -> Void)? = completion
         var deadline: ModuleDeadline?
-        let settle: (Result<ModuleStream, ModuleUpstreamFailure>) -> Void = { result in
+        var current: ModuleConnectionStream?
+        func settle(_ result: Result<ModuleStream, ModuleUpstreamFailure>) {
             guard let done = pending else { return }
             pending = nil
             deadline?.cancel()
             deadline = nil
-            connection.stateUpdateHandler = nil
-            if case .failure = result { stream.cancel() }
+            current?.connection.stateUpdateHandler = nil
+            if case .failure = result { current?.cancel() }
+            current = nil
             done(result)
         }
-        connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready: settle(.success(stream))
-            case .waiting(let error), .failed(let error): settle(.failure(.unreachable("\(error)")))
-            case .cancelled: settle(.failure(.unreachable("cancelled")))
-            default: break
+        func start(attempt: Int) {
+            guard pending != nil else { return }
+            let connection = NWConnection(host: .ipv4(.loopback), port: endpointPort, using: .tcp)
+            let stream = ModuleConnectionStream(connection)
+            current = stream
+            connection.stateUpdateHandler = { state in
+                switch decide(seen(state), attempt) {
+                case .connected: settle(.success(stream))
+                case .tryAgain(let why):
+                    connection.stateUpdateHandler = nil
+                    stream.cancel()
+                    current = nil
+                    if let held = limiter.admit(Date()) {
+                        log.say("re-inject 127.0.0.1:\(port): the local port of a connection was taken (\(why)); "
+                                + "trying once more\(ModuleLogLimiter.suffix(held))")
+                    }
+                    queue.asyncAfter(deadline: .now() + .milliseconds(Int.random(in: 10...60))) { start(attempt: 2) }
+                case .fail(let why): settle(.failure(.unreachable(why)))
+                case .keepWaiting: break
+                }
             }
+            connection.start(queue: queue)
         }
-        connection.start(queue: queue)
         deadline = ModuleDeadline(after: timeout, queue: queue) { settle(.failure(.timedOut)) }
+        start(attempt: 1)
+    }
+
+     
+     
+    static let collisions = ModuleSharedLogLimiter()
+
+     
+     
+     
+     
+     
+     
+     
+     
+    enum Seen: Equatable {
+        case ready
+         
+         
+        case unusable(String, addressInUse: Bool)
+        case cancelled
+        case other
+    }
+
+    static func seen(_ state: NWConnection.State) -> Seen {
+        switch state {
+        case .ready: return .ready
+        case .waiting(let error), .failed(let error):
+            if case .posix(.EADDRINUSE) = error { return .unusable("\(error)", addressInUse: true) }
+            return .unusable("\(error)", addressInUse: false)
+        case .cancelled: return .cancelled
+        default: return .other
+        }
+    }
+
+     
+    enum Step: Equatable {
+        case connected
+         
+         
+        case tryAgain(String)
+        case fail(String)
+        case keepWaiting
+    }
+
+     
+     
+     
+     
+    static func step(_ seen: Seen, attempt: Int) -> Step {
+        switch seen {
+        case .ready: return .connected
+        case .unusable(let said, let addressInUse):
+            return attempt == 1 && addressInUse ? .tryAgain(said) : .fail(said)
+        case .cancelled: return .fail("cancelled")
+        case .other: return .keepWaiting
+        }
     }
 
      
@@ -461,8 +558,9 @@ enum ModuleReinject {
      
     static func connect(authority: String, port: UInt16, queue: DispatchQueue, timeout: TimeInterval = 15,
                         authorization: ModuleReinjectAuthorization? = nil, outbound: String? = nil,
+                        log: ModuleEngineLog = .silent,
                         completion: @escaping (Result<ModuleStream, ModuleUpstreamFailure>) -> Void) {
-        open(port: port, queue: queue, timeout: timeout) { opened in
+        open(port: port, queue: queue, timeout: timeout, log: log) { opened in
             guard case .success(let stream) = opened else { return completion(opened) }
             var pending: ((Result<ModuleStream, ModuleUpstreamFailure>) -> Void)? = completion
             var deadline: ModuleDeadline?

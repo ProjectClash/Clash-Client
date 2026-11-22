@@ -593,10 +593,14 @@ final class ModulePageModel: ObservableObject {
         page.editor = editor
         page.batch = batch
         if page != snapshot { snapshot = page }
-        let details = Details(facts: facts, updating: updating, locale: locale)
+        let details = Details(facts: facts, updating: updating, locale: locale, thisYear: thisYear)
         if details != self.details { self.details = details }
         if entry { entrySource.set(ModulePageSnapshotBuilder.entry(facts)) }
     }
+
+     
+     
+    private var thisYear: Int { ModuleDetailBuilder.year(of: deps?.now() ?? Date()) }
 
      
      
@@ -605,13 +609,15 @@ final class ModulePageModel: ObservableObject {
         fileprivate var facts: ModulePageFacts?
         fileprivate var updating: Set<String> = []
         fileprivate var locale = Locale.current
+         
+        fileprivate var thisYear = ModuleDetailBuilder.year(of: Date())
 
          
          
         subscript(id: String) -> ClashModuleDetailSnapshot? {
             guard let facts, let record = facts.state.modules.first(where: { $0.id == id }) else { return nil }
             return ModuleDetailBuilder.detail(record: record, facts: facts, source: facts.sources[id],
-                                              isUpdating: updating.contains(id), locale: locale)
+                                              isUpdating: updating.contains(id), locale: locale, thisYear: thisYear)
         }
 
          
@@ -620,7 +626,7 @@ final class ModulePageModel: ObservableObject {
          
          
         static func == (lhs: Details, rhs: Details) -> Bool {
-            guard lhs.updating == rhs.updating, lhs.locale == rhs.locale else { return false }
+            guard lhs.updating == rhs.updating, lhs.locale == rhs.locale, lhs.thisYear == rhs.thisYear else { return false }
             guard let a = lhs.facts, let b = rhs.facts else { return lhs.facts == nil && rhs.facts == nil }
             func omitted(_ facts: ModulePageFacts) -> [ModuleEngineReport.OmittedModule]? {
                 facts.isConnected ? facts.report?.omittedModules : nil
@@ -722,7 +728,9 @@ final class ModulePageModel: ObservableObject {
                 feedback?.show(said, operation: Self.updateOperation(of: id))
             }) {
                  
-                result = await deps.modules.refresh(id, readerAsked: true)
+                 
+                 
+                result = await deps.modules.refresh(id, readerAsked: true, connected: deps.isConnected())
                 self.updating.remove(id)
             }
         case .certificate(let kind):
@@ -806,10 +814,18 @@ final class ModulePageModel: ObservableObject {
         setBatch(.init(done: 0, total: ids.count, isRunning: true))
         var results: [(id: String, result: ModuleStore.RefreshResult)] = []
         for (index, id) in ids.enumerated() {
-            updating.insert(id)
-            let result = await deps.modules.refresh(id, readerAsked: true)
-            results.append((id, result))
-            updating.remove(id)
+             
+             
+             
+             
+             
+            if !updating.contains(id) {
+                updating.insert(id)
+                 
+                let result = await deps.modules.refresh(id, readerAsked: true, connected: deps.isConnected())
+                results.append((id, result))
+                updating.remove(id)
+            }
             setBatch(.init(done: index + 1, total: ids.count, isRunning: true))
         }
         await reload()
@@ -840,23 +856,34 @@ final class ModulePageModel: ObservableObject {
      
      
      
+     
+     
     private func updateResult(_ results: [(id: String, result: ModuleStore.RefreshResult)]) -> ClashFeedbackPresentation? {
-        guard let facts = lastFacts else { return nil }
+        guard readFailure == nil, let facts = lastFacts else { return nil }
+         
+         
+        var records: [String: ModuleRecord] = [:]
+        for record in facts.state.modules where records[record.id] == nil { records[record.id] = record }
         var outcome = UpdateOutcome()
+        let thisYear = self.thisYear
         for (id, result) in results {
-            guard let record = facts.state.modules.first(where: { $0.id == id }) else { continue }
+            guard let record = records[id] else { continue }
             let name = ModulePageSnapshotBuilder.shownName(record, locale: locale)
+             
+             
+             
+             
+            let missed = ModuleDetailBuilder.notUpdated(record: record, ir: facts.modules[id], locale: locale, thisYear: thisYear)
             switch result {
-            case .updated: outcome.changed.append(name)
+            case .updated:
+                outcome.changed.append(name)
             case .unchanged:
                  
-                 
-                 
-                 
-                let missed = Self.downloadsMissed(by: record, ir: facts.modules[id])
                 if let reason = missed.said.first {
                     outcome.failed.append((name, reason.displayText))
-                } else if missed.unsaid == 0 {
+                } else if missed.kept > 0 {
+                    outcome.failed.append((name, nil))
+                } else {
                     outcome.unchanged.append(name)
                 }
             case .failed(let why):
@@ -865,44 +892,29 @@ final class ModulePageModel: ObservableObject {
             case .superseded, .cancelled, .outOfTime, .missing, .listUnreadable:
                 continue
             }
+            if !missed.lines.isEmpty { outcome.notUpdated.append((name, missed.lines)) }
+             
+             
+            for (address, why) in missed.unsaid {
+                ClashLogStore.shared.append(#"modules: \#(name): \#(address) was not updated and the copy before stays; nothing is said of it: \#(Self.unsaid(why))"#,
+                                            stream: .app)
+            }
         }
         return outcome.presentation(locale: locale)
     }
 
-     
-     
-     
-     
-     
-     
-     
-    static func downloadsMissed(by record: ModuleRecord, ir: ModuleIR?) -> (said: [AuthoredText], unsaid: Int) {
-        guard let checked = record.lastCheckedAt else { return ([], 0) }
+    private static func unsaid(_ why: ModuleDetailBuilder.Unsaid) -> String {
          
-         
-        var addresses = record.scriptFailureCount.compactMap { address, count -> String? in
-            guard count > 0, let tried = record.scriptAttemptedAt[address], tried.timeIntervalSince(checked) >= 0 else { return nil }
-            return address
-        }.sorted()
-         
-        addresses += record.fileStates.compactMap { key, state -> String? in
-            guard state.failures > 0, let tried = state.attemptedAt, tried.timeIntervalSince(checked) >= 0,
-                  let space = key.firstIndex(of: " ") else { return nil }
-            return String(key[key.index(after: space)...])
-        }.sorted()
-        var said: [AuthoredText] = []
-        var unsaid = 0
-        for address in addresses {
-             
-            if let entry = ir?.ignored.first(where: { $0.text == address }) {
-                said.append(entry.reason.authoredText)
-            } else {
-                unsaid += 1
-            }
+        switch why {
+        case .noName: return #"no name to call it by"#
+        case .noDate: return #"its copy in use has no download time"#
+        case .noReason: return #"no reason was kept for this try"#
         }
-        return (said, unsaid)
     }
 
+     
+     
+     
      
      
      
@@ -912,36 +924,61 @@ final class ModulePageModel: ObservableObject {
     struct UpdateOutcome {
         var changed: [String] = []
         var unchanged: [String] = []
-        var failed: [(name: String, reason: ClashDisplayText)] = []
+         
+         
+        var failed: [(name: String, reason: ClashDisplayText?)] = []
+         
+         
+        var notUpdated: [(module: String, lines: [ModuleDetailBuilder.NotUpdatedLine])] = []
 
         func presentation(locale: Locale) -> ClashFeedbackPresentation? {
             switch changed.count + unchanged.count + failed.count {
             case 0:
                 return nil
             case 1:
+                 
+                let sentences = notUpdated.first?.lines.map(\.sentence) ?? []
                 if let name = changed.first {
-                    return .success(title: ClashFeedbackCopy.updated(name), accessibilityIdentifier: "feedback.modules.update")
+                    guard !sentences.isEmpty else {
+                        return .success(title: ClashFeedbackCopy.updated(name), accessibilityIdentifier: "feedback.modules.update")
+                    }
+                     
+                    return .warning(title: ClashFeedbackCopy.updated(name), message: .verbatim(sentences.joined(separator: "\n")),
+                                    accessibilityIdentifier: "feedback.modules.update")
                 }
                 if let name = unchanged.first {
                     return .information(title: ClashFeedbackCopy.upToDate(name), accessibilityIdentifier: "feedback.modules.update")
                 }
                 guard let failure = failed.first else { return nil }
-                return .error(title: ClashFeedbackCopy.couldNotUpdate(failure.name), message: failure.reason,
+                let message: ClashDisplayText?
+                if sentences.isEmpty {
+                    message = failure.reason
+                } else {
+                    let reason = failure.reason.map { ClashCopy.string(for: $0, locale: locale) }
+                    message = .verbatim(([reason].compactMap { $0 } + sentences).joined(separator: "\n"))
+                }
+                return .error(title: ClashFeedbackCopy.couldNotUpdate(failure.name), message: message,
                               accessibilityIdentifier: "feedback.modules.update")
             default:
                 let title = ClashFeedbackCopy.batch(updated: changed.count, failed: failed.count, unchanged: unchanged.count)
+                 
+                 
+                var lines = failed.compactMap { failure in
+                    failure.reason.map { "\(failure.name): \(ClashCopy.string(for: $0, locale: locale))" }
+                }
+                lines += notUpdated.compactMap { ModuleDetailBuilder.batchLine(module: $0.module, names: $0.lines.map(\.name), locale: locale) }
+                let message = lines.isEmpty ? nil : ClashDisplayText.verbatim(lines.joined(separator: "\n"))
                 if failed.isEmpty {
+                    if let message {
+                        return .warning(title: title, message: message, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
+                    }
                     return changed.isEmpty
                         ? .information(title: title, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
                         : .success(title: title, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
                 }
-                 
-                let reasons = ClashDisplayText.verbatim(failed.map { failure in
-                    "\(failure.name): \(ClashCopy.string(for: failure.reason, locale: locale))"
-                }.joined(separator: "\n"))
                 return changed.isEmpty && unchanged.isEmpty
-                    ? .error(title: title, message: reasons, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
-                    : .warning(title: title, message: reasons, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
+                    ? .error(title: title, message: message, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
+                    : .warning(title: title, message: message, isBatchSummary: true, accessibilityIdentifier: "feedback.modules.update")
             }
         }
     }

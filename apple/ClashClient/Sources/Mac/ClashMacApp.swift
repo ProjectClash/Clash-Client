@@ -291,6 +291,12 @@ struct ClashMacApp: App {
                 },
                 moreAttentionAction: { actionID in
                     model.performLegacySettingsAttention(actionID: actionID)
+                },
+                 
+                 
+                 
+                refusalNote: { issue in
+                    model.onDemandPauseNote(forTheRefusal: issue)
                 }
             )
              
@@ -471,9 +477,16 @@ struct ClashMacApp: App {
                  
                 ClashWindowDepartureHost {
                     ClashMacWindowFeedbackHost {
-                        ScriptEditorView(script: script, rename: { name in
-                            try ScriptLibrary.rename(id: script.id, to: name)
-                        }) { ScriptLibrary.upsert($0) }
+                         
+                         
+                         
+                        ScriptEditorView(
+                            script: script,
+                            check: ClashMacScriptChoiceCheck.editCheck(
+                                running: ScriptLibrary.configurationsRunning(script.id, in: model.profiles.profiles),
+                                model: model.profiles),
+                            rename: { name in try ScriptLibrary.rename(id: script.id, to: name) }
+                        ) { ScriptLibrary.upsert($0) }
                     }
                 } windowGuard: { controller in
                     ClashMacWindowCloseGuard(controller: controller)
@@ -516,13 +529,18 @@ final class ClashMacUndoToken: Hashable {
     nonisolated func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
     let label: String
     let operation: String
+     
+     
+    let actionName: ClashDisplayText
     let undo: @MainActor () async -> ClashMacUndoAnswer
     var used = false
     var resultID: Int?
 
-    init(label: String, operation: String, undo: @escaping @MainActor () async -> ClashMacUndoAnswer) {
+    init(label: String, operation: String, actionName: ClashDisplayText? = nil,
+         undo: @escaping @MainActor () async -> ClashMacUndoAnswer) {
         self.label = label
         self.operation = operation
+        self.actionName = actionName ?? ClashFeedbackCopy.deleteActionName(label)
         self.undo = undo
     }
 }
@@ -557,8 +575,14 @@ enum ClashMacDockIcon {
         hidesIcon && !hasVisibleWindow ? .accessory : .regular
     }
 
+     
+     
+     
+    @MainActor static var heldByStatusMenu = false
+
     @MainActor
     static func apply(hidesIcon: Bool, application: NSApplication = .shared) {
+        guard !heldByStatusMenu else { return }
         let visible = application.windows.contains {
             $0.isVisible && $0.level == .normal && $0.canBecomeKey
         }
@@ -1036,6 +1060,22 @@ private struct ClashMacCentreAddButton: View {
             }
             .help(Text(clash: .copy("Add Rules")))
             .accessibilityIdentifier("configuration-center.rules.add")
+        case .scripts:
+             
+             
+             
+             
+            Button {
+                model.overrideLibraryAdds = true
+            } label: {
+                Label {
+                    Text(clash: .copy("Add Script"))
+                } icon: {
+                    Image(systemName: ClashSymbol.plus.name)
+                }
+            }
+            .help(Text(clash: .copy("Add Script")))
+            .accessibilityIdentifier("configuration-center.override-library.add")
         }
     }
 }
@@ -1049,17 +1089,33 @@ private struct ClashMacCentreAddButton: View {
  
  
  
+ 
+ 
+ 
+ 
+ 
+ 
 @MainActor
 private struct ClashMacCentreUpdateAllButton: View {
     @ObservedObject var library: ClashMacConfigurationLibraryModel
     let profiles: ProfilesViewModel
+    let model: ClashMacSceneModel
      
     @State private var linkedProfiles: Set<String>
+     
+     
+    @State private var segment: ClashMacConfigurationCenterSegment
+    @State private var updatingScripts = false
+     
+     
+    @State private var hasScripts = false
 
-    init(library: ClashMacConfigurationLibraryModel, profiles: ProfilesViewModel) {
+    init(library: ClashMacConfigurationLibraryModel, profiles: ProfilesViewModel, model: ClashMacSceneModel) {
         self.library = library
         self.profiles = profiles
+        self.model = model
         _linkedProfiles = State(initialValue: Self.linked(profiles.profiles))
+        _segment = State(initialValue: model.configurationCenterSegment)
     }
 
      
@@ -1071,7 +1127,22 @@ private struct ClashMacCentreUpdateAllButton: View {
 
     var body: some View {
         Group {
-            if library.hasLinkedContent(legacyProfiles: hasLegacyProfiles) {
+            if segment == .scripts {
+                if hasScripts {
+                    Button {
+                        model.updateOverrideScripts(nil)
+                    } label: {
+                        Label {
+                            Text(clash: .copy("Update All"))
+                        } icon: {
+                            Image(systemName: ClashSymbol.arrowTriangle2Circlepath.name)
+                        }
+                    }
+                    .disabled(updatingScripts)
+                    .help(Text(clash: .copy("Update All")))
+                    .accessibilityIdentifier("configuration-center.override-library.update-all")
+                }
+            } else if library.hasLinkedContent(legacyProfiles: hasLegacyProfiles) {
                 Button {
                     Task { await library.updateEverything() }
                 } label: {
@@ -1087,6 +1158,20 @@ private struct ClashMacCentreUpdateAllButton: View {
             }
         }
         .onReceive(profiles.$profiles.map(Self.linked).removeDuplicates()) { linkedProfiles = $0 }
+        .onReceive(model.$configurationCenterSegment.removeDuplicates()) { segment = $0 }
+        .onReceive(model.$overrideLibraryUpdating.removeDuplicates()) { updatingScripts = $0 }
+        .task { await readHasScripts() }
+        .onReceive(NotificationCenter.default.publisher(for: ScriptLibrary.didChange).receive(on: DispatchQueue.main)) { _ in
+            Task { await readHasScripts() }
+        }
+    }
+
+     
+     
+    private func readHasScripts() async {
+        hasScripts = await Task.detached(priority: .userInitiated) {
+            ClashMacOverrideLibrary.offersUpdateAll(ScriptLibrary.load())
+        }.value
     }
 
     nonisolated private static func linked(_ profiles: [Profile]) -> Set<String> {
@@ -1101,6 +1186,8 @@ private struct ClashMacProxiesGhostChrome: View, Equatable {
     let model: ClashMacSceneModel
     @ObservedObject var channels: ClashRegularRootChannels
      
+    @ObservedObject var more: ClashMacProxiesPageMore
+     
      
      
      
@@ -1113,6 +1200,7 @@ private struct ClashMacProxiesGhostChrome: View, Equatable {
     init(model: ClashMacSceneModel) {
         self.model = model
         self.channels = model.proxiesChannels
+        self.more = model.proxiesPageMore
         _preferences = State(
             initialValue: ClashProxiesDisplayPreferences.uiTestOverride()
                 ?? ClashProxiesDisplayPreferences.load()
@@ -1154,6 +1242,13 @@ private struct ClashMacProxiesGhostChrome: View, Equatable {
                         Task { await model.refreshNodes() }
                     },
                     onShowDisplayOptions: {},
+                     
+                     
+                    onUpdateNodeSources: more.updateNodeSources,
+                    onReorderGroups: more.reorderGroups,
+                     
+                    addItems: ClashProxiesAddItem.allCases,
+                    onAdd: { [weak model] item in model?.proxiesAdd(item) },
                     icon: { ClashSymbolImage(symbol: $0) }
                 )
             }
@@ -1167,6 +1262,8 @@ private struct ClashMacProxiesGhostChrome: View, Equatable {
     }
 }
 
+ 
+ 
  
  
  
@@ -1191,7 +1288,10 @@ private struct ClashMacRulesGhostChrome: View, Equatable {
             .searchable(text: $channels.searchText, prompt: Text("Search rules"))
             .clashToolbarUnlessInPanel {
                 ToolbarItem(placement: .primaryAction) {
-                    ClashMacRulesEditButton(model: model, profiles: model.profiles)
+                    ClashMacRulesEditButton(model: model, profiles: model.profiles, channels: channels)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    ClashMacRulesAddButton(model: model, profiles: model.profiles)
                 }
             }
     }
@@ -1199,10 +1299,13 @@ private struct ClashMacRulesGhostChrome: View, Equatable {
 
  
  
+ 
+ 
 private struct ClashMacRulesEditButton: View {
     let model: ClashMacSceneModel
     @ObservedObject var profiles: ProfilesViewModel
-    @Environment(\.clashPushRoute) private var pushRoute
+    @ObservedObject var channels: ClashRegularRootChannels
+     
      
      
      
@@ -1210,30 +1313,259 @@ private struct ClashMacRulesEditButton: View {
     @State private var keepsRules = false
 
     var body: some View {
-         
-         
-        if let pushRoute, model.hasConfigurationInUse {
-            Button {
-                Task { @MainActor in
-                     
-                     
-                     
-                     
-                    await model.readConfigurationLibraryIfUnread()
-                    guard let chapter = model.rulesChapterOfCurrentConfiguration() else { return }
-                     
-                    let token = UUID()
-                    ClashViewRouteRegistry.set(token, ownership: .oneShot, onReturn: {}) { chapter() }
-                    pushRoute(ClashViewRoute(id: token))
+        Group {
+            if model.hasConfigurationInUse {
+                if channels.editsInPlace {
+                    Button { channels.editsInPlace = false } label: { Text(clash: .copy("Done")) }
+                        .accessibilityIdentifier("rules.overview.done")
+                } else {
+                    Button {
+                        Task { @MainActor in
+                             
+                             
+                             
+                             
+                             
+                            await model.readConfigurationLibraryIfUnread()
+                            guard !(await model.currentConfigurationKeepsRulesInOriginal()) else { return }
+                            channels.editsInPlace = true
+                        }
+                    } label: {
+                        Text(clash: .copy("Edit"))
+                    }
+                    .disabled(keepsRules)
+                    .help(Text(clash: keepsRules ? ClashMacKeptRulesList.note : .copy("Edit")))
+                    .accessibilityIdentifier("rules.overview.edit")
                 }
-            } label: {
-                Text(clash: .copy("Edit"))
             }
-            .disabled(keepsRules)
-            .help(Text(clash: keepsRules ? ClashMacKeptRulesList.note : .copy("Edit")))
-            .accessibilityIdentifier("rules.overview.edit")
-            .task(id: profiles.activeProfileID) { keepsRules = await model.currentConfigurationKeepsRulesInOriginal() }
         }
+        .task(id: profiles.activeProfileID) { keepsRules = await model.currentConfigurationKeepsRulesInOriginal() }
+         
+        .onChange(of: profiles.activeProfileID) { _ in channels.editsInPlace = false }
+    }
+}
+
+ 
+ 
+ 
+private struct ClashMacRulesAddButton: View {
+    let model: ClashMacSceneModel
+    @ObservedObject var profiles: ProfilesViewModel
+
+    var body: some View {
+        if model.hasConfigurationInUse {
+            Button { model.rulesPageAdd() } label: {
+                Label { Text(clash: .copy("Add Rule")) } icon: { Image(systemName: ClashSymbol.plus.name) }
+            }
+            .help(Text(clash: .copy("Add Rule")))
+            .accessibilityIdentifier("rules.overview.add")
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+private struct ClashMacConfigurationProxiesPage: View {
+    let model: ClashMacSceneModel
+    let profileID: String
+    let openingGroup: String?
+    @StateObject private var channels = ClashRegularRootChannels()
+    @StateObject private var more = ClashMacProxiesPageMore()
+    @StateObject private var fold = ClashMacConfigurationProxiesFold()
+     
+    @State private var refreshes = 0
+     
+     
+    @State private var preferences: ClashProxiesDisplayPreferences =
+        ClashProxiesDisplayPreferences.uiTestOverride() ?? ClashProxiesDisplayPreferences.load()
+
+    var body: some View {
+        ConfigurationProxiesHost(
+            vpn: model.vpn, command: model.command, nodes: model.nodes, profiles: model.profiles, profileID: profileID,
+            macNodeSourcesPage: { [weak model] id in model?.proxiesNodeSourcesPage(profileID: id) ?? AnyView(EmptyView()) },
+            macGroupPages: model.proxiesGroupPages(more: more),
+            openingGroup: openingGroup,
+            refreshes: refreshes
+        )
+         
+        .environment(\.clashRegularRootSearchText, channels.searchText)
+        .environment(\.clashRegularRootFoldCommand, channels.foldCommand)
+        .environment(\.clashRegularRootFoldStateSink, fold.sink)
+        .environment(\.clashRegularRootDisplayPreferences, channels.displayPreferences)
+        .searchable(text: $channels.searchText, prompt: Text("Search proxies"))
+        .clashToolbarUnlessInPanel {
+            ClashProxiesToolbar(
+                showsDismissControl: false,
+                hasExpandedGroups: fold.hasExpandedGroups,
+                canRefreshCatalog: true,
+                refreshDisabled: ProxiesOverviewHost.isCurrent(profileID: profileID, in: model.profiles) && model.isTestingLatencyNow,
+                preferences: $preferences,
+                onDismiss: {},
+                onToggleFold: { channels.foldCommand += 1 },
+                 
+                 
+                onRefresh: { [weak model] in
+                    refreshes &+= 1
+                    guard let model, ProxiesOverviewHost.isCurrent(profileID: profileID, in: model.profiles) else { return }
+                    Task { await model.refreshNodes() }
+                },
+                onShowDisplayOptions: {},
+                onUpdateNodeSources: more.updateNodeSources,
+                onReorderGroups: more.reorderGroups,
+                addItems: ClashProxiesAddItem.allCases,
+                onAdd: { [weak model] item in model?.proxiesAdd(item, profileID: profileID, more: more) },
+                icon: { ClashSymbolImage(symbol: $0) }
+            )
+        }
+        .onChange(of: preferences) { [weak model] value in
+             
+             
+            channels.requestDisplayPreferences(value)
+            model?.applyProxiesDisplayPreferences(value)
+        }
+    }
+}
+
+ 
+ 
+@MainActor
+private final class ClashMacConfigurationProxiesFold: ObservableObject {
+    @Published private(set) var hasExpandedGroups = false
+    private(set) lazy var sink = ClashBoolSink { [weak self] value in
+        guard let self, self.hasExpandedGroups != value else { return }
+        self.hasExpandedGroups = value
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+private struct ClashMacConfigurationRulesPage: View {
+    let model: ClashMacSceneModel
+    let profileID: String
+    @StateObject private var channels = ClashRegularRootChannels()
+    @StateObject private var commands = ClashMacRulesPageCommands()
+    @Environment(\.clashPushRoute) private var pushRoute
+
+    var body: some View {
+        let owner = ClashMacRulesPageOwner(channels: channels, commands: commands, isConfigurationsPage: true)
+        ClashMacConnectionStateContent(
+            initialValue: model.command.isConnected,
+            updates: model.command.$isConnected.eraseToAnyPublisher()
+        ) { connected in
+            ClashMacObservedLibraryPage(model: model.configurationLibrary) { _ in
+                ClashMacConfigurationRulesRoot(
+                    model: model, profiles: model.profiles, profileID: profileID, connected: connected, owner: owner,
+                    openProxiesGroup: { group in push(model.configurationProxiesPage(profileID: profileID, openingGroup: group)) }
+                )
+            }
+        }
+        .environment(\.clashRegularRootSearchText, channels.searchText)
+        .environment(\.clashRegularRootEditsInPlace, channels.editsInPlace)
+        .searchable(text: $channels.searchText, prompt: Text("Search rules"))
+        .clashToolbarUnlessInPanel {
+            ToolbarItem(placement: .primaryAction) {
+                ClashMacConfigurationRulesEditButton(model: model, profileID: profileID, channels: channels)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                ClashMacConfigurationRulesAddButton(model: model, profileID: profileID, owner: owner)
+            }
+        }
+    }
+
+     
+    private func push(_ page: AnyView) {
+        guard let pushRoute else { return }
+        let token = UUID()
+        ClashViewRouteRegistry.set(token, ownership: .oneShot, onReturn: {}) { page }
+        pushRoute(ClashViewRoute(id: token))
+    }
+}
+
+ 
+ 
+ 
+private struct ClashMacConfigurationRulesRoot: View {
+    let model: ClashMacSceneModel
+    @ObservedObject var profiles: ProfilesViewModel
+    let profileID: String
+    let connected: Bool
+    let owner: ClashMacRulesPageOwner
+    let openProxiesGroup: (String) -> Void
+
+    var body: some View {
+        if let profile = profiles.profiles.first(where: { $0.id == profileID }) {
+            RulesOverviewHost(
+                command: model.command,
+                canInspectActiveRules: connected && profiles.activeProfileID == profileID,
+                profiles: profiles,
+                profile: profile,
+                openProxiesGroup: openProxiesGroup,
+                ownsNavigationContainer: false,
+                profileID: profileID,
+                macPage: { [weak model] profile in
+                    model?.configurationRulesPageParts(for: profile, owner: owner) ?? RulesOverviewPageParts()
+                }
+            )
+        } else {
+            ClashEmptyState(title: "No Profile", message: "Add a profile before browsing its rules.",
+                            symbol: .exclamationmarkTriangle)
+        }
+    }
+}
+
+ 
+ 
+ 
+private struct ClashMacConfigurationRulesEditButton: View {
+    let model: ClashMacSceneModel
+    let profileID: String
+    @ObservedObject var channels: ClashRegularRootChannels
+    @State private var keepsRules = false
+
+    var body: some View {
+        Group {
+            if channels.editsInPlace {
+                Button { channels.editsInPlace = false } label: { Text(clash: .copy("Done")) }
+                    .accessibilityIdentifier("rules.overview.done")
+            } else {
+                Button {
+                    Task { @MainActor in
+                        await model.readConfigurationLibraryIfUnread()
+                        guard !(await model.configurationKeepsRulesInOriginal(profileID)) else { return }
+                        channels.editsInPlace = true
+                    }
+                } label: {
+                    Text(clash: .copy("Edit"))
+                }
+                .disabled(keepsRules)
+                .help(Text(clash: keepsRules ? ClashMacKeptRulesList.note : .copy("Edit")))
+                .accessibilityIdentifier("rules.overview.edit")
+            }
+        }
+        .task(id: profileID) { keepsRules = await model.configurationKeepsRulesInOriginal(profileID) }
+    }
+}
+
+ 
+private struct ClashMacConfigurationRulesAddButton: View {
+    let model: ClashMacSceneModel
+    let profileID: String
+    let owner: ClashMacRulesPageOwner
+
+    var body: some View {
+        Button { model.rulesPageAdd(profileID: profileID, owner: owner) } label: {
+            Label { Text(clash: .copy("Add Rule")) } icon: { Image(systemName: ClashSymbol.plus.name) }
+        }
+        .help(Text(clash: .copy("Add Rule")))
+        .accessibilityIdentifier("rules.overview.add")
     }
 }
 
@@ -1666,15 +1998,10 @@ private final class ClashMacSceneModel: ObservableObject {
     private func presentDeleteConfirmation(_ item: ClashMacConfigurationCenterItem) {
          
          
-         
-        switch item {
-        case .source, .scheme:
-             
-            guard configurationLibrary.deletesUndoably else { break }
+        if !ClashMacDeleteKey.asksFirst(item, deletesUndoably: configurationLibrary.deletesUndoably) {
             configurationCenterPendingDelete = nil
             configurationCenterDeleteHandler?(item)
             return
-        default: break
         }
         let locale = preferences.language.locale
         let record: ConfigurationSourceRecord? = {
@@ -1735,11 +2062,46 @@ private final class ClashMacSceneModel: ObservableObject {
             ProviderRefreshStateWatcher.changes()
         )
         .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
-        .sink { [weak model] in Task { @MainActor in model?.reloadCollections() } }
+        .sink { [weak self, weak model] in
+            Task { @MainActor in
+                model?.reloadCollections()
+                 
+                 
+                 
+                 
+                 
+                 
+                if self?.productIsVisible == true { self?.followTunnelIntoLibrary() }
+            }
+        }
+         
+         
+         
+         
+        configurationLibraryFollowsCopies = center.publisher(for: ConfigurationCollectionContentBridge.libraryCopiesDidFollow)
+            .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
+            .sink { [weak model] _ in Task { @MainActor in model?.rereadCollections() } }
         return model
     }()
     private var configurationLibraryFollowsProfiles: AnyCancellable?
     private var configurationLibraryFollowsRuntime: AnyCancellable?
+    private var configurationLibraryFollowsCopies: AnyCancellable?
+
+     
+     
+     
+     
+     
+     
+    func followTunnelIntoLibrary() {
+        let container = profiles.appGroupContainer
+        Task.detached(priority: .utility) {
+            guard await ConfigurationCollectionContentBridge.followTunnelOnce(container: container) else { return }
+            await MainActor.run {
+                NotificationCenter.default.post(name: ConfigurationCollectionContentBridge.libraryCopiesDidFollow, object: nil)
+            }
+        }
+    }
 
     var configurationCenterSegmentBinding: Binding<ClashMacConfigurationCenterSegment> {
         Binding(get: { self.configurationCenterSegment }, set: { self.configurationCenterSegment = $0 })
@@ -1751,6 +2113,9 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     @Published var configurationCenterWindowSheet: ClashMacCentreWindowSheet?
+     
+     
+    @Published var proxiesNewNode: ClashMacProxiesNewNode?
 
      
      
@@ -1766,6 +2131,9 @@ private final class ClashMacSceneModel: ObservableObject {
         let profileID: String?
     }
     private var quickAddControllers: [QuickAddKey: ProfileQuickAddController] = [:]
+     
+     
+    private var schemeSessions: [String: ConfigurationSchemeDraftSession] = [:]
     @Published var configurationCenterImport: ClashMacImportRequest?
      
      
@@ -1822,6 +2190,18 @@ private final class ClashMacSceneModel: ObservableObject {
         Binding(get: { self.configurationCenterPendingPush }, set: { self.configurationCenterPendingPush = $0 })
     }
      
+     
+    @Published var overrideLibraryAdds = false
+    var overrideLibraryAddsBinding: Binding<Bool> {
+        Binding(get: { self.overrideLibraryAdds }, set: { self.overrideLibraryAdds = $0 })
+    }
+     
+     
+    @Published var overrideLibraryUpdating = false
+     
+     
+    var overrideLibrary: ClashMacOverrideLibrary { ClashMacOverrideLibrary() }
+     
     @Published var configurationCenterPendingModules = false
     var configurationCenterPendingModulesBinding: Binding<Bool> {
         Binding(get: { self.configurationCenterPendingModules }, set: { self.configurationCenterPendingModules = $0 })
@@ -1834,7 +2214,14 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     func currentConfigurationKeepsRulesInOriginal() async -> Bool {
-        guard let id = currentProfile?.id, let store = profiles.configurationLibraryStore else { return false }
+        guard let id = currentProfile?.id else { return false }
+        return await configurationKeepsRulesInOriginal(id)
+    }
+
+     
+     
+    func configurationKeepsRulesInOriginal(_ id: String) async -> Bool {
+        guard let store = profiles.configurationLibraryStore else { return false }
         return await Task.detached(priority: .utility) {
             (try? store.snapshot()).map { ClashMacOriginalRules.keepsRules(profileID: id, in: $0) } ?? false
         }.value
@@ -1845,16 +2232,6 @@ private final class ClashMacSceneModel: ObservableObject {
      
     func readConfigurationLibraryIfUnread() async {
         if configurationLibrary.phase != .ready { await configurationLibrary.reload() }
-    }
-
-     
-     
-     
-     
-    func rulesChapterOfCurrentConfiguration() -> (@MainActor () -> AnyView)? {
-        guard let id = currentProfile.flatMap({ try? ClashClientKit.Profile.ID($0.id) }),
-              case .page(let page)? = outlineDestination(.rules, profileID: id) else { return nil }
-        return page
     }
 
      
@@ -1882,19 +2259,11 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     func deleteKeyBelongsToTheShownItem(event: NSEvent?, keyWindow: NSWindow?) -> Bool {
-        let fromKeyboard = event?.type == .keyDown
-        guard let key = keyWindow else { return true }
-        if let text = key.firstResponder as? NSTextView {
-            guard fromKeyboard else { return key === mainWindow }
-            if text.isEditable { text.deleteToBeginningOfLine(nil) }
-            return false
-        }
-        return key === mainWindow || mainWindow == nil
+        ClashMacDeleteKey.belongsToTheShownItem(event: event, keyWindow: keyWindow, mainWindow: mainWindow)
     }
 
     func requestDeleteShownItem() {
-        guard let item = configurationCenterShownItem else { return }
-        if case .collection = item { return }
+        guard let item = ClashMacDeleteKey.target(shown: configurationCenterShownItem) else { return }
         configurationCenterPendingDelete = item
     }
 
@@ -1925,6 +2294,9 @@ private final class ClashMacSceneModel: ObservableObject {
     }
     var configurationCenterWindowSheetBinding: Binding<ClashMacCentreWindowSheet?> {
         Binding(get: { self.configurationCenterWindowSheet }, set: { self.configurationCenterWindowSheet = $0 })
+    }
+    var proxiesNewNodeBinding: Binding<ClashMacProxiesNewNode?> {
+        Binding(get: { self.proxiesNewNode }, set: { self.proxiesNewNode = $0 })
     }
 
      
@@ -2204,6 +2576,25 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
      
+    func schemeReloadRefusal(sourceID: String) async -> String? {
+        guard let refused = profiles.refusedActivation, let store = profiles.configurationLibraryStore,
+              let library = try? await Task.detached(priority: .userInitiated, operation: { try store.snapshot() }).value,
+              let scheme = library.rules.first(where: { $0.sourceID == sourceID && $0.collectionKey == nil }),
+              library.recipes(runningScheme: scheme.id).contains(where: { $0.id == refused.profileID })
+        else { return nil }
+        let locale = preferences.language.locale
+        guard let lines = RuleSchemeRefusalNotice.lines(
+            for: refused.failure, schemeName: ClashTowerRulesLibraryView.displayLabel(scheme, locale: locale),
+            fromLink: scheme.kind == .imported) else { return nil }
+        return lines.prefix(2).map { ClashCopy.string(for: $0, locale: locale) }.joined(separator: "\n")
+    }
+
+     
+     
+     
+     
+     
+     
      
      
      
@@ -2295,7 +2686,10 @@ private final class ClashMacSceneModel: ObservableObject {
                  
                  
                 let running = ConfigurationCollectionContentBridge.RunningProviders.load(container: container)
-                let counted = running.map { ConfigurationCollectionContentBridge.withRunningCounts(entries, catalog: $0.catalog) } ?? entries
+                 
+                 
+                 
+                let counted = ConfigurationCollectionContentBridge.withRunningCounts(entries, running: running)
                 return ConfigurationCollectionContentBridge.withRunningUsage(counted, running: running)
             }.value
         }
@@ -2351,6 +2745,15 @@ private final class ClashMacSceneModel: ObservableObject {
              
              
             try await self?.updateSourceAndItsCollections(id, replacingRules: true, at: version)
+        }
+         
+         
+         
+         
+         
+        actions.putBack = { [weak self, profiles] id in
+            guard profiles.wasPutBack(id) else { return nil }
+            return ClashMacPutBackBar.putBack(failure: profiles.lastFailure, feedback: self?.feedback)
         }
          
          
@@ -2671,23 +3074,34 @@ private final class ClashMacSceneModel: ObservableObject {
             }
              
              
+             
+             
+             
+             
             actions.runningCount = {
                 let container = profiles.appGroupContainer
-                var bare = entry
-                bare.memberCount = nil
                 return await Task.detached {
-                    ConfigurationCollectionContentBridge.withRunningCounts([bare], container: container).first?.memberCount
-                }.value
+                    ConfigurationCollectionContentBridge.inUse(of: entry, container: container)
+                }.value.map { ClashMacCollectionInUse(count: $0.count, ofThisCopy: $0.ofThisCopy) }
             }
             let center = NotificationCenter.default
+             
+             
+             
              
              
             actions.runningCountChanges = Publishers.MergeMany(
                 center.publisher(for: ProfileStore.didChangeNotification).map { _ in () }.eraseToAnyPublisher(),
                 center.publisher(for: .clashActiveConfigurationRepublished).map { _ in () }.eraseToAnyPublisher(),
                 center.publisher(for: ProviderFirstLoadRetry.didRefreshNotification).map { _ in () }.eraseToAnyPublisher(),
-                profiles.$activeProfileID.dropFirst().removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+                profiles.$activeProfileID.dropFirst().removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+                ProviderRefreshStateWatcher.changes()
             ).debounce(for: .milliseconds(400), scheduler: RunLoop.main).eraseToAnyPublisher()
+             
+             
+            actions.copyChanges = center.publisher(for: ConfigurationCollectionContentBridge.libraryCopiesDidFollow)
+                .map { _ in () }
+                .debounce(for: .milliseconds(400), scheduler: RunLoop.main).eraseToAnyPublisher()
              
              
              
@@ -2747,7 +3161,7 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
      
-    private func chainSheetActions(existing: ConfigurationSourceRecord?) -> ClashMacChainSheetActions {
+    private func chainSheetActions(existing: ConfigurationSourceRecord?, useFor: String? = nil) -> ClashMacChainSheetActions {
         let profiles = self.profiles
         let library = configurationLibrary
         let locale = preferences.language.locale
@@ -2785,6 +3199,8 @@ private final class ClashMacSceneModel: ObservableObject {
                     library.apply(try await profiles.saveConfigurationChain(.init(existing), replacement: payload))
                 } else {
                     try await library.addSource(payload)
+                     
+                    self.useForOrSay(useFor, added: payload.record.displayLabel(locale: locale), sourceID: payload.record.id)
                 }
             }
         )
@@ -2865,11 +3281,17 @@ private final class ClashMacSceneModel: ObservableObject {
             self.configurationCenterListPage(.nodes, list: list, actions: actions)
         } rules: {
             self.configurationCenterListPage(.rules, list: list, actions: actions)
+        } scripts: {
+            self.overrideLibraryPage(list: list, actions: actions)
         }
         .task { [weak self] in
             guard let self, self.configurationLibrary.phase == .idle else { return }
             await self.configurationLibrary.reload()
         }
+         
+         
+         
+        .onAppear { [weak self] in self?.followTunnelIntoLibrary() }
          
          
         .onAppear { [weak self] in self?.loadEditorSyntaxOnce() }
@@ -2944,6 +3366,19 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
         .clashProductModal(isPresented: configurationCenterCreatesNodeBinding, role: .form) { [weak self] in
+            self?.newNodeForm(useFor: nil) { self?.configurationCenterCreatesNode = false }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+    fileprivate func newNodeForm(useFor: String?, close: @escaping () -> Void) -> some View {
             ClashFeatureNavigationContainer {
                 ClashMacDialerCandidatesHost(
                     load: { [weak self] in await self?.dialerCandidates(excluding: "") ?? .empty }
@@ -2974,25 +3409,22 @@ private final class ClashMacSceneModel: ObservableObject {
                             var source = payload
                             source.record.registersSuppliedRules = false
                             try await self.configurationLibrary.addSource(source)
+                             
+                            self.useForOrSay(useFor, added: payload.record.displayLabel(locale: self.preferences.language.locale),
+                                             sourceID: payload.record.id)
                         },
                         showsTesting: false,
                         isNew: true,
                         dialerRouting: .payloadField,
                         dialerCandidates: candidates,
-                        onDone: { [weak self] in self?.configurationCenterCreatesNode = false },
+                        onDone: close,
                         commitTitle: "Save"
                     )
                 }
             }
             .clashPageSizedSheet()
-        }
     }
 
-     
-     
-     
-     
-     
     fileprivate func importSheet(_ request: ClashMacImportRequest) -> some View {
         ClashMacSourceImportSheet(
             purpose: request.purpose,
@@ -3041,6 +3473,10 @@ private final class ClashMacSceneModel: ObservableObject {
                         var source = payload
                         source.record.registersSuppliedRules = false
                         try await self.configurationLibrary.addSource(source)
+                         
+                         
+                        self.useForOrSay(request.useFor, added: payload.record.displayLabel(locale: self.preferences.language.locale),
+                                         sourceID: payload.record.id)
                     }
                 }
                 self.closeConfigurationImport()
@@ -3143,6 +3579,9 @@ private final class ClashMacSceneModel: ObservableObject {
                 identifiers: .rules,
                 doors: ClashMacQuickAddDoors()
             )
+        case .scripts:
+             
+            EmptyView()
         }
     }
 
@@ -3150,10 +3589,11 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
      
+     
     @ViewBuilder
     private func scriptsQuickAddCard(
         profileID: ClashClientKit.Profile.ID,
-        reload: @escaping @MainActor () -> Void
+        added: @escaping @MainActor (ClashMacAddedScript) -> Void
     ) -> some View {
          
          
@@ -3167,7 +3607,140 @@ private final class ClashMacSceneModel: ObservableObject {
             identifiers: .scripts,
             doors: ClashMacQuickAddDoors()
         )
-        .onAppear { controller.onScriptAdded = { _ in reload() } }
+        .onAppear {
+            controller.onScriptAdded = { script in
+                added(ClashMacAddedScript(id: script.id, fromLink: ClashMacOverrideLibrary.isLinked(script)))
+            }
+        }
+    }
+
+     
+     
+     
+    private func overrideLibraryPage(
+        list: ClashProfilesListPresentation, actions centreActions: ClashMacConfigurationCenterListActions
+    ) -> some View {
+        ClashMacOverrideLibraryPage(
+            actions: overrideLibraryShared,
+             
+             
+            quickAdd: AnyView(MacQuickAddCard(
+                controller: quickAddController(.scripts),
+                identifiers: .overrideLibrary,
+                doors: ClashMacQuickAddDoors(),
+                header: "Add Override Script",
+                placeholder: MacQuickAddCard.scriptPlaceholder
+            ))
+        ) { [weak self] id in
+             
+             
+             
+            self?.configurationCenterRoutedDetail(.script(id), list: list, actions: centreActions) ?? AnyView(EmptyView())
+        }
+    }
+
+     
+     
+     
+    private lazy var overrideLibraryShared = overrideLibraryActions()
+    private lazy var overrideScriptShared = overrideScriptActions()
+
+     
+     
+    private func overrideLibraryActions() -> ClashMacOverrideLibraryActions {
+        let library = overrideLibrary
+        var actions = ClashMacOverrideLibraryActions(
+             
+             
+            load: { await Task.detached(priority: .userInitiated) { library.rows() }.value },
+            edit: { [weak self] id in
+                self?.openWindowAction?(id: "script-editor", value: ClashMacScriptEditorRequest(scriptID: id))
+            },
+            update: { [weak self] id in self?.updateOverrideScripts([id]) },
+            delete: { [weak self] id in self?.deleteOverrideScript(id) },
+            addLink: { link in _ = try await library.addLink(link) },
+            addManual: { label, text in _ = try library.addManual(name: label, body: text) }
+        )
+         
+         
+         
+        actions.reloadOn = [ScriptLibrary.didChange, ProfileStore.didChangeNotification]
+         
+        actions.updating = $overrideLibraryUpdating.eraseToAnyPublisher()
+         
+        actions.testRun = { [weak self] id in await self?.overrideScriptShared.testRun(id) ?? .passed }
+        return actions
+    }
+
+     
+     
+    fileprivate func overrideLibraryAddSheet() -> some View {
+        ClashMacOverrideLibraryAddSheet(actions: overrideLibraryShared) { [weak self] in
+            self?.overrideLibraryAdds = false
+        }
+    }
+
+     
+    private func overrideScriptActions() -> ClashMacOverrideScriptDetailActions {
+        let library = overrideLibrary
+        var actions = ClashMacOverrideScriptDetailActions(
+            load: { id in await Task.detached(priority: .userInitiated) { library.detail(id) }.value },
+            edit: { [weak self] id in
+                self?.openWindowAction?(id: "script-editor", value: ClashMacScriptEditorRequest(scriptID: id))
+            },
+            update: { [weak self] id in self?.updateOverrideScripts([id]) },
+            testRun: { id in await library.testRun(id) },
+            rename: { id, name in try library.rename(id, to: name) },
+            delete: { [weak self] id in self?.deleteOverrideScript(id) }
+        )
+        actions.reloadOn = [ScriptLibrary.didChange, ProfileStore.didChangeNotification]
+        actions.updating = $overrideLibraryUpdating.eraseToAnyPublisher()
+        return actions
+    }
+
+     
+     
+     
+     
+    func deleteOverrideScript(_ id: String) {
+        guard let deletion = overrideLibrary.delete(id) else { return }
+        offerUndo(of: deletion.label, operation: deletion.operation) { [weak self] in
+            let answer = deletion.undo()
+            if answer == .restored {
+                self?.navigationRequest = .profiles
+                self?.configurationCenterSegment = .scripts
+            }
+            return answer
+        }
+    }
+
+     
+     
+     
+     
+    func updateOverrideScripts(_ ids: [String]?) {
+        let operation = "scripts.update"
+        guard !overrideLibraryUpdating else { return }
+        let linked = ScriptLibrary.load().filter { script in
+            ClashMacOverrideLibrary.isLinked(script) && (ids.map { $0.contains(script.id) } ?? true)
+        }
+        guard !linked.isEmpty else {
+            if ids == nil {
+                feedback.say(.information(
+                    title: .copy("None of these scripts has a link to update from. For one that came from a link, add it again from the link."),
+                    isBatchSummary: true, accessibilityIdentifier: "feedback.scripts.update.no-links"), operation: operation)
+            }
+            return
+        }
+        overrideLibraryUpdating = true
+        let running = feedback.say(.loading(title: ClashFeedbackCopy.updating, accessibilityIdentifier: "feedback.scripts.update.running"),
+                                   operation: operation)
+        Task { @MainActor [weak self] in
+            let result = await Self.fetchScriptsAgain(linked)
+            guard let self else { return }
+            self.overrideLibraryUpdating = false
+            self.feedback.answer(running, with: result, operation: operation)
+        }
     }
 
     private func configurationCenterListPage(
@@ -3239,8 +3812,11 @@ private final class ClashMacSceneModel: ObservableObject {
         let existing = request.existingID.flatMap { id in configurationLibrary.snapshot.sources.first { $0.id == id } }
         return ClashMacChainSheet(
             existing: existing,
-            actions: chainSheetActions(existing: existing),
-            close: { [weak self] in self?.configurationCenterChain = nil }
+            actions: chainSheetActions(existing: existing, useFor: request.useFor),
+            close: { [weak self] in
+                self?.configurationCenterChain = nil
+                if case .newChain? = self?.configurationCenterWindowSheet { self?.configurationCenterWindowSheet = nil }
+            }
         )
     }
 
@@ -3278,6 +3854,243 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
      
+     
+     
+     
+     
+    func proxiesNodeSourcesPage(profileID: String) -> AnyView {
+        let recipe = configurationLibrary.snapshot.recipes.first { $0.id == profileID }
+        guard let recipe, recipe.preservesOriginal != true else {
+            return AnyView(ClashMacOriginalNodesPage(actions: originalNodesActions(profileID: profileID)))
+        }
+        let profiles = self.profiles
+        var actions = ClashMacConfigurationInspectorActions.unavailable
+        actions.setSources = { [weak self] ids in self?.editRecipe(profileID) { $0.selectedSourceIDs = ids } }
+         
+        actions.setScope = { [weak self] sourceID, scope in
+            self?.editRecipe(profileID) { draft in
+                var scopes = draft.nodeScopes ?? [:]
+                scopes[sourceID] = scope?.isEmpty == true ? nil : scope
+                draft.nodeScopes = scopes.isEmpty ? nil : scopes
+                if scope?.isEmpty == true { draft.selectedSourceIDs.removeAll { $0 == sourceID } }
+                else if !draft.selectedSourceIDs.contains(sourceID) { draft.selectedSourceIDs.append(sourceID) }
+            }
+        }
+        actions.loadScopeChoices = { source in
+            try await Self.scopeChoices(source, staged: nil, store: profiles.configurationLibraryStore)
+        }
+        actions.sourceNodes = { record, scope in
+            guard let store = profiles.configurationLibraryStore else { throw ConfigurationLibraryError.unreadable }
+            let group = try await Task.detached(priority: .userInitiated) {
+                try ConfigurationSourceContents.group(of: record, scope: scope, in: store)
+            }.value
+            return ClashMacSourceNodes(nodes: group.nodes.map { .init(name: $0.name, type: $0.type) },
+                                      providers: group.providers.map { .init(name: $0.name, type: $0.type) })
+        }
+        return AnyView(ClashMacNodeSourcesRoute(
+            library: configurationLibrary, profileID: profileID, actions: actions,
+             
+             
+            addSource: { [weak self] in
+                self?.configurationCenterWindowSheet = .importing(ClashMacImportRequest(purpose: .nodes, useFor: profileID))
+            }
+        ))
+    }
+
+     
+     
+     
+     
+     
+    func proxiesGroupPages(more: ClashMacProxiesPageMore) -> ProxiesMacGroupPages {
+        ProxiesMacGroupPages(
+            group: { [weak self] profileID, name in self?.policyGroupPage(profileID: profileID, name: name) ?? AnyView(EmptyView()) },
+            list: { [weak self] profileID in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(ClashMacRuleEditorSheet(actions: self.groupEditorActions(profileID: profileID), initialPane: .groups,
+                                                       presentation: .page)
+                    .environment(\.clashMacEditorSyntax, self.editorSyntax))
+            },
+            newGroup: { [weak self] profileID, close in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(ClashMacNewPolicyGroupSheet(actions: self.groupEditorActions(profileID: profileID), close: close)
+                    .environment(\.clashMacEditorSyntax, self.editorSyntax))
+            },
+            delete: { [weak self] profileID, name in self?.deletePolicyGroup(profileID: profileID, name: name) },
+             
+             
+            attach: { [weak more] reorder, update, openNodeSources in
+                more?.reorderGroups = reorder
+                more?.updateNodeSources = update
+                more?.openNodeSources = openNodeSources
+            },
+             
+             
+            openNodeSource: { [weak self] id in
+                self?.requestConfigurationCenter(.nodes)
+                self?.configurationCenterPendingPush = .source(id)
+            },
+            originalNode: { [weak self] profileID, name, saved, close in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(ClashMacOriginalNodeFormByName(profiles: self.profiles, profileID: profileID, name: name,
+                                                              locale: self.preferences.language.locale,
+                                                              written: { [weak self] in
+                                                                  await self?.configurationLibrary.reload()
+                                                                  saved()
+                                                              },
+                                                              done: close)
+                    .clashPageSizedSheet())
+            },
+             
+             
+            offerUndo: { [weak self] title, actionName, label, operation, restore in
+                self?.undoShelf.offerRestoring(title, actionName, label, operation, restore)
+            }
+        )
+    }
+
+     
+     
+    let proxiesPageMore = ClashMacProxiesPageMore()
+
+     
+     
+     
+     
+    func proxiesAdd(_ item: ClashProxiesAddItem) {
+        proxiesAdd(item, profileID: HomeProfileResolution.workingProfile(in: profiles)?.id, more: proxiesPageMore)
+    }
+
+     
+     
+     
+    func proxiesAdd(_ item: ClashProxiesAddItem, profileID: String?, more: ClashMacProxiesPageMore) {
+        let recipe = profileID.flatMap { id in configurationLibrary.snapshot.recipes.first { $0.id == id } }
+         
+         
+         
+        if recipe?.preservesOriginal == true {
+            more.openNodeSources?()
+            return
+        }
+        switch item {
+        case .addNodeSource:
+            configurationCenterWindowSheet = .importing(ClashMacImportRequest(purpose: .nodes, useFor: profileID))
+        case .addFromShareLink:
+            configurationCenterWindowSheet = .importing(ClashMacImportRequest(purpose: .nodes, tab: .nodes, useFor: profileID))
+        case .newNode:
+            proxiesNewNode = ClashMacProxiesNewNode(useFor: profileID)
+        case .newProxyChain:
+            configurationCenterWindowSheet = .newChain(useFor: profileID)
+        }
+    }
+
+    private func policyGroupPage(profileID: String, name: String) -> AnyView {
+        let actions = groupEditorActions(profileID: profileID)
+        return AnyView(ClashMacPolicyGroupDetailPage(actions: actions, group: name)
+            .environment(\.clashMacEditorSyntax, editorSyntax))
+    }
+
+     
+     
+     
+    func groupEditorActions(profileID: String) -> ClashMacRuleEditorActions {
+        loadEditorSyntaxOnce()
+        let recipe = configurationLibrary.snapshot.recipes.first { $0.id == profileID }
+        var editor: ClashMacRuleEditorActions
+        if let recipe, recipe.preservesOriginal != true {
+            editor = ruleEditorActions(schemeID: recipe.ruleSchemeID, profileID: profileID)
+        } else {
+            editor = originalRuleEditorActions(profileID: profileID)
+        }
+         
+        let preferences = self.preferences
+        editor.groupExcludes = ClashMacGroupExcludesHook(
+            title: { .verbatim(ConfigurationGroupExcludes.title(ConfigurationFieldCopy.shared, locale: preferences.language.locale)) },
+            summary: { document in
+                ConfigurationGroupExcludes.summary(pattern: document.topLevelValue("exclude-filter"),
+                                                   types: document.topLevelValue("exclude-type"), locale: preferences.language.locale)
+            },
+            page: { group, document, write in AnyView(ClashMacGroupExcludesPage(group: group, document: document, write: write)) }
+        )
+        editor.groupDeleted = { [weak self] deletion in self?.offerGroupUndo(deletion, actions: editor) }
+        return editor
+    }
+
+     
+     
+     
+    private func offerGroupUndo(_ deletion: ConfigurationRuleGroupDeletion, actions: ClashMacRuleEditorActions) {
+        undoShelf.offerGroupRestoring(deletion, actions: actions)
+    }
+
+     
+     
+     
+    private func deletePolicyGroup(profileID: String, name: String) {
+        let actions = groupEditorActions(profileID: profileID)
+        let operation = "proxies.group.delete"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var draft = try await actions.load().draft
+                guard let group = draft.groups.first(where: { $0.name == name }) else { return }
+                if let refusal = ClashMacPolicyGroupPage.refusal(deleting: group.id, in: draft, locale: self.preferences.language.locale) {
+                    self.feedback.say(ClashMacFeedbackSentences.couldNotDelete(name, reason: refusal, id: operation), operation: operation)
+                    return
+                }
+                guard let deletion = try draft.deleteRoutingGroupRestorably(group.id) else { return }
+                _ = try await actions.save(draft)
+                self.offerGroupUndo(deletion, actions: actions)
+            } catch {
+                self.feedback.say(ClashMacFeedbackSentences.couldNotDelete(name, reason: ClashErrorCopy.message(error, locale: self.preferences.language.locale),
+                                                                           id: operation), operation: operation)
+            }
+        }
+    }
+
+     
+     
+     
+     
+    func editRecipe(_ profileID: String, _ change: @escaping (inout ConfigurationCreationDraft) -> Void) {
+        let library = configurationLibrary
+        let profiles = self.profiles
+        configurationWrites.enqueue({
+            await library.reload()
+            let snapshot = library.snapshot
+            guard let recipe = snapshot.recipes.first(where: { $0.id == profileID }) else { return }
+            var draft = ConfigurationCreationAdapter.editingDraft(recipe: recipe, label: recipe.label)
+            change(&draft)
+            try await profiles.editConfiguration(draft, id: profileID, generation: snapshot.generation)
+            await library.reload()
+        }, failure: { [weak self] error in
+            let reason = ClashErrorCopy.message(error, locale: Locale.current)
+            library.report(reason)
+            self?.feedback.say(ClashMacFeedbackSentences.couldNotSave(reason: reason, id: "configuration.edit"),
+                               operation: "configuration.edit")
+            Task { @MainActor in await library.reload() }
+        })
+    }
+
+     
+     
+     
+     
+     
+    func useForOrSay(_ profileID: String?, added name: String, sourceID: String) {
+        guard let profileID else { return }
+        guard configurationLibrary.snapshot.recipes.contains(where: { $0.id == profileID }) else {
+            feedback.say(.success(title: .format("“%@” was added to the Node Library.", [name]),
+                                  accessibilityIdentifier: "feedback.proxies.add.library-only"),
+                         operation: "proxies.add")
+            return
+        }
+        editRecipe(profileID) { draft in
+            draft.selectedSourceIDs = ClashMacProxiesRail.sources(draft.selectedSourceIDs, adding: sourceID)
+        }
+    }
+
     func requestAddSource(purpose: ClashMacSourceImportPurpose) {
         navigationRequest = .profiles
         configurationCenterSegment = purpose == .rules ? .rules : .nodes
@@ -3297,8 +4110,16 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
-        feedbackFailures = profiles.$lastFailure.dropFirst().sink { [weak self] failure in
-            if let failure { self?.sayProfilesFailure(failure) }
+         
+         
+         
+        feedbackFailures = ClashMacFailureListener.listen(serial: profiles.$failureSerial,
+                                                          failure: { [weak self] in self?.profiles.lastFailure },
+                                                          say: { [weak self] failure in self?.sayProfilesFailure(failure) })
+         
+         
+        feedbackAnswers = profiles.$refusalsAnswered.dropFirst().sink { [weak self] _ in
+            self?.feedback.withdraw("profiles.failure")
         }
     }
 
@@ -3320,10 +4141,11 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
+         
         feedback.say(result, operation: "profiles.failure", perform: retry,
-                     onDismiss: { [weak self] in
-                         if self?.profiles.lastFailure == failure { self?.profiles.dismissFailure() }
-                     })
+                     onDismiss: failureSaying.close(
+                         stillSaid: { [weak self] in self?.profiles.lastFailure == failure },
+                         forgetting: { [weak self] in self?.profiles.dismissFailure() }))
     }
 
      
@@ -3376,62 +4198,29 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
     func offerUndo(of label: String, operation: String, undo: @escaping @MainActor () async -> ClashMacUndoAnswer) {
-        let token = ClashMacUndoToken(label: label, operation: operation, undo: undo)
-        undoTokens.insert(token)
-        token.resultID = feedback.say(ClashMacFeedbackSentences.deleted(label, undoable: true, id: operation),
-                                      operation: operation, perform: { [weak self] in self?.answerUndo(token) })
-        registerUndo(token)
-        Task { @MainActor [weak self] in
-             
-            try? await Task.sleep(nanoseconds: 600 * 1_000_000_000)
-            self?.retireUndo(token)
-        }
-    }
-
-    private func registerUndo(_ token: ClashMacUndoToken) {
-        guard let undoManager = mainWindow?.undoManager else { return }
-        undoManager.registerUndo(withTarget: token) { [weak self] token in
-            if let id = token.resultID { self?.feedback.dismiss(id) }
-            self?.answerUndo(token)
-        }
-        undoManager.setActionName(ClashFeedbackCopy.deleteActionName(token.label).resolved(locale: preferences.language.locale))
+        undoShelf.offer(of: label, operation: operation, undo: undo)
     }
 
      
-     
-    private func retireUndo(_ token: ClashMacUndoToken) {
-        mainWindow?.undoManager?.removeAllActions(withTarget: token)
-        undoTokens.remove(token)
-    }
+    private(set) lazy var undoShelf = ClashMacUndoShelf(
+        feedback: feedback,
+        undoManager: { [weak self] in self?.mainWindow?.undoManager },
+        locale: { [weak self] in self?.preferences.language.locale ?? Locale.current },
+        library: { [weak self] in self?.profiles }
+    )
 
-    private func answerUndo(_ token: ClashMacUndoToken) {
-        guard !token.used else { return }
-        token.used = true
-        mainWindow?.undoManager?.removeAllActions(withTarget: token)
-        Task { @MainActor in
-            var answer = await token.undo()
-            if case .failed = answer {
-                 
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                answer = await token.undo()
-            }
-            switch answer {
-            case .restored:
-                self.retireUndo(token)
-                self.feedback.say(ClashMacFeedbackSentences.restored(token.label, id: token.operation), operation: token.operation)
-            case .superseded(let reason):
-                self.retireUndo(token)
-                self.feedback.say(.error(title: ClashFeedbackCopy.couldNotUndo, message: reason.isEmpty ? nil : .copy(reason),
-                                         accessibilityIdentifier: "feedback.undo-failed"),
-                                  operation: token.operation)
-            case .failed(let reason):
-                token.used = false
-                token.resultID = self.feedback.say(
-                    .error(title: ClashFeedbackCopy.couldNotUndo, message: reason.isEmpty ? nil : .verbatim(reason), action: .retry,
-                           accessibilityIdentifier: "feedback.undo-failed"),
-                    operation: token.operation, perform: { [weak self] in self?.answerUndo(token) })
-                self.registerUndo(token)
-            }
+     
+     
+     
+     
+     
+     
+     
+    func offerRuleUndo(of label: String, undo: @escaping @MainActor () async -> Bool) {
+        offerUndo(of: label, operation: "rules.delete." + UUID().uuidString) { [weak self] in
+            guard await undo() else { return .failed("") }
+            self?.profiles.noteLibraryRestored()
+            return .restored
         }
     }
 
@@ -3454,6 +4243,7 @@ private final class ClashMacSceneModel: ObservableObject {
                 case .configuration(let id): list.perform(.delete(id: id))
                 case .source, .scheme: Task { await self.deleteUndoably(item) }
                 case .collection: break
+                case .script(let id): self.deleteOverrideScript(id)
                 }
             }
         )
@@ -3481,11 +4271,28 @@ private final class ClashMacSceneModel: ObservableObject {
             self.feedback.say(ClashMacFeedbackSentences.copied("Link", id: "configuration-center.copy-link"),
                                operation: "configuration-center.copy-link")
         }
+         
+         
+        actions.editSource = { [weak self] id in self?.openSourceEditor(profileID: id.rawValue) }
+        actions.openRuntimeConfiguration = { [weak self] id in
+            self?.openWindowAction?(id: "runtime-preview", value: ClashMacRuntimePreviewRequest(profileID: id.rawValue))
+        }
+         
+        actions.duplicate = { [weak self] id in
+            guard let self, list.profiles.contains(where: { $0.id == id }) else {
+                throw ConfigurationLibraryError.unreadable
+            }
+             
+            return try await Self.duplicateConfiguration(id, profiles: self.profiles, library: self.configurationLibrary,
+                                                         locale: self.preferences.language.locale)
+        }
+        actions.export = { id in list.perform(.export(id: id)) }
         actions.hasProfileURL = { [weak self] id in self?.profileURL(of: id.rawValue) != nil }
         actions.hasLegacyProfileURLs = profiles.profiles.contains { profile in if case .url = profile.source { return true }; return false }
          
         actions.statusMessage = profiles.statusMessage
-        actions.failure = profiles.lastFailure.map { (message: .verbatim($0.message), canRetry: true) }
+        let locale = preferences.language.locale
+        actions.failure = profiles.lastFailure.map { ClashMacConfigurationListFailure.line($0, locale: locale) }
         actions.retryFailure = { list.perform(.retryFailure) }
          
         actions.backupPage = { AnyView(BackupRestoreView().navigationTitle(Text(clash: .copy("Backup & Restore")))) }
@@ -3589,8 +4396,8 @@ private final class ClashMacSceneModel: ObservableObject {
                     ruleShelves: shelves,
                     recipe: recipe,
                     scriptsActions: scripts,
-                    scriptsQuickAdd: { [weak self] reload in
-                        AnyView(self?.scriptsQuickAddCard(profileID: id, reload: reload))
+                    scriptsQuickAdd: { [weak self] added in
+                        AnyView(self?.scriptsQuickAddCard(profileID: id, added: added))
                     },
                     profileURL: profileURL,
                     actions: actions,
@@ -3616,27 +4423,40 @@ private final class ClashMacSceneModel: ObservableObject {
                 .clashMacPopsWhenGone(!profiles.profiles.contains { $0.id == id.rawValue }
                     || (hadRecipe && !snapshot.recipes.contains { $0.id == id.rawValue }))
             }
+         
+         
+         
+         
         case .source(let sourceID):
-            if let source = snapshot.sources.first(where: { $0.id == sourceID }) {
-                sourcePage(source, list: list)
+            ClashMacItemPage(snapshot.sources.first(where: { $0.id == sourceID })) { source in
+                self.sourcePage(source, list: list)
                     .id(sourceID)
                     .navigationTitle(Text(clash: ClashConfigurationSourceCopy.name(source)))
-                    .clashMacPopsWhenGone(!snapshot.sources.contains { $0.id == sourceID })
             }
         case .scheme(let schemeID):
-            if let scheme = configurationLibrary.ruleShelves.flatMap(\.schemes).first(where: { $0.id == schemeID }) {
-                schemePane(scheme, schemeID: schemeID, snapshot: snapshot, list: list)
+            ClashMacItemPage(configurationLibrary.ruleShelves.flatMap(\.schemes).first(where: { $0.id == schemeID })) { scheme in
+                self.schemePane(scheme, schemeID: schemeID, snapshot: snapshot, list: list)
                 .id(schemeID)
                 .navigationTitle(Text(verbatim: scheme.displayLabel))
-                .clashMacPopsWhenGone(!configurationLibrary.ruleShelves.flatMap(\.schemes).contains { $0.id == schemeID })
             }
         case .collection(let collectionID):
-            if let entry = configurationLibrary.collections.first(where: { $0.id == collectionID }) {
+            ClashMacItemPage(configurationLibrary.collections.first(where: { $0.id == collectionID })) { entry in
                  
-                ClashMacCollectionPane(collection: entry.collection, sourceLabel: entry.source.displayLabel(locale: locale), actions: collectionPageActions(entry))
+                ClashMacCollectionPane(collection: entry.collection, sourceLabel: entry.source.displayLabel(locale: self.locale),
+                                       actions: self.collectionPageActions(entry))
                     .navigationTitle(Text(verbatim: entry.collection.name))
-                    .clashMacPopsWhenGone(!configurationLibrary.collections.contains { $0.id == collectionID })
             }
+        case .script(let scriptID):
+             
+             
+             
+            ClashMacOverrideScriptDetailPage(id: scriptID, actions: overrideScriptShared) { [weak self] profileID in
+                if let self, let id = try? ClashClientKit.Profile.ID(profileID) {
+                    self.configurationCenterRoutedDetail(.configuration(id), list: self.configurationCenterLatestList ?? list,
+                                                         actions: self.configurationCenterListActions(list))
+                }
+            }
+            .id(scriptID)
         }
     }
 
@@ -3670,9 +4490,18 @@ private final class ClashMacSceneModel: ObservableObject {
                      
                     let version = { self.configurationLibrary.snapshot.sources.first { $0.id == scheme.sourceID }?.version }
                     let before = version()
+                    let serial = self.profiles.failureSerial
                     guard await self.configurationLibrary.updateSource(scheme.sourceID) else {
                         throw ClashMacUpdateFailure(message: self.configurationLibrary.updateFailures[scheme.sourceID]
                             ?? ClashErrorCopy.message(ConfigurationLibraryError.unreadable, locale: Locale.current))
+                    }
+                     
+                     
+                     
+                     
+                    if self.profiles.failureSerial != serial,
+                       let refused = await self.schemeReloadRefusal(sourceID: scheme.sourceID) {
+                        throw ClashMacUpdateFailure(message: refused)
                     }
                     return version() != before
                 },
@@ -3840,7 +4669,9 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
-        func editor(_ pane: ClashMacRuleEditorSheet.Pane) -> ClashMacOutlineDestination? {
+         
+         
+        func editor(_ pane: ClashMacRuleEditorSheet.Pane, related: ClashMacRelatedPage? = nil) -> ClashMacOutlineDestination? {
             let recipe = configurationLibrary.snapshot.recipes.first(where: { $0.id == profileID.rawValue })
             guard let recipe, recipe.preservesOriginal != true else {
                  
@@ -3851,7 +4682,8 @@ private final class ClashMacSceneModel: ObservableObject {
                         ClashMacRuleEditorSheet(
                             actions: self.originalRuleEditorActions(profileID: profileID.rawValue),
                             initialPane: pane,
-                            presentation: .page
+                            presentation: .page,
+                            relatedPage: related
                         )
                         .environment(\.clashMacEditorSyntax, self.editorSyntax)
                     )
@@ -3863,9 +4695,10 @@ private final class ClashMacSceneModel: ObservableObject {
                 guard let self else { return AnyView(EmptyView()) }
                 return AnyView(
                     ClashMacRuleEditorSheet(
-                        actions: self.ruleEditorActions(schemeID: scheme, profileID: profileID.rawValue),
+                        actions: self.schemeEditorActions(schemeID: scheme, profileID: profileID.rawValue),
                         initialPane: pane,
-                        presentation: .page
+                        presentation: .page,
+                        relatedPage: related
                     )
                     .environment(
                         \.clashGroupIconImages,
@@ -3888,6 +4721,7 @@ private final class ClashMacSceneModel: ObservableObject {
             }
         }
         let profiles = self.profiles
+        let (proxiesLink, rulesLink) = configurationPagesLinks(profileID: profileID.rawValue)
         switch section {
          
          
@@ -3909,10 +4743,19 @@ private final class ClashMacSceneModel: ObservableObject {
             }
          
         case .inbound: return settings(.tunnelAndRoutes)
-        case .proxyGroups: return editor(.groups)
-        case .rules: return editor(.rules)
         case .ruleProviders: return editor(.ruleSets)
          
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        case .proxyGroups: return editor(.groups, related: proxiesLink)
+        case .rules: return editor(.rules, related: rulesLink)
          
          
          
@@ -3922,18 +4765,19 @@ private final class ClashMacSceneModel: ObservableObject {
             guard recipe?.preservesOriginal ?? true else { return nil }
             return .page { [weak self] in
                 guard let self else { return AnyView(EmptyView()) }
-                return AnyView(ClashMacOriginalNodesPage(actions: self.originalNodesActions(profileID: profileID.rawValue)))
+                return AnyView(ClashMacOriginalNodesPage(actions: self.originalNodesActions(profileID: profileID.rawValue, withProxiesPage: true)))
             }
-         
          
          
          
         case .proxyProviders:
             let recipe = configurationLibrary.snapshot.recipes.first(where: { $0.id == profileID.rawValue })
-            guard recipe?.preservesOriginal ?? true else { return nil }
+            if let recipe, recipe.preservesOriginal != true {
+                return .page { [weak self] in self?.proxiesNodeSourcesPage(profileID: profileID.rawValue) ?? AnyView(EmptyView()) }
+            }
             return .page { [weak self] in
                 guard let self else { return AnyView(EmptyView()) }
-                return AnyView(ClashMacOriginalProvidersPage(actions: self.originalProvidersActions(profileID: profileID)))
+                return AnyView(ClashMacOriginalProvidersPage(actions: self.originalProvidersActions(profileID: profileID, withProxiesPage: true)))
             }
         case .subRules: return editor(.subRules)
         default: return nil
@@ -4205,6 +5049,371 @@ private final class ClashMacSceneModel: ObservableObject {
         }
     }
 
+     
+     
+     
+     
+    static func duplicateConfiguration(
+        _ id: ClashClientKit.Profile.ID, profiles: ProfilesViewModel, library: ClashMacConfigurationLibraryModel, locale: Locale
+    ) async throws -> String {
+        guard let appProfile = profiles.profiles.first(where: { $0.id == id.rawValue }),
+              let copy = await profiles.duplicate(appProfile)
+        else {
+            throw ClashMacOriginalEditRefusal(message: ClashCopy.string(for: profiles.statusMessage, locale: locale))
+        }
+        await library.reload()
+        return copy.label
+    }
+
+     
+     
+     
+    func saveConfigurationAsScheme(_ id: ClashClientKit.Profile.ID, label: String) {
+        let profiles = self.profiles, library = configurationLibrary
+        configurationWrites.enqueue({
+            try await profiles.saveConfigurationAsScheme(id.rawValue, label: label)
+            await library.reload()
+            ClashMacDebugLog.note("save-as-scheme \(id.rawValue): written, generation \(library.snapshot.generation)")
+             
+             
+            library.feedback?.say(ClashMacFeedbackSentences.added(label, id: "configuration.save-as-scheme"),
+                                   operation: "configuration.save-as-scheme")
+        }, failure: configurationEditFailed(id))
+    }
+
+     
+
+     
+     
+     
+     
+     
+     
+     
+     
+    func rulesPageParts(for profile: Profile) -> RulesOverviewPageParts {
+        guard let id = try? ClashClientKit.Profile.ID(profile.id) else { return RulesOverviewPageParts() }
+        let library = configurationLibrary
+        let snapshot = library.snapshot
+        let palette = ClashMacPlatformPresentation.palette
+        return RulesOverviewPageParts(
+            rulesGroupTitle: ClashMacRulesPage.rulesGroupTitle(profileID: id.rawValue, in: snapshot, isRead: library.phase == .ready),
+            leadingSections: { [weak self] in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(ClashMacRulesPageLeadingHost(
+                    profiles: self.profiles, library: library, profileID: id.rawValue,
+                    schemePage: { [weak self] in self?.rulesPageSchemePage(id) ?? AnyView(EmptyView()) },
+                    customRules: self.customRulesActions(profileID: id),
+                    addCustomRule: { [weak self] in self?.configurationCenterWindowSheet = .customRule(profileID: id.rawValue) },
+                    readLibrary: { [weak self] in await self?.readConfigurationLibraryIfUnread() },
+                    palette: palette
+                ))
+            },
+            rowsBeforeActiveRules: { [weak self] in
+                AnyView(ClashMacRulesPageChapterRows(
+                    ruleSets: { [weak self] in self?.rulesPageChapter(.ruleProviders, id) ?? AnyView(EmptyView()) },
+                    subRules: { [weak self] in self?.rulesPageChapter(.subRules, id) ?? AnyView(EmptyView()) },
+                    palette: palette
+                ))
+            },
+            inPlaceEditing: ClashMacRulesPage.editsInPlace(profileID: id.rawValue, in: snapshot) ? { [weak self] in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(self.rulesPageEditState(id))
+            } : nil,
+            addRule: { [weak self] in self?.rulesPageAdd() }
+        )
+    }
+
+     
+     
+     
+     
+    func rulesPageAdd() {
+        guard let id = currentProfile?.id else { return }
+        if rulesChannels.editsInPlace {
+            rulesPageCommands.addToScheme()
+        } else {
+            configurationCenterWindowSheet = .customRule(profileID: id)
+        }
+    }
+
+     
+    let rulesPageCommands = ClashMacRulesPageCommands()
+
+     
+     
+    func configurationProxiesPage(profileID: String, openingGroup: String? = nil) -> AnyView {
+        AnyView(ClashMacConfigurationProxiesPage(model: self, profileID: profileID, openingGroup: openingGroup))
+    }
+
+     
+     
+    func configurationRulesPage(profileID: String) -> AnyView {
+        AnyView(ClashMacConfigurationRulesPage(model: self, profileID: profileID))
+    }
+
+     
+     
+     
+     
+     
+    func configurationPagesLinks(profileID: String) -> (proxies: ClashMacRelatedPage?, rules: ClashMacRelatedPage?) {
+        guard let profile = profiles.profiles.first(where: { $0.id == profileID }) else { return (nil, nil) }
+        let name = ProfileRowPresentation.label(for: profile, locale: preferences.language.locale)
+        let proxies = ClashMacRelatedPage(title: .format("Proxies of “%@”", [name])) { [weak self] in
+            self?.configurationProxiesPage(profileID: profileID) ?? AnyView(EmptyView())
+        }
+        let rules = ClashMacRelatedPage(title: .format("Rules of “%@”", [name])) { [weak self] in
+            self?.configurationRulesPage(profileID: profileID) ?? AnyView(EmptyView())
+        }
+        return (proxies, rules)
+    }
+
+     
+     
+     
+    func rulesPageAdd(profileID id: String, owner: ClashMacRulesPageOwner) {
+        if owner.channels.editsInPlace {
+            owner.commands.addToScheme()
+        } else {
+            configurationCenterWindowSheet = .customRule(profileID: id)
+        }
+    }
+
+     
+     
+     
+     
+    func configurationRulesPageParts(for profile: Profile, owner: ClashMacRulesPageOwner) -> RulesOverviewPageParts {
+        var parts = rulesPageParts(for: profile)
+        guard let pageID = try? ClashClientKit.Profile.ID(profile.id) else { return parts }
+        let id = profile.id
+        parts.title = .format("Rules of “%@”",
+                              [ProfileRowPresentation.label(for: profile, locale: preferences.language.locale)])
+        if parts.inPlaceEditing != nil {
+            parts.inPlaceEditing = { [weak self] in
+                AnyView(self?.rulesPageEditState(pageID, commands: owner.commands))
+            }
+        }
+        parts.addRule = { [weak self] in self?.rulesPageAdd(profileID: id, owner: owner) }
+        parts.showsActiveRules = profiles.activeProfileID == id
+        return parts
+    }
+
+     
+     
+    func rulesPageSchemePage(_ id: ClashClientKit.Profile.ID) -> AnyView {
+        let label = profiles.profiles.first { $0.id == id.rawValue }?.label ?? ""
+        let writes = Self.schemeWrites(id, label: label, library: configurationLibrary, profiles: profiles,
+                                       writes: configurationWrites, failed: configurationEditFailed(id))
+        return schemePickerPage(id, label: label, list: configurationCenterLatestList, writes: writes)
+    }
+
+     
+     
+    func rulesPageChapter(_ section: ConfigurationOutlineSection, _ id: ClashClientKit.Profile.ID) -> AnyView {
+        guard case .page(let page)? = outlineDestination(section, profileID: id) else { return AnyView(EmptyView()) }
+        return page()
+    }
+
+     
+     
+     
+     
+    func rulesPageEditState(_ id: ClashClientKit.Profile.ID, commands: ClashMacRulesPageCommands? = nil) -> some View {
+        loadEditorSyntaxOnce()
+        return ClashMacRulesPageEditHost(
+            commands: commands ?? rulesPageCommands, profiles: profiles, library: configurationLibrary, profileID: id.rawValue,
+            editor: { [weak self] composed in self?.rulesPageEditor(id, composed: composed) ?? .unavailable },
+            customRules: customRulesActions(profileID: id),
+            saveAsScheme: { [weak self] name in self?.saveConfigurationAsScheme(id, label: name) },
+            syntax: editorSyntax
+        )
+    }
+
+     
+     
+    private func rulesPageEditor(_ id: ClashClientKit.Profile.ID, composed: Bool) -> ClashMacRuleEditorActions {
+        if composed, let scheme = configurationLibrary.snapshot.recipes.first(where: { $0.id == id.rawValue })?.ruleSchemeID {
+            return schemeEditorActions(schemeID: scheme, profileID: id.rawValue)
+        }
+        return originalRuleEditorActions(profileID: id.rawValue)
+    }
+
+     
+    func customRuleAddSheet(profileID: String, close: @escaping () -> Void) -> AnyView {
+        guard let id = try? ClashClientKit.Profile.ID(profileID) else { return AnyView(EmptyView()) }
+        return AnyView(ClashMacCustomRuleAddSheet(actions: customRulesActions(profileID: id), close: close))
+    }
+
+     
+     
+     
+     
+     
+     
+    func schemePickerPage(_ id: ClashClientKit.Profile.ID, label: String, list: ClashProfilesListPresentation?,
+                          writes: ClashMacSchemeWrites) -> AnyView {
+        let library = configurationLibrary, locale = preferences.language.locale
+        let setOriginalUse = writes.setOriginalUse, leaveOriginal = writes.leaveOriginal, setScheme = writes.setScheme
+         
+         
+         
+        var revealDetails: (@MainActor (String) -> Void)?
+        if (list ?? configurationCenterLatestList) == nil {
+            revealDetails = { [weak self] schemeID in
+                self?.requestConfigurationCenter(.rules)
+                self?.configurationCenterPendingPush = .scheme(schemeID)
+            }
+        }
+        let choose: @MainActor (ClashMacSchemePickerRows.Choice) -> Void = { choice in
+            let recipe = library.snapshot.recipes.first { $0.id == id.rawValue }
+            ClashMacSchemePickerPage.write(choice, runsOriginal: recipe?.preservesOriginal == true, isRecipe: recipe != nil,
+                                           setOriginalUse: setOriginalUse, leaveOriginal: leaveOriginal,
+                                           setScheme: setScheme)
+        }
+         
+         
+         
+         
+         
+         
+        let rulesCard = self.quickAddController(.rules, profileID: id.rawValue)
+        rulesCard.onSourceAdded = nil
+        rulesCard.onRulesAdded = { after, input in
+            let before = library.snapshot
+            library.apply(after)
+            guard let scheme = ClashMacSchemePickerRows.schemeToUse(before: before, after: after, input: input, profileID: id.rawValue)
+            else { return }
+            choose(.scheme(scheme))
+        }
+        return AnyView(ClashMacSchemePickerHost(
+            library: library, configurationName: label,
+            rows: { snapshot in
+                ClashMacSchemePickerRows.of(snapshot, profileID: id.rawValue, configurationName: label, locale: locale)
+            },
+            choose: choose,
+            openDetails: { [weak self] schemeID in
+                guard let self, let list = list ?? self.configurationCenterLatestList else { return AnyView(EmptyView()) }
+                return AnyView(self.configurationCenterRoutedDetail(.scheme(schemeID), list: list,
+                                                                    actions: self.configurationCenterListActions(list)))
+            },
+            revealDetails: revealDetails,
+            addCard: AnyView(MacQuickAddCard(controller: rulesCard, identifiers: .rules, doors: ClashMacQuickAddDoors(),
+                                             header: "Add Rule Scheme")),
+            manageInLibrary: { [weak self] in self?.requestConfigurationCenter(.rules) }))
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func schemeWrites(
+        _ id: ClashClientKit.Profile.ID, label: String, library: ClashMacConfigurationLibraryModel, profiles: ProfilesViewModel,
+        writes: ClashMacSerialWrites, failed: @escaping @MainActor (Error) -> Void
+    ) -> ClashMacSchemeWrites {
+        ClashMacSchemeWrites(
+            setScheme: { scheme in
+                writes.enqueue({
+                    if library.snapshot.recipes.contains(where: { $0.id == id.rawValue }) {
+                        try await profiles.switchConfigurationScheme(id.rawValue, to: scheme)
+                        await library.reload()
+                        ClashMacDebugLog.note("scheme \(id.rawValue): switched to \(scheme), generation \(library.snapshot.generation)")
+                    } else {
+                        try await convertLegacyNow(id, label: label, library: library, profiles: profiles, sources: nil, scheme: scheme)
+                    }
+                }, failure: failed)
+            },
+            setOriginalUse: { uses in
+                writes.enqueue({
+                    if library.snapshot.recipes.contains(where: { $0.id == id.rawValue }) {
+                        try await profiles.setUsesOriginalConfiguration(id.rawValue, enabled: uses)
+                        await library.reload()
+                        ClashMacDebugLog.note("original-use \(id.rawValue): \(uses) written, generation \(library.snapshot.generation)")
+                    } else if !uses {
+                        try await convertLegacyNow(id, label: label, library: library, profiles: profiles, sources: nil, scheme: nil)
+                    }
+                }, failure: failed)
+            },
+            leaveOriginal: { scheme in
+                writes.enqueue({
+                    try await profiles.composingOffTheOriginal(id.rawValue, onto: scheme)
+                    await library.reload()
+                    ClashMacDebugLog.note("original-use \(id.rawValue): off onto \(scheme), generation \(library.snapshot.generation)")
+                }, failure: failed)
+            }
+        )
+    }
+
+     
+     
+     
+     
+    func configurationEditFailed(_ id: ClashClientKit.Profile.ID) -> @MainActor (Error) -> Void {
+        let library = configurationLibrary
+        return { [weak self] error in
+            NSLog("configuration-centre.edit-failed:%@", error.localizedDescription)
+            ClashMacDebugLog.note("edit \(id.rawValue): REFUSED \(error) — \(error.localizedDescription)")
+            library.report(ClashErrorCopy.message(error, locale: Locale.current))
+             
+             
+            self?.feedback.say(ClashMacFeedbackSentences.couldNotSave(reason: ClashErrorCopy.message(error, locale: Locale.current),
+                                                                       id: "configuration.edit"),
+                                operation: "configuration.edit")
+            Task { @MainActor in await library.reload() }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func convertLegacyNow(
+        _ id: ClashClientKit.Profile.ID, label: String, library: ClashMacConfigurationLibraryModel, profiles: ProfilesViewModel,
+        sources: [String]?, scheme: String?, change: (inout ConfigurationCreationDraft) -> Void = { _ in }
+    ) async throws {
+        await library.reload()
+        let generation = library.snapshot.generation
+        ClashMacDebugLog.note("convert \(id.rawValue): generation \(generation) sources \(sources ?? []) scheme \(scheme ?? "nil")")
+        let source = try await profiles.configurationSourceFromLegacy(id.rawValue)
+        var draft = ConfigurationCreationDraft()
+        draft.add(source, rule: nil)
+         
+         
+         
+         
+         
+         
+         
+        if let sources { draft.selectedSourceIDs = sources }
+        draft.selectedRuleID = scheme ?? ConfigurationBuiltins.basicRuleID
+        draft.label = label
+        draft.dnsMode = .system
+        draft.connectAfterCreation = false
+        change(&draft)
+        try await profiles.editConfiguration(draft, id: id.rawValue, generation: generation)
+        await library.reload()
+        ClashMacDebugLog.note("convert \(id.rawValue): written, generation \(library.snapshot.generation) recipe \(library.snapshot.recipes.first { $0.id == id.rawValue }?.sources.map(\.id) ?? [])")
+    }
+
     private func configurationInspectorActions(
         _ list: ClashProfilesListPresentation, profile: ClashProfileSnapshot, id: ClashClientKit.Profile.ID
     ) -> ClashMacConfigurationInspectorActions {
@@ -4240,17 +5449,7 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
-        let failed: @MainActor (Error) -> Void = { [weak self] error in
-            NSLog("configuration-centre.edit-failed:%@", error.localizedDescription)
-            ClashMacDebugLog.note("edit \(id.rawValue): REFUSED \(error) — \(error.localizedDescription)")
-            library.report(ClashErrorCopy.message(error, locale: Locale.current))
-             
-             
-            self?.feedback.say(ClashMacFeedbackSentences.couldNotSave(reason: ClashErrorCopy.message(error, locale: Locale.current),
-                                                                       id: "configuration.edit"),
-                                operation: "configuration.edit")
-            Task { @MainActor in await library.reload() }
-        }
+        let failed = configurationEditFailed(id)
          
          
          
@@ -4289,42 +5488,11 @@ private final class ClashMacSceneModel: ObservableObject {
         }
          
          
-         
-         
-         
-         
-         
-         
-         
-         
-         
-         
-         
         func convertLegacyNow(
             sources: [String]?, scheme: String?, change: (inout ConfigurationCreationDraft) -> Void = { _ in }
         ) async throws {
-            await library.reload()
-            let generation = library.snapshot.generation
-            ClashMacDebugLog.note("convert \(id.rawValue): generation \(generation) sources \(sources ?? []) scheme \(scheme ?? "nil")")
-            let source = try await profiles.configurationSourceFromLegacy(id.rawValue)
-            var draft = ConfigurationCreationDraft()
-            draft.add(source, rule: nil)
-             
-             
-             
-             
-             
-             
-             
-            if let sources { draft.selectedSourceIDs = sources }
-            draft.selectedRuleID = scheme ?? ConfigurationBuiltins.basicRuleID
-            draft.label = profile.label
-            draft.dnsMode = .system
-            draft.connectAfterCreation = false
-            change(&draft)
-            try await profiles.editConfiguration(draft, id: id.rawValue, generation: generation)
-            await library.reload()
-            ClashMacDebugLog.note("convert \(id.rawValue): written, generation \(library.snapshot.generation) recipe \(library.snapshot.recipes.first { $0.id == id.rawValue }?.sources.map(\.id) ?? [])")
+            try await Self.convertLegacyNow(id, label: profile.label, library: library, profiles: profiles,
+                                            sources: sources, scheme: scheme, change: change)
         }
          
          
@@ -4340,34 +5508,23 @@ private final class ClashMacSceneModel: ObservableObject {
                 }
             }, failure: failed)
         }
+         
+         
+         
+        let schemeWrites = Self.schemeWrites(id, label: profile.label, library: library, profiles: profiles,
+                                             writes: writes, failed: failed)
         var actions = ClashMacConfigurationInspectorActions(
             rename: { label in list.perform(.rename(id: id, label: label)) },
             setSources: { ids in setComposition(sources: ids, scheme: nil) },
              
              
              
-            setScheme: { scheme in
-                writes.enqueue({
-                    if library.snapshot.recipes.contains(where: { $0.id == id.rawValue }) {
-                        try await profiles.switchConfigurationScheme(id.rawValue, to: scheme)
-                        await library.reload()
-                        ClashMacDebugLog.note("scheme \(id.rawValue): switched to \(scheme), generation \(library.snapshot.generation)")
-                    } else {
-                        try await convertLegacyNow(sources: nil, scheme: scheme)
-                    }
-                }, failure: failed)
-            },
+            setScheme: schemeWrites.setScheme,
             activate: { list.select(id) },
              
              
             duplicate: { [profiles, library, locale = preferences.language.locale] in
-                guard let appProfile = profiles.profiles.first(where: { $0.id == id.rawValue }),
-                      let copy = await profiles.duplicate(appProfile)
-                else {
-                    throw ClashMacOriginalEditRefusal(message: ClashCopy.string(for: profiles.statusMessage, locale: locale))
-                }
-                await library.reload()
-                return copy.label
+                try await Self.duplicateConfiguration(id, profiles: profiles, library: library, locale: locale)
             },
             export: { list.perform(.export(id: id)) },
             editSource: { [weak self] in self?.openSourceEditor(profileID: id.rawValue) },
@@ -4430,25 +5587,9 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
-        actions.setOriginalUse = { uses in
-            writes.enqueue({
-                if library.snapshot.recipes.contains(where: { $0.id == id.rawValue }) {
-                    try await profiles.setUsesOriginalConfiguration(id.rawValue, enabled: uses)
-                    await library.reload()
-                    ClashMacDebugLog.note("original-use \(id.rawValue): \(uses) written, generation \(library.snapshot.generation)")
-                } else if !uses {
-                    try await convertLegacyNow(sources: nil, scheme: nil)
-                }
-            }, failure: failed)
-        }
+        actions.setOriginalUse = schemeWrites.setOriginalUse
          
-        actions.leaveOriginal = { scheme in
-            writes.enqueue({
-                try await profiles.composingOffTheOriginal(id.rawValue, onto: scheme)
-                await library.reload()
-                ClashMacDebugLog.note("original-use \(id.rawValue): off onto \(scheme), generation \(library.snapshot.generation)")
-            }, failure: failed)
-        }
+        actions.leaveOriginal = schemeWrites.leaveOriginal
          
          
         actions.followLink = { linkID in
@@ -4460,22 +5601,21 @@ private final class ClashMacSceneModel: ObservableObject {
         }
         actions.customRules = customRulesActions(profileID: id)
          
+         
+         
+         
+         
+        let label = profile.label
+        actions.schemePicker = { [weak self] in
+            self?.schemePickerPage(id, label: label, list: list, writes: schemeWrites) ?? AnyView(EmptyView())
+        }
+         
         actions.loadOutline = { customRules in try await profiles.configurationOutline(id.rawValue, customRules: customRules) }
         actions.outlineDestination = { [weak self] section in self?.outlineDestination(section, profileID: id) }
          
          
         if library.snapshot.recipes.contains(where: { $0.id == id.rawValue }) {
-            actions.saveAsScheme = { label in
-                writes.enqueue({
-                    try await profiles.saveConfigurationAsScheme(id.rawValue, label: label)
-                    await library.reload()
-                    ClashMacDebugLog.note("save-as-scheme \(id.rawValue): written, generation \(library.snapshot.generation)")
-                     
-                     
-                    library.feedback?.say(ClashMacFeedbackSentences.added(label, id: "configuration.save-as-scheme"),
-                                           operation: "configuration.save-as-scheme")
-                }, failure: failed)
-            }
+            actions.saveAsScheme = { [weak self] label in self?.saveConfigurationAsScheme(id, label: label) }
         }
          
          
@@ -4484,6 +5624,13 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
          
+         
+         
+         
+        let proxiesLink = configurationPagesLinks(profileID: id.rawValue).proxies
+        actions.configurationProxiesPage = proxiesLink
+         
+        actions.configurationRulesPage = configurationPagesLinks(profileID: id.rawValue).rules
         let isOriginal = library.snapshot.recipes.first { $0.id == id.rawValue }.map { $0.preservesOriginal == true } ?? true
         if isOriginal, actions.settingsSection != nil {
             actions.originalGroupPage = { [weak self] name in
@@ -4491,7 +5638,8 @@ private final class ClashMacSceneModel: ObservableObject {
                 self.loadEditorSyntaxOnce()
                 return AnyView(
                     ClashMacRuleEditorSheet(actions: self.originalRuleEditorActions(profileID: id.rawValue),
-                                           initialPane: .groups, presentation: .page, focus: .group(named: name))
+                                           initialPane: .groups, presentation: .page, focus: .group(named: name),
+                                           relatedPage: proxiesLink)
                         .environment(\.clashMacEditorSyntax, self.editorSyntax)
                 )
             }
@@ -4509,7 +5657,8 @@ private final class ClashMacSceneModel: ObservableObject {
                 self.loadEditorSyntaxOnce()
                 return AnyView(
                     ClashMacRuleEditorSheet(actions: self.ruleEditorActions(schemeID: scheme, profileID: id.rawValue),
-                                           initialPane: .groups, presentation: .page, focus: .group(named: name))
+                                           initialPane: .groups, presentation: .page, focus: .group(named: name),
+                                           relatedPage: proxiesLink)
                         .environment(
                             \.clashGroupIconImages,
                             (ClashProxiesDisplayPreferences.uiTestOverride() ?? ClashProxiesDisplayPreferences.load()).groupIconImages
@@ -4697,15 +5846,7 @@ private final class ClashMacSceneModel: ObservableObject {
             locale: preferences.language.locale
         ) { await targetNodes.source(profileID: id) }
         func state() -> ClashMacCustomRulesState {
-            guard let profile = profiles.profiles.first(where: { $0.id == id }) else { return .empty }
-            let muted = Set(profile.override.disabledAppendRules ?? [])
-            let comments = profile.override.appendRuleComments ?? [:]
-            return ClashMacCustomRulesState(
-                rules: profile.override.appendRules.map {
-                    ClashMacCustomRule(text: $0, isEnabled: !muted.contains($0), comment: comments[$0])
-                },
-                prepends: profile.override.prependRules
-            )
+            ClashMacRulesPage.customRules(of: profiles.profiles.first(where: { $0.id == id }))
         }
         func write(_ change: (inout Profile) -> Void) throws -> ClashMacCustomRulesState {
             guard profiles.profiles.contains(where: { $0.id == id }) else {
@@ -4785,10 +5926,43 @@ private final class ClashMacSceneModel: ObservableObject {
                   let declared = await profiles.publishedRuleSetsAndSubRules(for: profile) else { return nil }
             return ClashRuleNames(policies: nil, ruleSets: declared.ruleSets, subRules: declared.subRules)
         }
+         
+        actions.deleted = { [weak self] label, undo in self?.offerRuleUndo(of: label, undo: undo) }
         return actions
     }
 
      
+
+     
+     
+     
+     
+     
+    func schemeEditorActions(schemeID: String, profileID: String) -> ClashMacRuleEditorActions {
+        var editor = ruleEditorActions(schemeID: schemeID, profileID: profileID)
+         
+         
+        editor.deleted = { [weak self] label, undo in self?.offerRuleUndo(of: label, undo: undo) }
+        return ClashMacSessionRuleEditor.actions(editor, session: schemeSession(profileID: profileID))
+    }
+
+     
+     
+     
+     
+     
+    func schemeSession(profileID: String) -> ConfigurationSchemeDraftSession {
+        let locale = preferences.language.locale
+        if let session = schemeSessions[profileID] {
+            session.locale = locale
+            return session
+        }
+        let session = ConfigurationSchemeDraftSession(model: profiles, profileID: profileID, locale: locale)
+        let library = configurationLibrary
+        session.libraryChanged = { written in library.apply(written) }
+        schemeSessions[profileID] = session
+        return session
+    }
 
      
      
@@ -4970,7 +6144,10 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
      
-    func originalNodesActions(profileID: String) -> ClashMacOriginalNodesActions {
+     
+     
+     
+    func originalNodesActions(profileID: String, withProxiesPage: Bool = false) -> ClashMacOriginalNodesActions {
         let profiles = self.profiles
         let library = configurationLibrary
         let locale = preferences.language.locale
@@ -5041,13 +6218,24 @@ private final class ClashMacSceneModel: ObservableObject {
                         try OriginalListEdits.keptUses(of: name, keptAt: kept.file)
                     }.value
                 }
+                 
                 guard places.isEmpty else {
-                    let sentence = ClashCopy.string(for: .format("“%@” is still in use. Change these first.", [node.name]), locale: locale)
-                    throw ClashMacOriginalEditRefusal(message: ([sentence] + places.prefix(5)).joined(separator: "\n"))
+                    throw ClashMacStillUsedRefusal(name: node.name, places: Array(places.prefix(5)), locale: locale)
                 }
                 try await write(OriginalListEdits.deleting([found.index], under: [.key("proxies")]))
             }
         )
+         
+         
+         
+        if let id = try? ClashClientKit.Profile.ID(profileID) {
+            actions.providersPage = { [weak self] in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(ClashMacOriginalProvidersPage(actions: self.originalProvidersActions(profileID: id)))
+            }
+        }
+         
+        if withProxiesPage { actions.proxiesPage = configurationPagesLinks(profileID: profileID).proxies }
         return actions
     }
 
@@ -5080,7 +6268,10 @@ private final class ClashMacSceneModel: ObservableObject {
      
      
      
-    func originalProvidersActions(profileID id: ClashClientKit.Profile.ID) -> ClashMacOriginalProvidersActions {
+     
+     
+     
+    func originalProvidersActions(profileID id: ClashClientKit.Profile.ID, withProxiesPage: Bool = false) -> ClashMacOriginalProvidersActions {
         let profiles = self.profiles
         let library = configurationLibrary
         let locale = preferences.language.locale
@@ -5147,10 +6338,11 @@ private final class ClashMacSceneModel: ObservableObject {
             delete: { name in
                  
                  
+                 
+                 
                 let places = OriginalListEdits.uses(ofProvider: name, in: try await listed())
                 guard places.isEmpty else {
-                    let sentence = ClashCopy.string(for: .format("“%@” is still in use. Change these first.", [name]), locale: locale)
-                    throw ClashMacOriginalEditRefusal(message: ([sentence] + places.prefix(5)).joined(separator: "\n"))
+                    throw ClashMacStillUsedRefusal(name: name, places: Array(places.prefix(5)), locale: locale)
                 }
                 try await write(OriginalListEdits.deleting([name], fromMappingAt: "proxy-providers"))
             },
@@ -5159,6 +6351,8 @@ private final class ClashMacSceneModel: ObservableObject {
             },
             catalog: { (try? await ProfilesViewModel.loadSyntaxCatalog())?.fieldCatalog }
         )
+         
+        if withProxiesPage { actions.proxiesPage = configurationPagesLinks(profileID: id.rawValue).proxies }
         return actions
     }
 
@@ -5221,6 +6415,8 @@ private final class ClashMacSceneModel: ObservableObject {
             var document: OrderedJSON?
             var digest: String?
             var kept: ProfilesViewModel.ConfigurationEditorPage.KeptRules?
+            var label = ""
+            var followsLink = false
         }
         let read = Read()
         @MainActor func load() async throws -> ClashMacRuleEditorState {
@@ -5229,6 +6425,8 @@ private final class ClashMacSceneModel: ObservableObject {
             read.document = page.document
             read.digest = page.readDigest
             read.kept = page.keptRules
+            read.label = page.label
+            read.followsLink = page.followsSubscription
             let draft = try ClashMacOriginalRules.editorDraft(of: page, id: "original-" + profileID)
             return ClashMacRuleEditorState(draft: draft, localSets: library.snapshot.localRuleSets ?? [],
                                           resetDocument: page.document.serialized(), keptRuleCount: page.keptRules?.count)
@@ -5255,6 +6453,25 @@ private final class ClashMacSceneModel: ObservableObject {
             download: { input in try await ConfigurationTowerRuleReader.ruleSet(input) }
         )
         editor.rulesHaveSwitches = false
+         
+         
+         
+         
+        editor.changeNote = { ConfigurationSchemeChangeNote.original(name: read.label, followsLink: read.followsLink, locale: locale) }
+         
+         
+        editor.deleted = { [weak self] label, undo in self?.offerRuleUndo(of: label, undo: undo) }
+        editor.deleteLocalRestorably = { id in
+            let deletion = try await profiles.deleteConfigurationLocalRuleSetRestorably(id, generation: library.snapshot.generation)
+            library.apply(deletion.snapshot)
+            let committed = deletion.snapshot.generation, removal = deletion.removal
+            return try await ClashMacLocalRuleSetDeletion.done(reading: { try await load() }) {
+                guard let restored = try? await profiles.restoreConfigurationLibraryRemoval(removal, expectedGeneration: committed)
+                else { return false }
+                library.apply(restored)
+                return true
+            }
+        }
          
          
         editor.keptRulesPane = {
@@ -5337,7 +6554,8 @@ private final class ClashMacSceneModel: ObservableObject {
     private func scriptsActions(profileID: ClashClientKit.Profile.ID) -> ClashMacScriptsActions {
         func state() throws -> ClashMacScriptsState {
             let profile = try appProfile(profileID)
-            let scripts = ScriptLibrary.load().map { ClashMacScriptEntry(id: $0.id, label: $0.label, canRefresh: $0.sourceURL != nil, sourceHost: $0.sourceURL.flatMap { URL(string: $0)?.host }) }
+             
+            let scripts = ClashMacOverrideLibrary.entries(scripts: ScriptLibrary.load(), configurations: profiles.profiles)
             var fields = 0
             if let data = profile.override.patchJSON.data(using: .utf8),
                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -5348,7 +6566,7 @@ private final class ClashMacSceneModel: ObservableObject {
                  
                  
                  
-                selectedID: profile.overwriteMode == .script ? profile.selectedScriptID : nil,
+                selectedID: ClashMacOverrideLibrary.chosenScript(of: profile),
                 patchFieldCount: fields,
                 exceptions: profile.override.appendRules
             )
@@ -5376,20 +6594,53 @@ private final class ClashMacSceneModel: ObservableObject {
         }
          
          
-        func store(label: String, body: String, link: String? = nil) throws -> ConfigScript {
-            let existing = ScriptLibrary.load()
-            let id = UUID().uuidString
-            var candidate = label.trimmingCharacters(in: .whitespacesAndNewlines)
-            if candidate.isEmpty { candidate = ScriptLibrary.defaultLabel }
-            var attempt = 2
-            var script = ScriptLibrary.editedScript(id: id, label: candidate, body: body, sourceURL: link, existing: existing)
-            while script == nil, attempt < 100 {
-                script = ScriptLibrary.editedScript(id: id, label: "\(candidate) \(attempt)", body: body, sourceURL: link, existing: existing)
-                attempt += 1
+         
+         
+         
+         
+         
+         
+        func checkedSelect(_ id: String?, door: ClashMacScriptChoiceCheck.Door) async throws -> ClashMacScriptsState {
+            if let refused = try await refusal(id, door: door) { throw refused }
+            return try select(id)
+        }
+         
+        func refusal(_ id: String?, door: ClashMacScriptChoiceCheck.Door,
+                     scripts: [ConfigScript] = ScriptLibrary.load()) async throws -> ClashMacScriptRefusal? {
+            let profile = try appProfile(profileID)
+            let raw = ScriptSaveCheck.runsAScript(ClashMacScriptChoiceCheck.choosing(id, in: profile))
+                ? await profiles.loadUIProjectedYAML(for: profile) : nil
+            guard let refused = await ClashMacScriptChoiceCheck.refusal(
+                door: door, choosing: id, in: profile, raw: raw, scripts: scripts, locale: Locale.current
+            ) else { return nil }
+            var editScript: (@MainActor () -> Void)?
+            if refused.offersEdit, let id {
+                editScript = { [weak self] in
+                    self?.openWindowAction?(id: "script-editor", value: ClashMacScriptEditorRequest(scriptID: id))
+                }
             }
-            guard let script else { throw ScriptImportError.empty }
+            var useAnyway: (@MainActor () async throws -> ClashMacScriptsState)?
+            if refused.canUseAnyway { useAnyway = { try select(id) } }
+            return ClashMacScriptRefusal(message: refused.message, state: try state(), useAnyway: useAnyway,
+                                         editScript: editScript, nothingBehind: refused.aftermath != nil,
+                                         overForm: refused.overForm)
+        }
+         
+         
+        func pickDoor(_ id: String?) -> ClashMacScriptChoiceCheck.Door {
+            .choose(fromLink: id.flatMap { id in ScriptLibrary.load().first { $0.id == id } }.map(ClashMacOverrideLibrary.isLinked) ?? false)
+        }
+         
+         
+        func store(label: String, body: String, link: String? = nil) throws -> ConfigScript {
+            let script = try named(label: label, body: body, link: link)
             ScriptLibrary.upsert(script)
             return script
+        }
+         
+         
+        func named(label: String, body: String, link: String? = nil) throws -> ConfigScript {
+            try ClashMacOverrideLibrary.named(label: label, body: body, link: link, existing: ScriptLibrary.load())
         }
          
          
@@ -5400,14 +6651,7 @@ private final class ClashMacSceneModel: ObservableObject {
          
          
         func update(_ scripts: [ConfigScript]) async -> ClashFeedbackPresentation {
-            var summary = ScriptUpdateSummary()
-            for script in scripts {
-                do {
-                    let refreshed = try await ScriptImport.refreshed(script)
-                    if refreshed.body != script.body { ScriptLibrary.upsert(refreshed); summary.changed.append(script.label) } else { summary.unchanged.append(script.label) }
-                } catch { summary.failed.append((name: script.label, reason: ClashErrorCopy.message(error, locale: Locale.current))) }
-            }
-            return Self.scriptUpdateResult(summary)
+            await Self.fetchScriptsAgain(scripts)
         }
         func refresh(_ id: String) async throws -> (state: ClashMacScriptsState, result: ClashFeedbackPresentation) {
             guard let script = ScriptLibrary.load().first(where: { $0.id == id }) else { throw ScriptImportError.emptyAddress }
@@ -5416,10 +6660,10 @@ private final class ClashMacSceneModel: ObservableObject {
         }
          
         func updateAll() async throws -> (state: ClashMacScriptsState, result: ClashFeedbackPresentation) {
-            let linked = ScriptLibrary.load().filter { $0.sourceURL != nil }
+            let linked = ScriptLibrary.load().filter(ClashMacOverrideLibrary.isLinked)
             guard !linked.isEmpty else {
                 return (try state(), .information(
-                    title: .copy("These scripts were imported before the app kept their link, so there is nothing to fetch yet. Import each from its link once more; Update works from then on."),
+                    title: .copy("None of these scripts has a link to update from. For one that came from a link, add it again from the link."),
                     isBatchSummary: true, accessibilityIdentifier: "feedback.scripts.update.no-links"))
             }
             let result = await update(linked)
@@ -5427,16 +6671,27 @@ private final class ClashMacSceneModel: ObservableObject {
         }
         var actions = ClashMacScriptsActions(
             load: { (try? state()) ?? .empty },
-            select: { id in try select(id) },
+            select: { id in try await checkedSelect(id, door: pickDoor(id)) },
             addLink: { link in
                 let body = try await ScriptImport.body(at: link)
                 let label = (try? ScriptImport.address(link)).flatMap(ScriptImport.suggestedName(for:))
                     ?? ScriptLibrary.defaultLabel
                 let script = try store(label: label, body: body, link: link)
-                return try select(script.id)
+                return try await checkedSelect(script.id, door: .linkAdd)
             },
             addManual: { name, body in
-                let script = try store(label: name, body: body)
+                 
+                 
+                let script = try named(label: name, body: body)
+                if let refused = try await refusal(script.id, door: .newScript, scripts: ScriptLibrary.load() + [script]) {
+                    var storeAnyway: (@MainActor () async throws -> ClashMacScriptsState)?
+                    if refused.useAnyway != nil {
+                        storeAnyway = { ScriptLibrary.upsert(script); return try select(script.id) }
+                    }
+                    throw ClashMacScriptRefusal(message: refused.message, state: refused.state,
+                                                useAnyway: storeAnyway, overForm: true)
+                }
+                ScriptLibrary.upsert(script)
                 return try select(script.id)
             },
             remove: { [weak self] id in
@@ -5464,7 +6719,29 @@ private final class ClashMacSceneModel: ObservableObject {
         )
         actions.edit = { [weak self] id in self?.openWindowAction?(id: "script-editor", value: ClashMacScriptEditorRequest(scriptID: id)) }
         actions.didChange = ScriptLibrary.didChange
+         
+         
+        actions.chooseAdded = { added in try await checkedSelect(added.id, door: ClashMacScriptChoiceCheck.door(addedFromLink: added.fromLink)) }
+         
+        actions.manageInLibrary = { [weak self] in self?.requestConfigurationCenter(.scripts) }
         return actions
+    }
+
+     
+     
+     
+     
+     
+     
+    static func fetchScriptsAgain(_ scripts: [ConfigScript]) async -> ClashFeedbackPresentation {
+        var summary = ScriptUpdateSummary()
+        for script in scripts {
+            do {
+                let refreshed = try await ScriptImport.refreshed(script)
+                if refreshed.body != script.body { ScriptLibrary.upsert(refreshed); summary.changed.append(script.label) } else { summary.unchanged.append(script.label) }
+            } catch { summary.failed.append((name: script.label, reason: ClashErrorCopy.message(error, locale: Locale.current))) }
+        }
+        return Self.scriptUpdateResult(summary)
     }
 
     @Published var navigationRequest: ClashMacSecondaryDestination?
@@ -5476,8 +6753,9 @@ private final class ClashMacSceneModel: ObservableObject {
     private var feedbackLocale: AnyCancellable?
     private var configurationLibraryLocale: AnyCancellable?
     private var feedbackFailures: AnyCancellable?
+    private let failureSaying = ClashMacFailureSaying()
+    private var feedbackAnswers: AnyCancellable?
      
-    private var undoTokens: Set<ClashMacUndoToken> = []
      
      
      
@@ -5730,6 +7008,7 @@ private final class ClashMacSceneModel: ObservableObject {
      
     private(set) var statusItem: NSStatusItem?
     private var statusMenuController: ClashMacStatusMenuController?
+    private var statusMenuOpener: ClashMacStatusMenuOpener?
     private var statusItemSubscriptions: Set<AnyCancellable> = []
      
      
@@ -5822,6 +7101,9 @@ private final class ClashMacSceneModel: ObservableObject {
     }
 
     func openMainWindow(from entry: String) {
+         
+         
+        statusMenuOpener?.putTheDockAppBack()
          
         quietLaunch.cancel()
         let raised = raiseExistingMainWindow()
@@ -6000,6 +7282,36 @@ private final class ClashMacSceneModel: ObservableObject {
         await vpn.refreshSystemVPNInstallation()
         rebind()
         refreshSnapshot()
+        lookAtTheOnDemandPause(after: "foreground")
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private func lookAtTheOnDemandPause(after trigger: String) {
+        guard !Self.withholdsTunnelHousekeeping else { return }
+        Task { [vpn] in
+            if await !vpn.pauseOnDemandTheSystemKeepsStartingIntoARefusal(after: trigger) { vpn.reviewTheOnDemandPause() }
+        }
+    }
+
+     
+     
+     
+     
+     
+    func onDemandPauseNote(forTheRefusal issue: ClashHomeConnectionIssue) -> ClashDisplayText? {
+        vpn.onDemandPauseNoteForTheReasonSheet(
+            refusesConfiguration: issue.refusesConfiguration,
+            about: MacHomeStartError.revisionForThePauseNote(
+                words: issue.coreWords, lastError: vpn.reportableLastError, refusal: vpn.startRefusedByCore,
+                selected: currentProfile?.id, paused: vpn.refusalOfThePause))
     }
 
      
@@ -6070,6 +7382,7 @@ private final class ClashMacSceneModel: ObservableObject {
         prewarmEditorPreparations()
         await vpn.refresh()
         rebind()
+        lookAtTheOnDemandPause(after: "launch")
         syncConnections(commandConnected: command.isConnected)
         proxyShare.updateAPIAvailability(command.isConnected)
         if command.isConnected {
@@ -6919,7 +8232,7 @@ private final class ClashMacSceneModel: ObservableObject {
                          
                          
                         ClashMacCentreAddButton(model: self)
-                        ClashMacCentreUpdateAllButton(library: self.configurationLibrary, profiles: self.profiles)
+                        ClashMacCentreUpdateAllButton(library: self.configurationLibrary, profiles: self.profiles, model: self)
                     }
                 }
             )
@@ -7226,10 +8539,13 @@ private final class ClashMacSceneModel: ObservableObject {
      
     private func finalRuleRoute(mode: Profile.OutboundMode) -> ClashHomeFinalRuleRoute? {
         guard mode == .rule else { return nil }
+         
+         
         let route = HomeNamedRoute.route(
             mode: mode, groups: nodes.groups, delays: nodes.delays,
             terminals: nodes.resolvedNowByGroup, groupsAreTheCores: nodes.groupsAreTheCores,
-            finalRuleTarget: homeFinalRuleTarget)
+            finalRuleTarget: homeFinalRuleTarget
+        ).groupAsRead(profileID: currentProfile?.id, locale: locale)
         return route.node.map { ClashHomeFinalRuleRoute(group: route.group, node: $0, delayMilliseconds: route.delay) }
     }
 
@@ -7277,6 +8593,12 @@ private final class ClashMacSceneModel: ObservableObject {
     private func refreshSnapshot(onlyIfChanged: Bool = false) {
         let revision = self.revision &+ 1
         let profile = currentProfile
+         
+         
+         
+         
+        let startError = MacHomeStartError.line(lastError: vpn.reportableLastError, refusal: vpn.startRefusedByCore,
+                                                selected: profile?.id, paused: vpn.refusalOfThePause)
         let selected = profile.flatMap { stored in
             try? ClashClientKit.Profile.ID(stored.id)
         }.map {
@@ -7323,12 +8645,12 @@ private final class ClashMacSceneModel: ObservableObject {
                         for: ClashHomeConnectionFacts(
                             activeProfileName: profile?.label,
                             vpnStatus: homeVPNStatus,
-                            errorMessage: vpn.reportableLastError,
+                            errorMessage: startError.message,
                             vpnAuthorization: vpn.systemVPNAuthorization,
                             errorIsConfigurationNotFound:
                                 vpn.lastErrorOffersVPNProfileReset,
                              
-                            errorSubject: vpn.startRefusedByCore?.words,
+                            errorSubject: startError.subject,
                             allowsSystemVPNProfileReset:
                                 vpn.systemVPNProfileResetAvailable,
                             isSwitchingProxy:
@@ -7367,7 +8689,11 @@ private final class ClashMacSceneModel: ObservableObject {
                         countUnit: homeProxyCount.unit,
                         names: homeConfigTally?.groupNames ?? []
                     ),
-                    globalNode: globalGroupNode
+                    globalNode: globalGroupNode,
+                     
+                     
+                     
+                    namesReadIn: HomeGroupName.Reading(profileID: profile?.id, locale: locale)
                 ),
                 rules: ClashHomeDomainSnapshot(
                     count: homeConfigTally?.rules,
@@ -7703,6 +9029,8 @@ private final class ClashMacSceneModel: ObservableObject {
              
              
              
+             
+             
             break
         case .openOnDemand:
              
@@ -7835,7 +9163,11 @@ private final class ClashMacSceneModel: ObservableObject {
                                         set: { [weak self] in
                                             self?.stagedProxyOpening = $0
                                         }
-                                    )
+                                    ),
+                                     
+                                    macNodeSourcesPage: { [weak self] id in self?.proxiesNodeSourcesPage(profileID: id) ?? AnyView(EmptyView()) },
+                                     
+                                    macGroupPages: self.proxiesGroupPages(more: self.proxiesPageMore)
                                 )
                                 } placeholder: {
                                     ClashMacPlatformPresentation.palette
@@ -7867,6 +9199,9 @@ private final class ClashMacSceneModel: ObservableObject {
                                     initialValue: self.command.isConnected,
                                     updates: self.command.$isConnected.eraseToAnyPublisher()
                                 ) { connected in
+                                     
+                                     
+                                    ClashMacObservedLibraryPage(model: self.configurationLibrary) { _ in
                                     SessionRulesRailRoot(
                                         command: self.command,
                                         canInspectActiveRules: connected,
@@ -7881,8 +9216,14 @@ private final class ClashMacSceneModel: ObservableObject {
                                             self.proxiesChannels
                                                 .requestOpenGroup(group)
                                             self.navigationRequest = .proxies
+                                        },
+                                         
+                                         
+                                        macPage: { [weak self] profile in
+                                            self?.rulesPageParts(for: profile) ?? RulesOverviewPageParts()
                                         }
                                     )
+                                    }
                                 }
                             }
                             .equatable()
@@ -8286,6 +9627,12 @@ private final class ClashMacSceneModel: ObservableObject {
         vpn.$status.removeDuplicates()
             .sink { [weak self] _ in self?.startupOutcome.refresh() }
             .store(in: &cancellables)
+         
+         
+         
+        profiles.$savedConfigurationGeneration.dropFirst()
+            .sink { [weak self] _ in self?.vpn.reviewTheOnDemandPause() }
+            .store(in: &cancellables)
 
          
          
@@ -8678,7 +10025,7 @@ private struct ClashMacProductCommands: Commands {
                 Text(clash: .copy("Add Profile"))
             }
             .keyboardShortcut("n", modifiers: [.command])
-            sceneCommand(.copy("Create Nodes")) { $0.requestAddSource(purpose: .nodes) }
+            sceneCommand(.copy("Add Node Source…")) { $0.requestAddSource(purpose: .nodes) }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             sceneCommand(.copy("Create Rules")) { $0.requestAddSource(purpose: .rules) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
@@ -8949,7 +10296,15 @@ extension ClashMacSceneModel {
             listenerUpdates: proxyShare.terminalListenerDidChange.eraseToAnyPublisher()
         )
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.menu = controller.menu
+         
+         
+         
+         
+        let opener = ClashMacStatusMenuOpener(item: item, menu: controller.menu)
+        opener.attach()
+        controller.onOpen = { [weak opener] in opener?.menuDidOpen() }
+        controller.onClose = { [weak opener] in opener?.menuDidClose() }
+        statusMenuOpener = opener
         statusMenuController = controller
         statusItem = item
         statusItemTunnelStatus = vpn.status
@@ -9212,6 +10567,44 @@ struct ClashMacOriginalEditRefusal: LocalizedError {
  
  
  
+ 
+ 
+private struct ClashMacOriginalNodeFormByName: View {
+    let profiles: ProfilesViewModel
+    let profileID: String
+    let name: String
+    let locale: Locale
+    let written: @MainActor () async -> Void
+    let done: @MainActor () -> Void
+    @State private var node: ClashMacOriginalNode?
+    @State private var read = false
+
+    var body: some View {
+        Group {
+            if read, let node {
+                ClashMacOriginalNodeForm(profiles: profiles, profileID: profileID, node: node, locale: locale,
+                                         written: written, done: done)
+            } else if read {
+                 
+                 
+                VStack(spacing: 12) {
+                    Text(clash: .copy("No Details")).foregroundStyle(.secondary)
+                    Button { done() } label: { Text(clash: .copy("Close")) }
+                        .keyboardShortcut(.cancelAction)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task {
+            let document = try? await profiles.loadConfigurationEditorPage(profileID: profileID).document
+            node = document.flatMap { ClashMacOriginalNodes.nodes(in: $0)?.first { $0.name == name } }
+            read = true
+        }
+    }
+}
+
 private struct ClashMacOriginalNodeForm: View {
     let profiles: ProfilesViewModel
     let profileID: String
@@ -9325,12 +10718,18 @@ struct ClashMacImportRequest: Identifiable {
     var tab: ClashMacSourceImportSheet.Tab = .link
      
     var mergeIntoSourceID: String? = nil
+     
+     
+    var useFor: String? = nil
     var id: String { (purpose == .rules ? "rules" : "nodes") + "-\(tab.rawValue)" + (mergeIntoSourceID.map { "-into-" + $0 } ?? "") }
 }
 
  
 struct ClashMacChainRequest: Identifiable {
     let existingID: String?
+     
+     
+    var useFor: String? = nil
     var id: String { existingID ?? "new" }
 }
 
@@ -9456,6 +10855,7 @@ private struct ClashMacUpdateFailure: LocalizedError {
  
  
  
+ 
 private struct ClashMacCentrePresentations: ViewModifier {
     @ObservedObject var model: ClashMacSceneModel
     let actions: ClashMacConfigurationCenterListActions
@@ -9482,6 +10882,15 @@ private struct ClashMacCentrePresentations: ViewModifier {
                     .clashModalPresentation(.fitted)
                     .environment(\.clashPresentsPanelsAsNativeSheets, true)
             }
+             
+             
+             
+             
+            .sheet(isPresented: model.overrideLibraryAddsBinding) {
+                model.overrideLibraryAddSheet()
+                    .clashModalPresentation(.fitted)
+                    .environment(\.clashPresentsPanelsAsNativeSheets, true)
+            }
     }
 }
 
@@ -9490,13 +10899,38 @@ private struct ClashMacCentrePresentations: ViewModifier {
 enum ClashMacCentreWindowSheet: Identifiable {
     case importing(ClashMacImportRequest)
     case wizard
+     
+     
+     
+    case newChain(useFor: String?)
+     
+     
+    case customRule(profileID: String)
 
     var id: String {
         switch self {
         case .importing(let request): "import-" + request.id
         case .wizard: "wizard"
+        case .newChain: "new-chain"
+        case .customRule(let profileID): "custom-rule-" + profileID
         }
     }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+struct ClashMacProxiesNewNode: Identifiable {
+    let useFor: String?
+     
+     
+     
+     
+     
+    var id: String { "new-node" + (useFor.map { "-" + $0 } ?? "") }
 }
 
  
@@ -9530,10 +10964,20 @@ private struct ClashMacCentreWindowSheets: ViewModifier {
                     switch sheet {
                     case .importing(let request): model.importSheet(request)
                     case .wizard: model.configurationWizardSheet()
+                    case .newChain(let useFor): model.chainSheet(ClashMacChainRequest(existingID: nil, useFor: useFor))
+                    case .customRule(let profileID): model.customRuleAddSheet(profileID: profileID) { model.configurationCenterWindowSheet = nil }
                     }
                 }
                 .clashModalPresentation(.fitted)
                 .environment(\.clashPresentsPanelsAsNativeSheets, true)
+            }
+             
+             
+             
+             
+             
+            .clashProductModal(item: model.proxiesNewNodeBinding, role: .form) { request in
+                model.newNodeForm(useFor: request.useFor) { model.proxiesNewNode = nil }
             }
     }
 }
@@ -9642,6 +11086,39 @@ enum ClashMacRuntimeConfigurationTexts {
  
  
  
+ 
+@MainActor
+enum ClashMacPutBackBar {
+    static func putBack(failure: ConfigurationFailure?, feedback: ClashFeedbackCenter?) -> ClashMacPutBack {
+         
+         
+        var barSaysIt = false
+        if failure?.putBackTitle != nil, let state = feedback?.state {
+            barSaysIt = [state.current, state.covered].contains { $0?.operation == "profiles.failure" }
+        }
+        return ClashMacPutBack(title: .copy(ProfilesViewModel.putBackKey), saidByTheWindow: barSaysIt)
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+enum ClashMacConfigurationListFailure {
+    static func line(_ failure: ConfigurationFailure, locale: Locale) -> (message: ClashDisplayText, canRetry: Bool) {
+        let canRetry = failure.recoveryActions.contains(ConfigurationRecoveryAction.retry)
+        guard failure.putBackTitle != nil else { return (message: .verbatim(failure.message), canRetry: canRetry) }
+        let said = ProfileSwitchAlertFailure(failure, locale: locale)
+        return (message: .verbatim(said.titleText + "\n" + said.messageText), canRetry: canRetry)
+    }
+}
+
+ 
+ 
+ 
+ 
 enum ClashMacOriginalRules {
      
      
@@ -9686,7 +11163,24 @@ enum ClashMacOriginalRules {
         } else {
             after = try draft.document()
         }
-        return ConfigurationDocumentEdits.edits(from: before, to: after).flatMap(textSteps)
+        return ConfigurationDocumentEdits.edits(from: before, to: after).flatMap { edit in
+            entrySteps(edit, before: before) ?? textSteps(edit)
+        }
+    }
+
+     
+     
+     
+     
+     
+    static func entrySteps(_ edit: ConfigurationPageEdit, before: OrderedJSON) -> [ConfigurationTextStep]? {
+        guard case .replace(let path, let index, let value) = edit, path.count == 1,
+              case .array(let items)? = before.topLevelValue(path[0]), items.indices.contains(index),
+              case .object = items[index], case .object = value else { return nil }
+        let prefix: [ConfigurationTextPathStep] = [.key(path[0]), .index(index)]
+        return ConfigurationDocumentEdits.edits(from: items[index], to: value).flatMap { inner in
+            textSteps(inner).map { step in ConfigurationTextStep(path: prefix + step.path, edit: step.edit) }
+        }
     }
 
      
@@ -9778,7 +11272,7 @@ enum ClashMacOriginalRules {
         guard let (name, renamed, uses) = used else { return }
         let sentence = renamed
             ? ClashCopy.string(for: .copy("Rules in this configuration's file use this name. Change it in the file, then import it again."), locale: locale)
-            : ClashCopy.string(for: .format("“%@” is still in use. Change these first.", [name]), locale: locale)
+            : ClashCopy.string(for: .format("Can’t delete “%@”: it’s still used in the places below. Change them first.", [name]), locale: locale)
         throw ClashMacOriginalEditRefusal(message: ([sentence] + uses).joined(separator: "\n"))
     }
 
@@ -9926,6 +11420,44 @@ private struct ClashMacModulesNoticePage: View {
             ClashMacSettingsChapterPage(section: section, actions: actions)
         } else {
             ClashOpeningCancelButton()
+        }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+final class ClashMacFailureSaying {
+    private var said = 0
+
+     
+     
+     
+    func close(stillSaid: @escaping () -> Bool = { true },
+               forgetting forget: @escaping () -> Void) -> () -> Void {
+        said &+= 1
+        let mine = said
+        return { [weak self] in if self?.said == mine, stillSaid() { forget() } }
+    }
+}
+
+ 
+ 
+ 
+ 
+ 
+ 
+@MainActor
+enum ClashMacFailureListener {
+    static func listen(serial: AnyPublisher<Int, Never>,
+                       failure: @escaping @MainActor () -> ConfigurationFailure?,
+                       say: @escaping @MainActor (ConfigurationFailure) -> Void) -> AnyCancellable {
+         
+        serial.dropFirst().sink { _ in
+            if let current = failure() { say(current) }
         }
     }
 }

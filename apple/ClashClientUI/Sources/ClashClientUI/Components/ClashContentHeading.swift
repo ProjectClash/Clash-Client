@@ -63,7 +63,7 @@ private struct ClashContentHeadingModifier: ViewModifier {
         } else {
             content
                 .navigationTitle("")
-                .environment(\.clashRegularRootLargeTitle, title.rawValue)
+                .environment(\.clashRegularRootLargeTitle, ClashRootLargeTitle.published(title))
         }
     }
 }

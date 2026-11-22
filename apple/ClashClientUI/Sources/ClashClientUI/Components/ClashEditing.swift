@@ -168,13 +168,14 @@ public extension View {
                                       actionTitle: ClashDisplayText = .copy("Delete"),
                                       message: ((Item) -> ClashDisplayText?)? = nil,
                                       identifier: String,
+                                      cancel: (() -> Void)? = nil,
                                       action: @escaping (Item) -> Void) -> some View {
         alert(Text(clash: .format("Delete %@?", [item.wrappedValue.map(name) ?? ""])),
               isPresented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }),
               presenting: item.wrappedValue) { presented in
             Button(role: .destructive) { action(presented) } label: { Text(clash: actionTitle) }
                 .accessibilityIdentifier(identifier)
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) { cancel?() }
         } message: { presented in
             if let text = message?(presented) { Text(clash: text) }
         }

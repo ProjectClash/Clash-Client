@@ -1838,6 +1838,12 @@ return
      
      
     func readStartupExplanation() -> ClashStartupExplanation? {
+        Self.startupExplanationOnDisk()
+    }
+
+     
+     
+    static func startupExplanationOnDisk() -> ClashStartupExplanation? {
         let raw = ClashExplainLastStartup()
         guard let decoded = ClashStartupExplanation.decode(raw) else {
              
@@ -1899,16 +1905,11 @@ return
         )
     }
 
+     
+     
+     
     private static func phaseLogLines() -> [String] {
-        guard let container = ClashAppIdentifiers.appGroupContainer,
-              let text = try? String(
-                  contentsOf: container.appendingPathComponent(
-                      MemorySampleLog.startupPhaseFileName
-                  ),
-                  encoding: .utf8
-              )
-        else { return [] }
-        return text.split(separator: "\n").map(String.init)
+        ClashMemoryLedger.phaseFile.flatMap(ClashMemoryLedger.lastRunLines(of:)) ?? []
     }
 
      
@@ -4152,6 +4153,29 @@ enum AppGroupDirectFetch {
         didSet { lastReading = nil }
     }
 
+#if os(iOS)
+     
+     
+     
+     
+     
+     
+     
+     
+    static var ourTunnelStates: () async -> [NEVPNStatus]? = { await systemTunnelStates() }
+
+     
+     
+     
+     
+     
+     
+    nonisolated static func saysTheTunnelIsDown(_ states: [NEVPNStatus]?) -> Bool {
+        guard let states else { return false }
+        return states.allSatisfy { $0 == .disconnected || $0 == .invalid }
+    }
+#endif
+
      
      
      
@@ -4188,8 +4212,10 @@ enum AppGroupDirectFetch {
         } catch let error as DownloadError {
              
             throw error
-        } catch is DirectFetchUnavailable {
-            throw DirectFetchUnavailable()
+        } catch let unavailable as DirectFetchUnavailable {
+             
+             
+            throw unavailable
         } catch {
              
              
@@ -4212,8 +4238,28 @@ enum AppGroupDirectFetch {
             return try await session.fetchDirect(request, maxBytes: maxBytes, timeout: timeout,
                                                  redirectPolicy: redirectPolicy)
         }
-        guard let path = socketPath(), FileManager.default.fileExists(atPath: path),
-              await tunnelRuns() else { throw DirectFetchUnavailable() }
+        guard let path = socketPath() else { throw DirectFetchUnavailable() }
+        guard FileManager.default.fileExists(atPath: path), await tunnelRuns() else {
+#if os(iOS)
+             
+             
+             
+             
+             
+             
+             
+            var down = false
+            if DirectFetchFallback.deadline == nil {
+                let states = await ourTunnelStates()
+                down = saysTheTunnelIsDown(states)
+            }
+            throw DirectFetchUnavailable(tunnelNotRunning: down)
+#else
+             
+             
+            throw DirectFetchUnavailable()
+#endif
+        }
         var error: NSError?
         guard let client = ClashNewAPIClientWithOptions(path, SessionlessHandler(), ClashAPIClientOptions(), &error)
         else {
@@ -4247,6 +4293,25 @@ enum AppGroupDirectFetch {
             }
         }) ?? false
     }
+
+#if os(iOS)
+     
+     
+     
+    private static func systemTunnelStates() async -> [NEVPNStatus]? {
+        return try? await VPNController.withNETimeout(seconds: 5, .nePreferencesTimeout) {
+            states(of: try await NETunnelProviderManager.loadAllFromPreferences())
+        }
+    }
+
+     
+     
+     
+     
+    nonisolated static func states(of managers: [NEVPNManager]) -> [NEVPNStatus] {
+        managers.map(\.connection.status)
+    }
+#endif
 
      
      
@@ -4437,39 +4502,46 @@ extension ClashCommandClient {
             handOnWhatTheCompileWouldTake(in: state, because: #"no stored configuration hashes to the running \#(sha256)"#)
             return []
         }
-        do {
-            let compiled = try await compilePendingProviders(configuration: configuration,
-                                                             targetProfile: clashAppleRuntimeProfileName)
-            for item in compiled {
-                ClashLogStore.shared.append(
-                    "pending compile  \(item.kind):\(item.name)  result=\(item.result?.rawValue ?? "-")"
-                        + (item.error.map { "  error=\($0)" } ?? ""),
-                    stream: .app)
+         
+         
+         
+         
+        return await ConfigurationCollectionContentBridge.compileHolding(
+            PendingProviderCompile.compileTakes(in: state, excluding: pendingCompilesHandedOn), of: state, container: container) {
+            do {
+                let compiled = try await compilePendingProviders(configuration: configuration,
+                                                                 targetProfile: clashAppleRuntimeProfileName)
+                for item in compiled {
+                    ClashLogStore.shared.append(
+                        "pending compile  \(item.kind):\(item.name)  result=\(item.result?.rawValue ?? "-")"
+                            + (item.error.map { "  error=\($0)" } ?? ""),
+                        stream: .app)
+                }
+                 
+                 
+                 
+                let handedOn = PendingProviderCompile.couldNotTake(compiled, in: state)
+                if !handedOn.isEmpty, let takes = takesWhatTheCompileCouldNotTake {
+                    pendingCompilesHandedOn.formUnion(handedOn.map(\.key))
+                    takes(handedOn)
+                }
+                return compiled
+            } catch {
+                let message = (error as NSError).localizedDescription
+                if !message.contains(ClashSideUpdateStalePrefix) {
+                    ClashLogStore.shared.append("pending compile not run  reason=\(message)", stream: .app, level: .warning)
+                }
+                 
+                 
+                 
+                 
+                 
+                if !message.contains(ClashSideUpdateStalePrefix), !Task.isCancelled, !(error is CancellationError),
+                   !(error is NodePageSourceError), !(error is CoreCallDeadline) {
+                    handOnWhatTheCompileWouldTake(in: state, because: message)
+                }
+                return []
             }
-             
-             
-             
-            let handedOn = PendingProviderCompile.couldNotTake(compiled, in: state)
-            if !handedOn.isEmpty, let takes = takesWhatTheCompileCouldNotTake {
-                pendingCompilesHandedOn.formUnion(handedOn.map(\.key))
-                takes(handedOn)
-            }
-            return compiled
-        } catch {
-            let message = (error as NSError).localizedDescription
-            if !message.contains(ClashSideUpdateStalePrefix) {
-                ClashLogStore.shared.append("pending compile not run  reason=\(message)", stream: .app, level: .warning)
-            }
-             
-             
-             
-             
-             
-            if !message.contains(ClashSideUpdateStalePrefix), !Task.isCancelled, !(error is CancellationError),
-               !(error is NodePageSourceError), !(error is CoreCallDeadline) {
-                handOnWhatTheCompileWouldTake(in: state, because: message)
-            }
-            return []
         }
     }
 

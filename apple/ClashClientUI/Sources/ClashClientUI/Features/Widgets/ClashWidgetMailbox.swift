@@ -123,6 +123,11 @@ public struct ClashWidgetNotice: Codable, Equatable, Sendable {
  
 public struct ClashWidgetAppFacts: Codable, Equatable, Sendable {
     public let profile: String?
+     
+     
+     
+     
+     
     public let firstGroup: String?
     public let groups: [String]
      
@@ -147,6 +152,14 @@ public struct ClashWidgetAppFacts: Codable, Equatable, Sendable {
      
      
     public let globalVerdict: ClashTunnelOutboundMode.StoredGlobalVerdict?
+     
+     
+     
+     
+     
+     
+     
+    public let selectors: [String]?
     public let writtenAt: Date
 
     public init(
@@ -154,6 +167,7 @@ public struct ClashWidgetAppFacts: Codable, Equatable, Sendable {
         members: [String: [String]] = [:], selections: [String: String] = [:],
         mode: ClashWidgetMode? = nil, countsWired: Bool? = nil,
         globalVerdict: ClashTunnelOutboundMode.StoredGlobalVerdict? = nil,
+        selectors: [String]? = nil,
         writtenAt: Date
     ) {
         self.globalVerdict = globalVerdict
@@ -164,7 +178,25 @@ public struct ClashWidgetAppFacts: Codable, Equatable, Sendable {
         self.selections = selections
         self.mode = mode
         self.countsWired = countsWired
+        self.selectors = selectors
         self.writtenAt = writtenAt
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    public static func group(shownFor pick: String?, listsAGroup: Bool, facts: ClashWidgetAppFacts?) -> String? {
+        guard let facts else { return listsAGroup ? pick : nil }
+        guard listsAGroup, pick != nil else { return facts.firstGroup }
+        return facts.group(for: pick)
     }
 
      

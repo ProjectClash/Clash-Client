@@ -2,6 +2,10 @@ import Combine
 import ClashClientKit
 import ClashClientUI
 import SwiftUI
+#if canImport(AppKit) && !canImport(UIKit)
+import AppKit
+import ClashMacClient
+#endif
 
  
  
@@ -11,6 +15,31 @@ import SwiftUI
  
  
  
+ 
+ 
+ 
+ 
+struct ProxiesMacGroupPages {
+    var group: (_ profileID: String, _ name: String) -> AnyView
+    var list: (_ profileID: String) -> AnyView
+    var newGroup: (_ profileID: String, _ close: @escaping () -> Void) -> AnyView
+    var delete: (_ profileID: String, _ name: String) -> Void
+     
+     
+     
+    var attach: (_ reorderGroups: (() -> Void)?, _ updateNodeSources: (() -> Void)?,
+                 _ openNodeSources: (() -> Void)?) -> Void = { _, _, _ in }
+     
+     
+    var openNodeSource: ((String) -> Void)? = nil
+    var originalNode: ((String, String, @escaping () -> Void, @escaping () -> Void) -> AnyView)? = nil
+     
+     
+     
+    var offerUndo: (@MainActor (_ title: ClashDisplayText, _ actionName: ClashDisplayText, _ label: String, _ operation: String,
+                                _ restore: @escaping @MainActor () async throws -> Void) -> Void)? = nil
+}
+
 struct ProxiesOverviewHost: View {
     @ObservedObject var vpn: VPNController
      
@@ -34,7 +63,36 @@ struct ProxiesOverviewHost: View {
      
      
     var opening: ProxyBrowsingVisibility.Opening = .browsing
+     
+     
+     
+     
+     
+    var reprepare: (() -> Void)? = nil
+     
+     
+     
+    var macNodeSourcesPage: ((String) -> AnyView)? = nil
+     
+    var macGroupPages: ProxiesMacGroupPages? = nil
+     
+     
+     
+     
+    var isConfigurationsPage = false
     @Environment(\.locale) private var locale
+#if !os(iOS)
+     
+    @Environment(\.clashPushRoute) private var pushRoute
+     
+    @State private var addingGroup = false
+     
+     
+    @State private var macSelfBuiltNodes: [String] = []
+     
+     
+    @State private var macRemovableNodes: [String] = []
+#endif
     @State private var providerUpdateFailure: ClashDisplayText?
      
      
@@ -55,10 +113,24 @@ struct ProxiesOverviewHost: View {
     @State private var scriptRun: ClashNodeScriptResult?
      
     @State private var scriptTask: Task<Void, Never>?
+     
+     
+     
+     
+    @State private var pageConfiguration: ProxiesPageConfiguration?
 #if os(iOS)
      
     @ObservedObject private var appScripts = ModuleAppScriptRunner.shared
+     
+    @State private var addingNodes = false
+     
+     
+    @State private var policyGroupSheet: ConfigurationPolicyGroupSheet.Opening?
 #endif
+     
+     
+     
+    @State private var ownRefusals: [String: ClashGroupActionRefusal] = [:]
 
     var body: some View {
         ClashPerf.measure("proxies.host.body") {
@@ -74,11 +146,55 @@ struct ProxiesOverviewHost: View {
                 .onChange(of: scriptRun == nil) { closed in
                     if closed { scriptTask?.cancel() }
                 }
+#if !os(iOS)
+                 
+                 
+                .clashSheet(isPresented: $addingGroup) {
+                    if let macGroupPages {
+                        macGroupPages.newGroup(profile.id) { addingGroup = false }
+                            .clashModalPresentation(.fitted)
+                            .environment(\.clashPresentsPanelsAsNativeSheets, true)
+                    }
+                }
+                .onAppear { macGroupPages?.attach(shownReorderGroups, shownNodeSourcesUpdate, shownOpenNodeSources) }
+                .onChange(of: pageConfiguration) { _ in macGroupPages?.attach(shownReorderGroups, shownNodeSourcesUpdate, shownOpenNodeSources) }
+                .task(id: pageConfiguration) { await readSelfBuiltNodes() }
+                 
+                .onChange(of: profiles.libraryContentEpoch) { _ in Task { await readSelfBuiltNodes() } }
+#endif
+#if os(iOS)
+                .clashProductModal(isPresented: $addingNodes, role: .page) {
+                    if shownConfiguration.isComposed {
+                        ProxiesAddNodesSheet(model: profiles, profileID: profile.id, configurationName: shownName,
+                                             added: { addingNodes = false; reprepare?() },
+                                             close: { addingNodes = false })
+                    } else {
+                         
+                         
+                        OriginalAddNodesSheet(model: profiles, profileID: profile.id, configurationName: shownName,
+                                              close: { addingNodes = false; reprepare?() })
+                    }
+                }
+                .clashProductModal(item: $policyGroupSheet, role: .page) { opening in
+                    ConfigurationPolicyGroupSheet(model: profiles, profileID: profile.id, opening: opening,
+                                                  changed: { _ in }, close: { policyGroupSheet = nil })
+                }
+                 
+                 
+                .onChange(of: policyGroupSheet == nil) { closed in
+                    if closed { reprepare?() }
+                }
+#endif
         }
         .task(id: profile.id) {
             offersNodeEditing = ProxyNodeEditPolicy.isEditable(
                 hasStoredSource: profiles.sourceYAML(for: profile) != nil
             )
+        }
+         
+         
+        .task(id: "\(profile.id)|\(profile.activeRevision ?? "")|\(profiles.libraryContentEpoch)|\(isCurrent)") {
+            await readPageConfiguration()
         }
 #if os(iOS)
          
@@ -92,7 +208,11 @@ struct ProxiesOverviewHost: View {
          
          
          
-        .task { await nodes.followHealthChecksWhileVisible() }
+         
+        .task(id: isCurrent) {
+            guard isCurrent else { return }
+            await nodes.followHealthChecksWhileVisible()
+        }
 #else
          
          
@@ -103,7 +223,13 @@ struct ProxiesOverviewHost: View {
          
          
          
-        .task { await nodes.followHealthChecksWhileVisible() }
+         
+         
+         
+        .task(id: isCurrent) {
+            guard isCurrent else { return }
+            await nodes.followHealthChecksWhileVisible()
+        }
 #endif
 
 
@@ -123,11 +249,14 @@ struct ProxiesOverviewHost: View {
      
     @ViewBuilder
     private var hosted: some View {
+        let current = isCurrent
+        let wiring = liveWiring
         ProxiesOverviewAdapter(
              
              
              
-            sourceModel: command.tunnelIsUp ? sourceModel.withoutCatalogRefusal : sourceModel,
+             
+            sourceModel: command.tunnelIsUp && current ? sourceModel.withoutCatalogRefusal : sourceModel,
              
              
              
@@ -141,6 +270,14 @@ struct ProxiesOverviewHost: View {
              
             outboundMode: ProxyBrowsingVisibility.Mode(
                 coreValue: {
+                     
+                     
+                     
+                     
+                     
+                    guard current else {
+                        return (profiles.appWideOutboundMode() ?? .rule).rawValue
+                    }
                     let tunnelUp = ["connected", "reasserting"]
                         .contains(vpn.status)
                     if tunnelUp, mode != "—" {
@@ -157,46 +294,24 @@ struct ProxiesOverviewHost: View {
                 }()
             ),
             opening: opening,
-            runtime: Self.runtimeFacts(of: nodes, isConnected: isConnected, profileID: profile.id),
-            isConnected: isConnected,
-            testingNames: nodes.testingNames,
-            isTestingLatency: nodes.isTestingLatency,
-            sweepEvents: nodes.latencySweepConduit.eraseToAnyPublisher(),
-            latencyCompletedCount: nodes.latencyCompletedCount,
-            latencyTotalCount: nodes.latencyTotalCount,
-            testAll: {
-                guard command.isConnected else {
-                    return
-                }
-                Task {
-                    await nodes.testAll()
-                }
-            },
-            testGroup: { groupName in
-                guard command.isConnected,
-                      let group = nodes.groups.first(
-                          where: { $0.name == groupName }
-                      )
-                else {
-                    return
-                }
-                Task {
-                    await nodes.test(group: group)
-                }
-            },
-            testShown: { shown in
-                guard command.isConnected else { return }
-                Task { await nodes.test(shown: shown) }
-            },
-            loadMembers: { groupName in
-                Task { await nodes.loadRemainingMembers(of: groupName) }
-            },
-            loadProviderNodes: { providerName in
-                Task { await nodes.loadProviderNodes(named: providerName) }
-            },
-            searchMembers: { query in
-                Task { await nodes.searchMembers(matching: query) }
-            },
+             
+             
+             
+            runtime: current ? Self.runtimeFacts(of: nodes, isConnected: isConnected, profileID: profile.id) : .none,
+            isConnected: current && isConnected,
+            testingNames: current ? nodes.testingNames : [],
+            isTestingLatency: current && nodes.isTestingLatency,
+            sweepEvents: current ? nodes.latencySweepConduit.eraseToAnyPublisher() : nil,
+            latencyCompletedCount: current ? nodes.latencyCompletedCount : 0,
+            latencyTotalCount: current ? nodes.latencyTotalCount : 0,
+            testAll: wiring.testAll,
+            testGroup: wiring.testGroup,
+            testShown: wiring.testShown,
+             
+             
+            loadMembers: wiring.loadMembers,
+            loadProviderNodes: wiring.loadProviderNodes,
+            searchMembers: wiring.searchMembers,
             switchSelection: { group, member in
                  
                  
@@ -205,59 +320,30 @@ struct ProxiesOverviewHost: View {
                     stream: .app,
                     level: .info
                 )
-                if command.isConnected {
-                     
-                     
-                    nodes.pickFromPage(group: group, member: member)
-                } else {
-                    do {
-                        try profiles.updateProxySelection(
-                            profileID: profile.id,
-                            group: group,
-                            member: member,
-                            catalog: sourceModel
-                        )
-                        nodes.noteOfflinePick(group: group, refusal: nil)
-                    } catch {
-                         
-                         
-                        ClashLogStore.shared.append(
-                            "proxy selection refused offline group=\(group) member=\(member): \(error)",
-                            stream: .app,
-                            level: .warning
-                        )
-                        nodes.noteOfflinePick(group: group, refusal: error.localizedDescription)
+                let route = Self.pickRoute(isCurrent: current, isConnected: command.isConnected)
+                let refusal = Self.pick(group: group, member: member, route: route, profileID: profile.id,
+                                        catalog: sourceModel, profiles: profiles, nodes: nodes)
+                if route == .thisConfigurationsRecord {
+                    ownRefusals[group] = refusal.map {
+                        ClashGroupActionRefusal(verb: .select, coreSentence: $0, appSentence: nil)
                     }
                 }
             },
-            setVisibleGroup: { group in
-                if let group {
-                    nodes.setCurrentGroup(group)
-                }
-            },
-            updateProvider: { name in Task { await updateProvider(name) } },
-            setGroupExpanded: { group, isExpanded in
-                nodes.setExpanded(isExpanded, group: group)
-            },
-            setGroupsExpanded: { groups, isExpanded in
-                nodes.setExpanded(isExpanded, groups: groups)
-            },
-            cancelLatency: {
-                Task {
-                    await nodes.cancelLatencyTests(
-                        reason: .requested
-                    )
-                }
-            },
-            refreshCatalog: { Task { await nodes.refresh() } },
              
              
-            unpinGroup: { group in
-                Task { await nodes.unfix(group: group) }
-            },
+            setVisibleGroup: wiring.setVisibleGroup,
+            updateProvider: wiring.updateProvider,
+            setGroupExpanded: wiring.setGroupExpanded,
+            setGroupsExpanded: wiring.setGroupsExpanded,
+            cancelLatency: wiring.cancelLatency,
              
-            actionRefusals: nodes.actionRefusals,
-            testMember: { name, group in Task { await nodes.test(name, inGroup: group) } },
+            refreshCatalog: wiring.refreshCatalog,
+             
+             
+            unpinGroup: wiring.unpinGroup,
+             
+            actionRefusals: current ? nodes.actionRefusals : shownOwnRefusals,
+            testMember: wiring.testMember,
              
              
              
@@ -267,15 +353,25 @@ struct ProxiesOverviewHost: View {
                 ? { name in inspectingNode = ProxyNodeInspection(name: name) }
                 : nil,
             inspectMember: { name in inspectingNode = ProxyNodeInspection(name: name) },
-            nodeScripts: offeredNodeScripts,
-            runNodeScript: nodeScriptRunner,
+             
+            nodeScripts: current ? offeredNodeScripts : [],
+            runNodeScript: current ? nodeScriptRunner : nil,
             initiallyExpandedGroup: initiallyExpandedGroup,
-            rememberedExpandedGroups: nodes.unfoldedGroups,
+            rememberedExpandedGroups: current ? nodes.unfoldedGroups : [],
              
              
-            rememberedOpenGroup: nodes.currentGroupName,
-            readerFoldedAll: nodes.readerFoldedAllGroups,
-            ownsNavigationContainer: ownsNavigationContainer
+            rememberedOpenGroup: current ? nodes.currentGroupName : nil,
+            readerFoldedAll: current && nodes.readerFoldedAllGroups,
+            ownsNavigationContainer: ownsNavigationContainer,
+            configurationPage: shownConfigurationPage,
+            nodeSourcesPage: shownNodeSourcesPage,
+            addNodes: shownAddNodes,
+            updateNodeSources: shownNodeSourcesUpdate,
+            inspectGroup: shownInspectGroup,
+            newGroup: shownNewGroup,
+            reorderGroups: shownReorderGroups,
+            deleteGroup: shownDeleteGroup,
+            nodeActions: shownNodeActions
         )
         .alert(
             "Provider update failed",
@@ -373,12 +469,39 @@ struct RulesOverviewHost: View {
      
      
      
-    let command: ClashCommandClient
+     
+     
+    let command: ClashCommandClient?
     let canInspectActiveRules: Bool
     @ObservedObject var profiles: ProfilesViewModel
     let profile: Profile
-    let openProxiesGroup: (String) -> Void
+     
+     
+    let openProxiesGroup: ((String) -> Void)?
     var ownsNavigationContainer = true
+     
+     
+     
+     
+     
+     
+    var profileID: String? = nil
+#if os(iOS)
+     
+     
+     
+    var pageSession: ConfigurationEditorSession? = nil
+#endif
+     
+     
+     
+    var libraryChanged: ((ConfigurationLibrarySnapshot) -> Void)? = nil
+     
+     
+     
+     
+     
+    var macPage: ((Profile) -> RulesOverviewPageParts)? = nil
      
      
      
@@ -399,9 +522,34 @@ struct RulesOverviewHost: View {
      
      
     @State private var pagesReadFor: String?
+     
+     
+     
+     
+    @State private var editingInPlace = false
 
+     
+     
+     
+     
+     
+    private var isConfigurationsPage: Bool {
+        profileID != nil
+    }
+
+     
+     
+    private var current: Profile {
+        profileID.flatMap { id in profiles.profiles.first { $0.id == id } } ?? profile
+    }
+
+     
+     
+     
+     
     private var pagesTaskID: String {
-        "\(profile.id)#\(profile.activeRevision ?? "")#\(profile.selectedScriptID ?? "")#presented"
+        let published = isConfigurationsPage ? "#\(profiles.publishedGeneration(of: current.id))" : ""
+        return "\(current.id)#\(current.activeRevision ?? "")#\(current.selectedScriptID ?? "")\(published)#presented"
     }
 
     var body: some View {
@@ -410,7 +558,7 @@ struct RulesOverviewHost: View {
              
              
              
-            if presentedYAML == nil, profiles.hasLargeSource(profile) {
+            if presentedYAML == nil, profiles.hasLargeSource(current) {
                 if pagesReadFor == pagesTaskID {
                     VStack(spacing: ClashTheme.Spacing.row) {
                         ClashEmptyState(
@@ -430,20 +578,25 @@ struct RulesOverviewHost: View {
                  
                  
                  
-                RulesOverviewAdapter(
-                    sourceYAML: presentedYAML ?? profiles.uiProjectedYAML(for: profile),
-                    canInspectActiveRules: canInspectActiveRules,
-                    compileVerdicts: compileVerdicts,
-                    openProxiesGroup: openProxiesGroup,
-                    ownsNavigationContainer: ownsNavigationContainer,
-                    editRules: editRulesPage,
-                    activeRules: {
-                         
-                         
-                         
-                        ActiveRulesView(command: command)
-                    }
-                )
+                let sourceYAML = presentedYAML ?? profiles.uiProjectedYAML(for: current)
+#if os(iOS)
+                 
+                 
+                 
+                ConfigurationRulesPageContextHost(model: profiles, profile: current, session: pageSession,
+                                                  selections: command, editsRules: editsRulesInLibrary,
+                                                  drawsSections: isConfigurationsPage,
+                                                  libraryChanged: libraryChanged,
+                                                  editingInPlace: $editingInPlace) { parts in
+                    adapter(sourceYAML: sourceYAML, page: parts)
+                }
+                 
+                 
+                 
+                .id(current.id)
+#else
+                adapter(sourceYAML: sourceYAML, page: macPage?(current) ?? RulesOverviewPageParts())
+#endif
             }
         }
          
@@ -453,9 +606,10 @@ struct RulesOverviewHost: View {
          
          
          
-        .task(id: pagesTaskID) {
+        .task(id: "\(pagesTaskID)#\(editingInPlace)") {
+            guard !editingInPlace else { return }
             let id = pagesTaskID
-            presentedYAML = await profiles.loadPagesYAML(for: profile)
+            presentedYAML = await profiles.loadPagesYAML(for: current)
             if !Task.isCancelled { pagesReadFor = id }
         }
         .onReceive(NotificationCenter.default.publisher(for: .clashProviderContentChanged)) { note in
@@ -467,7 +621,8 @@ struct RulesOverviewHost: View {
             guard note.userInfo?["profileID"] == nil else { return }
             providerContentGeneration &+= 1
         }
-        .task(id: "\(profile.id)#\(profile.activeRevision ?? "")#\(canInspectActiveRules)#\(providerContentGeneration)") {
+        .task(id: "\(current.id)#\(current.activeRevision ?? "")#\(canInspectActiveRules)#\(providerContentGeneration)#\(editingInPlace)") {
+            guard !editingInPlace else { return }
              
              
              
@@ -476,8 +631,8 @@ struct RulesOverviewHost: View {
              
              
              
-            let isActive = profiles.activeProfileID == profile.id
-            let profileID = profile.id
+            let isActive = profiles.activeProfileID == current.id
+            let profileID = current.id
             let coreHome = ClashAppIdentifiers.appGroupContainer?.appendingPathComponent("working")
             compileVerdicts = await Task.detached(priority: .utility) {
                 var verdicts = isActive
@@ -488,13 +643,14 @@ struct RulesOverviewHost: View {
                 return verdicts
             }.value
         }
-        .task(id: "\(profile.id)#\(profile.activeRevision ?? "")#edits") {
+        .task(id: "\(current.id)#\(current.activeRevision ?? "")#edits#\(editingInPlace)") {
+            guard !editingInPlace else { return }
              
             guard let store = profiles.configurationLibraryStore else {
                 editsRulesInLibrary = false
                 return
             }
-            let profileID = profile.id
+            let profileID = current.id
             editsRulesInLibrary = await Task.detached(priority: .utility) {
                 (try? store.snapshot()).map { Self.editsRules(of: profileID, in: $0) } ?? false
             }.value
@@ -504,25 +660,45 @@ struct RulesOverviewHost: View {
      
      
      
-    @State private var editsRulesInLibrary = false
+     
+    @State private var editsRulesInLibrary: Bool?
 
     nonisolated static func editsRules(of profileID: String, in library: ConfigurationLibrarySnapshot) -> Bool {
-        guard let recipe = library.recipes.first(where: { $0.id == profileID }) else { return false }
+        guard library.recipes.contains(where: { $0.id == profileID }) else { return false }
          
          
-        return library.sources.first { $0.id == recipe.ruleSource.id }?.rulesWrittenInOriginal != true
+        return !keepsRulesInFile(of: profileID, in: library)
     }
 
      
      
      
-    private var editRulesPage: (() -> AnyView)? {
-#if os(iOS)
-        guard editsRulesInLibrary else { return nil }
-        return { [profiles, profile] in AnyView(ConfigurationRulesChapterHost(model: profiles, profileID: profile.id)) }
-#else
-        nil
-#endif
+    nonisolated static func keepsRulesInFile(of profileID: String, in library: ConfigurationLibrarySnapshot) -> Bool {
+        guard let recipe = library.recipes.first(where: { $0.id == profileID }) else { return false }
+        return library.sources.first { $0.id == recipe.ruleSource.id }?.rulesWrittenInOriginal == true
+    }
+
+     
+     
+     
+     
+    private func adapter(sourceYAML: String?, page: RulesOverviewPageParts) -> some View {
+        RulesOverviewAdapter(
+            sourceYAML: sourceYAML,
+            canInspectActiveRules: canInspectActiveRules,
+            compileVerdicts: compileVerdicts,
+            openProxiesGroup: openProxiesGroup,
+            ownsNavigationContainer: ownsNavigationContainer,
+            page: page,
+            activeRules: { [command] in
+                 
+                 
+                 
+                if let command {
+                    ActiveRulesView(command: command)
+                }
+            }
+        )
     }
 }
 
@@ -543,6 +719,10 @@ struct SessionProxiesRailRoot: View {
      
      
     @Binding var stagedOpening: ProxyBrowsingVisibility.Opening
+     
+    var macNodeSourcesPage: ((String) -> AnyView)? = nil
+     
+    var macGroupPages: ProxiesMacGroupPages? = nil
 
     @State private var preparedModel: ProxiesOverviewModel?
     @State private var preparedProfileID: Profile.ID?
@@ -582,8 +762,12 @@ struct SessionProxiesRailRoot: View {
         profileRefreshToken: Int,
         avoidsLiveProviderStore: Bool,
         stagedGroup: Binding<String?>,
-        stagedOpening: Binding<ProxyBrowsingVisibility.Opening> = .constant(.browsing)
+        stagedOpening: Binding<ProxyBrowsingVisibility.Opening> = .constant(.browsing),
+        macNodeSourcesPage: ((String) -> AnyView)? = nil,
+        macGroupPages: ProxiesMacGroupPages? = nil
     ) {
+        self.macNodeSourcesPage = macNodeSourcesPage
+        self.macGroupPages = macGroupPages
         self.vpn = vpn
         self.command = command
         self.nodes = nodes
@@ -686,7 +870,9 @@ struct SessionProxiesRailRoot: View {
                             opening: opening
                         ),
                         ownsNavigationContainer: false,
-                        opening: opening
+                        opening: opening,
+                        macNodeSourcesPage: macNodeSourcesPage,
+                        macGroupPages: macGroupPages
                     )
                 } else {
                     ProgressView()
@@ -705,18 +891,7 @@ struct SessionProxiesRailRoot: View {
             }
         }
         .task(
-            id: PreparationKey(
-                profileID: HomeProfileResolution.workingProfile(
-                    in: profiles
-                )?.id,
-                refreshToken: profileRefreshToken,
-                scriptID: HomeProfileResolution.workingProfile(
-                    in: profiles
-                )?.selectedScriptID,
-                overrides: HomeProfileResolution.workingProfile(
-                    in: profiles
-                )?.proxyNodeOverrides
-            )
+            id: Self.preparationKey(in: profiles, refreshToken: profileRefreshToken)
         ) {
              
              
@@ -807,7 +982,23 @@ struct SessionProxiesRailRoot: View {
         if settled != opening { opening = settled }
     }
 
-    fileprivate struct PreparationKey: Hashable {
+     
+     
+     
+    @MainActor
+    static func preparationKey(in profiles: ProfilesViewModel, refreshToken: Int) -> PreparationKey {
+        let profile = HomeProfileResolution.workingProfile(in: profiles)
+#if os(macOS)
+        return PreparationKey(profileID: profile?.id, refreshToken: refreshToken,
+                              scriptID: profile?.selectedScriptID, overrides: profile?.proxyNodeOverrides,
+                              published: profile.map { profiles.publishedGeneration(of: $0.id) } ?? 0)
+#else
+        return PreparationKey(profileID: profile?.id, refreshToken: refreshToken,
+                              scriptID: profile?.selectedScriptID, overrides: profile?.proxyNodeOverrides)
+#endif
+    }
+
+    struct PreparationKey: Hashable {
         let profileID: Profile.ID?
         let refreshToken: Int
          
@@ -822,6 +1013,18 @@ struct SessionProxiesRailRoot: View {
          
          
         let overrides: ProxyNodeOverrideSpec?
+#if os(macOS)
+         
+         
+         
+         
+         
+         
+         
+         
+         
+        let published: UInt64
+#endif
     }
 
     @MainActor
@@ -1066,6 +1269,8 @@ struct SessionRulesRailRoot: View {
     let canInspectActiveRules: Bool
     @ObservedObject var profiles: ProfilesViewModel
     let openProxiesGroup: (String) -> Void
+     
+    var macPage: ((Profile) -> RulesOverviewPageParts)? = nil
 
     var body: some View {
         if let profile = HomeProfileResolution.workingProfile(
@@ -1077,7 +1282,8 @@ struct SessionRulesRailRoot: View {
                 profiles: profiles,
                 profile: profile,
                 openProxiesGroup: openProxiesGroup,
-                ownsNavigationContainer: false
+                ownsNavigationContainer: false,
+                macPage: macPage
             )
         } else {
             ClashEmptyState(
@@ -1238,7 +1444,10 @@ extension ProxiesOverviewHost {
         let inputs = profiles.uiProjectionInputs(for: profile)
         let cached = profiles.cachedUIProjectedYAML(for: profile)
         var providersDir: URL?
-        if let container = ClashAppIdentifiers.appGroupContainer,
+         
+         
+        if isCurrent,
+           let container = ClashAppIdentifiers.appGroupContainer,
            let store = try? ConfigResourceStore(containerURL: container),
            let identity = try? store.activeIdentity() {
             providersDir = store.providersDirectory(
@@ -1246,17 +1455,399 @@ extension ProxiesOverviewHost {
                 revision: identity.revision
             )
         }
-        return ProxyNodeEditorSheet(
+        let made = ProxyNodeEditorSheet(
             nodeName: inspection.name,
             sourceYAML: inputs.sourceYAML,
             cachedProjection: cached,
             profile: profile,
             providersDir: providersDir,
-            failureCategory: nodes.coreFailureReasons[inspection.name],
-            failureMessage: nodes.coreFailureMessages[inspection.name],
+            failureCategory: isCurrent ? nodes.coreFailureReasons[inspection.name] : nil,
+            failureMessage: isCurrent ? nodes.coreFailureMessages[inspection.name] : nil,
             profiles: profiles
         )
+         
+         
+         
+        let again = reprepare
+        var sheet = made
+#if os(iOS)
+        sheet.library = ProxyNodeLibraryContext(configurationName: shownName, reprepare: { again?() })
+#else
+         
+         
+        if macGroupPages != nil {
+            sheet.library = ProxyNodeLibraryContext(configurationName: shownName, reprepare: { again?() },
+                                                    openSource: macGroupPages?.openNodeSource, originalEditor: macGroupPages?.originalNode,
+                                                    offerUndo: macGroupPages?.offerUndo)
+        }
+#endif
+        return sheet
     }
+}
+
+ 
+ 
+ 
+ 
+ 
+extension ProxiesOverviewHost {
+     
+     
+    @MainActor
+    static func isCurrent(profileID: String, in profiles: ProfilesViewModel) -> Bool {
+        HomeProfileResolution.workingProfile(in: profiles)?.id == profileID
+    }
+
+     
+    var isCurrent: Bool {
+#if os(iOS)
+        Self.isCurrent(profileID: profile.id, in: profiles)
+#else
+        Self.pageIsCurrent(isConfigurationsPage: isConfigurationsPage, profileID: profile.id,
+                           workingProfileID: HomeProfileResolution.workingProfile(in: profiles)?.id)
+#endif
+    }
+
+     
+     
+     
+     
+    static func pageIsCurrent(isConfigurationsPage: Bool, profileID: String, workingProfileID: String?) -> Bool {
+        !isConfigurationsPage || workingProfileID == profileID
+    }
+
+     
+    enum PickRoute: Equatable {
+         
+        case running
+         
+        case currentRecord
+         
+         
+        case thisConfigurationsRecord
+    }
+
+    static func pickRoute(isCurrent: Bool, isConnected: Bool) -> PickRoute {
+        guard isCurrent else { return .thisConfigurationsRecord }
+        return isConnected ? .running : .currentRecord
+    }
+
+     
+     
+     
+    @MainActor
+    @discardableResult
+    static func pick(group: String, member: String, route: PickRoute, profileID: String,
+                     catalog: ProxiesOverviewModel?, profiles: ProfilesViewModel, nodes: NodesModel) -> String? {
+        switch route {
+        case .running:
+             
+             
+            nodes.pickFromPage(group: group, member: member)
+            return nil
+        case .currentRecord, .thisConfigurationsRecord:
+            do {
+                try profiles.updateProxySelection(profileID: profileID, group: group, member: member, catalog: catalog)
+                if route == .currentRecord { nodes.noteOfflinePick(group: group, refusal: nil) }
+                return nil
+            } catch {
+                 
+                 
+                ClashLogStore.shared.append(
+                    "proxy selection refused offline group=\(group) member=\(member): \(error)",
+                    stream: .app,
+                    level: .warning
+                )
+                if route == .currentRecord {
+                    nodes.noteOfflinePick(group: group, refusal: error.localizedDescription)
+                }
+                return error.localizedDescription
+            }
+        }
+    }
+
+     
+     
+     
+     
+    fileprivate struct LiveWiring {
+        var testAll: (() -> Void)?
+        var testGroup: ((String) -> Void)?
+        var testShown: (([ClashProxiesShownMembers]) -> Void)?
+        var loadMembers: ((String) -> Void)?
+        var loadProviderNodes: ((String) -> Void)?
+        var searchMembers: ((String) -> Void)?
+        var setVisibleGroup: ((String?) -> Void)?
+        var updateProvider: ((String) -> Void)?
+        var setGroupExpanded: ((String, Bool) -> Void)?
+        var setGroupsExpanded: (([String], Bool) -> Void)?
+        var cancelLatency: (() -> Void)?
+        var refreshCatalog: (() -> Void)?
+        var unpinGroup: ((String) -> Void)?
+        var testMember: ((String, String?) -> Void)?
+    }
+
+    fileprivate var liveWiring: LiveWiring {
+        guard isCurrent else { return LiveWiring(refreshCatalog: reprepare) }
+        let command = command
+        let nodes = nodes
+        var wiring = LiveWiring()
+        wiring.testAll = {
+            guard command.isConnected else { return }
+            Task { await nodes.testAll() }
+        }
+        wiring.testGroup = { groupName in
+            guard command.isConnected,
+                  let group = nodes.groups.first(where: { $0.name == groupName })
+            else { return }
+            Task { await nodes.test(group: group) }
+        }
+        wiring.testShown = { shown in
+            guard command.isConnected else { return }
+            Task { await nodes.test(shown: shown) }
+        }
+        wiring.loadMembers = { groupName in Task { await nodes.loadRemainingMembers(of: groupName) } }
+        wiring.loadProviderNodes = { providerName in Task { await nodes.loadProviderNodes(named: providerName) } }
+        wiring.searchMembers = { query in Task { await nodes.searchMembers(matching: query) } }
+        wiring.setVisibleGroup = { group in
+            if let group { nodes.setCurrentGroup(group) }
+        }
+        wiring.updateProvider = { name in Task { await updateProvider(name) } }
+        wiring.setGroupExpanded = { group, isExpanded in nodes.setExpanded(isExpanded, group: group) }
+        wiring.setGroupsExpanded = { groups, isExpanded in nodes.setExpanded(isExpanded, groups: groups) }
+        wiring.cancelLatency = { Task { await nodes.cancelLatencyTests(reason: .requested) } }
+        wiring.refreshCatalog = { Task { await nodes.refresh() } }
+        wiring.unpinGroup = { group in Task { await nodes.unfix(group: group) } }
+        wiring.testMember = { name, group in Task { await nodes.test(name, inGroup: group) } }
+        return wiring
+    }
+
+     
+    fileprivate var shownOwnRefusals: [String: ClashGroupActionRefusal] {
+        ownRefusals
+    }
+
+     
+    fileprivate var shownName: String {
+        ProfileRowPresentation.label(for: profile, locale: locale)
+    }
+
+     
+     
+    fileprivate var shownConfiguration: ProxiesPageConfiguration {
+        if let pageConfiguration, pageConfiguration.profileID == profile.id, pageConfiguration.isCurrent == isCurrent {
+            return pageConfiguration
+        }
+        return ProxiesPageConfiguration(profileID: profile.id, name: shownName, isCurrent: isCurrent,
+                                        isComposed: false, sourceNames: nil)
+    }
+
+     
+    fileprivate func readPageConfiguration() async {
+        let id = profile.id
+        let name = shownName
+        let working = isCurrent ? id : nil
+        let locale = locale
+        guard let store = profiles.configurationLibraryStore else { return }
+        let library = try? await Task.detached(priority: .userInitiated) { try store.snapshot() }.value
+        guard !Task.isCancelled else { return }
+        pageConfiguration = ProxiesPageConfiguration.make(profileID: id, name: name, workingProfileID: working,
+                                                          library: library, locale: locale)
+    }
+
+     
+    fileprivate var shownNodeSourcesUpdate: (() -> Void)? {
+        let ids = shownConfiguration.updatableSourceIDs
+        guard !ids.isEmpty else { return nil }
+        return { Task { await updateNodeSources(ids) } }
+    }
+
+     
+     
+     
+     
+    fileprivate func updateNodeSources(_ ids: [String]) async {
+        guard let store = profiles.configurationLibraryStore,
+              let library = try? await Task.detached(priority: .userInitiated, operation: { try store.snapshot() }).value
+        else { return }
+        let feedback = feedback
+        let locale = locale
+        let operation = #"proxies.node-sources.update"#
+        for id in ids {
+            guard let source = library.sources.first(where: { $0.id == id }) else { continue }
+            let label = source.displayLabel(locale: locale)
+            let running = feedback?.show(.loading(title: ClashFeedbackCopy.updating, message: .verbatim(label),
+                                                  accessibilityIdentifier: ConfigurationSourceUpdate.resultIdentifier),
+                                         operation: operation)
+            guard let run = profiles.updateConfigurationSource(source, replacingRules: false, locale: locale,
+                                                               changed: { _ in }, status: { _ in })
+            else {
+                 
+                if let running { feedback?.dismiss(running) }
+                continue
+            }
+            do {
+                let outcome = try await run.value
+                feedback?.answer(running, with: ConfigurationSourceUpdate.result(outcome, label: label,
+                    putBack: profiles.wasPutBack(source.id)), operation: operation)
+            } catch {
+                feedback?.answer(running, with: ConfigurationSourceUpdate.failure(error, label: label, locale: locale),
+                                 operation: operation)
+            }
+        }
+        reprepare?()
+    }
+#if os(iOS)
+    fileprivate var shownConfigurationPage: ClashProxiesConfigurationPage? { shownConfiguration.page() }
+
+     
+     
+    fileprivate var shownNodeSourcesPage: (() -> AnyView)? {
+        guard shownConfiguration.sourceNames != nil else { return nil }
+        let profiles = profiles
+        let id = profile.id
+        return { AnyView(Self.nodeSourcesPage(model: profiles, profileID: id)) }
+    }
+
+     
+     
+    fileprivate var shownAddNodes: (() -> Void)? {
+        guard shownConfiguration.sourceNames != nil else { return nil }
+        return { addingNodes = true }
+    }
+
+     
+     
+     
+    fileprivate var shownGroupPage: ((ConfigurationPolicyGroupSheet.Opening) -> Void)? {
+        guard shownConfiguration.sourceNames != nil else { return nil }
+        return { policyGroupSheet = $0 }
+    }
+    fileprivate var shownInspectGroup: ((String) -> Void)? { shownGroupPage.map { open in { open(.group($0)) } } }
+    fileprivate var shownNewGroup: (() -> Void)? { shownGroupPage.map { open in { open(.adding) } } }
+    fileprivate var shownReorderGroups: (() -> Void)? { shownGroupPage.map { open in { open(.reordering) } } }
+     
+    fileprivate var shownDeleteGroup: ((String) -> Void)? { nil }
+     
+    fileprivate var shownNodeActions: ProxiesNodeActions? { nil }
+
+
+     
+    @MainActor
+    static func nodeSourcesPage(model: ProfilesViewModel, profileID: String) -> ConfigurationNodeSourcesPage {
+        ConfigurationNodeSourcesPage(model: model, profileID: profileID, section: .proxies)
+    }
+
+#else
+     
+     
+    fileprivate var shownConfigurationPage: ClashProxiesConfigurationPage? {
+        ClashMacProxiesRail.page(shownConfiguration, selfBuiltNodes: macSelfBuiltNodes, removableNodes: macRemovableNodes,
+                                 quotesConfigurationName: isConfigurationsPage)
+    }
+
+     
+    fileprivate func readSelfBuiltNodes() async {
+         
+        guard shownConfiguration.sourceNames != nil, let store = profiles.configurationLibraryStore
+        else { macSelfBuiltNodes = []; macRemovableNodes = []; return }
+        let id = profile.id
+        let read = await Task.detached(priority: .userInitiated) { () -> (selfBuilt: [String], removable: [String]) in
+            guard let snapshot = try? store.snapshot() else { return ([], []) }
+            let selfBuilt = ClashMacProxiesRail.selfBuiltNodes(profileID: id, in: snapshot) { record in
+                try OrderedJSON.parse(store.payload(ConfigurationSourceVersion(record)).documentJSON)
+            }
+            return (selfBuilt, ClashMacProxiesRail.removableNodes(profileID: id, in: snapshot, store: store))
+        }.value
+        guard !Task.isCancelled else { return }
+        macSelfBuiltNodes = read.selfBuilt
+        macRemovableNodes = read.removable
+    }
+
+     
+     
+     
+    fileprivate var shownNodeActions: ProxiesNodeActions? {
+        guard shownConfiguration.sourceNames != nil else { return nil }
+        return ProxiesNodeActions(
+            copyYAML: { name in Task { await copyNodeYAML(name) } },
+            remove: { name in Task { await libraryActions(for: name) { actions in
+                await actions.remove(feedback: feedback, locale: locale)
+                 
+                 
+                if let refusal = actions.removalRefusal { feedback?.say(.error(title: .verbatim(refusal), accessibilityIdentifier: "feedback.node.remove.refused"),
+                                                                        operation: "configuration.node.remove") }
+            } } },
+            delete: { name in Task { await libraryActions(for: name) { actions in
+                await actions.delete(feedback: feedback, locale: locale)
+                if let refusal = actions.deletionRefusal {
+                    feedback?.say(.error(title: ClashFeedbackCopy.couldNotDelete(name), message: .verbatim(refusal),
+                                         accessibilityIdentifier: "feedback.node.delete.refused"),
+                                  operation: "library.delete")
+                }
+            } } }
+        )
+    }
+
+     
+    fileprivate func libraryActions(for name: String, _ run: (ProxyNodeLibraryActions) async -> Void) async {
+        let actions = ProxyNodeLibraryActions()
+        let again = reprepare
+        actions.attach(node: name, profileID: profile.id, model: profiles,
+                       context: ProxyNodeLibraryContext(configurationName: shownName, reprepare: { again?() },
+                                                        offerUndo: macGroupPages?.offerUndo),
+                       locale: locale, close: {})
+        await actions.read()
+        await run(actions)
+    }
+
+     
+    fileprivate func copyNodeYAML(_ name: String) async {
+        let yaml = profiles.cachedUIProjectedYAML(for: profile) ?? profiles.uiProjectionInputs(for: profile).sourceYAML
+        let text = await Task.detached(priority: .userInitiated) { () -> String? in
+            guard let yaml, let details = ProxyNodeDetailLookup.details(named: name, yaml: yaml, providersDir: nil) else { return nil }
+            return ProxyNodeDetailLookup.yaml(for: details)
+        }.value
+        guard let text else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+     
+     
+    fileprivate var shownNodeSourcesPage: (() -> AnyView)? {
+        guard shownConfiguration.sourceNames != nil, let macNodeSourcesPage else { return nil }
+        let id = profile.id
+        return { macNodeSourcesPage(id) }
+    }
+    fileprivate var shownAddNodes: (() -> Void)? { nil }
+     
+     
+    fileprivate var shownInspectGroup: ((String) -> Void)? { macGroupPages.map { pages in { name in push(pages.group(profile.id, name)) } } }
+    fileprivate var shownNewGroup: (() -> Void)? { macGroupPages.map { _ in { addingGroup = true } } }
+     
+     
+    fileprivate var shownReorderGroups: (() -> Void)? {
+        guard shownConfiguration.sourceNames != nil, let pages = macGroupPages else { return nil }
+        return { push(pages.list(profile.id)) }
+    }
+    fileprivate var shownDeleteGroup: ((String) -> Void)? { macGroupPages.map { pages in { name in pages.delete(profile.id, name) } } }
+
+     
+     
+     
+    fileprivate var shownOpenNodeSources: (() -> Void)? {
+        guard shownConfiguration.sourceNames != nil, let macNodeSourcesPage else { return nil }
+        let id = profile.id
+        return { push(macNodeSourcesPage(id)) }
+    }
+
+    private func push(_ page: AnyView) {
+        guard let pushRoute else { return }
+        let token = UUID()
+        ClashViewRouteRegistry.set(token, ownership: .oneShot, onReturn: {}) { page }
+        pushRoute(ClashViewRoute(id: token))
+    }
+#endif
 }
 
 extension ProxyBrowsingVisibility.Opening {

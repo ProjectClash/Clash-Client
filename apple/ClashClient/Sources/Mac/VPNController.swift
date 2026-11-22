@@ -100,6 +100,45 @@ final class VPNController: ObservableObject {
      
      
     @Published private(set) var startRefusedByCore: CoreStartRefusal?
+     
+     
+     
+     
+     
+     
+     
+     
+    @Published private(set) var refusalOfThePause: CoreStartRefusal?
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    private(set) var onDemandPausedForRefusal: OnDemandRefusalPause?
+     
+     
+    private var onDemandWrites: UInt64 = 0
+     
+     
+     
+     
+     
+     
+    private var readerOnDemandWritePending = false
+     
+     
+     
+    private var onDemandPauseSaveInFlight = false
+     
+     
+     
+     
+     
+    private var onDemandPauseSaveUnconfirmed = false
 
      
      
@@ -118,8 +157,21 @@ final class VPNController: ObservableObject {
      
      
      
-    var lastErrorReason: String {
-        if let refusal = startRefusedByCore {
+     
+     
+     
+     
+     
+    func handoverFailureReason(handingOver profileID: String?) -> String {
+        Self.handoverFailureReason(handingOver: profileID, refusal: startRefusedByCore, lastError: lastError)
+    }
+
+    static func handoverFailureReason(handingOver profileID: String?, refusal: CoreStartRefusal?,
+                                      lastError: String) -> String {
+        if let refusal {
+            guard profileID.map(refusal.isAbout(selected:)) ?? true else {
+                return MacVPNDisconnectErrorPresentation.genericStartFailureMessage
+            }
             return ClashCopy.string(for: .format(refusal.message, [refusal.words]), locale: Locale.current)
         }
         return CoreStartRefusal.isLead(lastError) ? MacVPNDisconnectErrorPresentation.genericStartFailureMessage : lastError
@@ -227,6 +279,11 @@ final class VPNController: ObservableObject {
     var startupRecord: () -> StartupOutcomeRecord? = {
         StartupOutcomeRecord.read(from: ClashMacAppGroupAccess.readableContainer())
     }
+     
+     
+     
+     
+    var lastDisconnectErrorReader: ((NEVPNConnection) async -> NSError?)?
 
      
      
@@ -393,6 +450,14 @@ final class VPNController: ObservableObject {
     private let connectionStatus: (NEVPNConnection) -> NEVPNStatus
 
     private var userStopInFlight = false
+     
+     
+     
+     
+     
+     
+     
+    private var startReachedSystemSinceStop = false
 
     var clientPreferences: UserDefaults { preferences }
 
@@ -421,6 +486,8 @@ final class VPNController: ObservableObject {
         self.managerReloadCooldown = managerReloadCooldown
         self.systemVPNManagers = systemVPNManagers ?? { try await Self.loadSystemManagers() }
         tunnelSettings = VPNTunnelSettings.load(from: self.preferences)
+         
+        onDemandPausedForRefusal = OnDemandRefusalPause.load(from: self.preferences)
         unrequestedStops = ClashMacAppGroupAccess.isWithheldFromThisProcess
             ? nil : VPNUnrequestedStopLog(defaults: self.preferences)
          
@@ -508,6 +575,10 @@ final class VPNController: ObservableObject {
                     foreignStartSeen = nil
                     answerLibraryGone(issuedAt: seen.at.addingTimeInterval(-2), sinceStop: seen.stopEpoch)
                 }
+                 
+                 
+                 
+                var answersTheAppsOwnStart = false
                 if status == .connected || status == .reasserting {
                     awaitingStartTransition = false
                 } else if awaitingStartTransition,
@@ -517,6 +588,7 @@ final class VPNController: ObservableObject {
                      
                      
                      
+                    answersTheAppsOwnStart = true
                     awaitingStartTransition = false
                     Task { @MainActor [weak self] in
                         await self?.resolveLastDisconnectError(on: failed)
@@ -548,6 +620,20 @@ final class VPNController: ObservableObject {
                 if status == .connecting || status == .connected {
                     userStopInFlight = false
                 }
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                 
+                if !answersTheAppsOwnStart {
+                    let paused = await pauseOnDemandTheSystemKeepsStartingIntoARefusal(
+                        after: "status", recordNotOlderThan: nil)
+                    let current = manager.map { self.connectionStatus($0.connection) } ?? status
+                    if !paused, Self.statusMayMoveThePause(current) { reviewTheOnDemandPause() }
+                }
             }
         }
     }
@@ -575,6 +661,11 @@ final class VPNController: ObservableObject {
             let installed = try await loadManager()
             guard isCurrent() else { return }
             adoptInstalledManager(installed)
+             
+             
+             
+            readerOnDemandWritePending = false
+            onDemandPauseSaveUnconfirmed = false
             if installationReadError != nil { lastError = "" }
              
              
@@ -871,7 +962,7 @@ final class VPNController: ObservableObject {
             manager.protocolConfiguration = proto
             manager.localizedDescription = Self.vpnProfileDescription
             manager.isEnabled = true
-            try Self.armOnDemand(manager, configuration: OnDemandSettings.configuration())
+            try applyOnDemand(to: manager)
             let frozen = IPStackSystemProfileSnapshot(manager)
             try await VPNStartAuthorization.perform(
                 save: { [self] in
@@ -899,6 +990,7 @@ final class VPNController: ObservableObject {
                             ? [Self.userInitiatedStartOption: NSNumber(value: true)]
                             : nil)
                     awaitingStartTransition = true
+                    startReachedSystemSinceStop = true
                     systemTookStart()
                     adoptInstalledManager(manager)
                     lastError = ""
@@ -977,9 +1069,15 @@ final class VPNController: ObservableObject {
         preparingStarts = []
         vpnAuthorization = nil
         userStopInFlight = true
+        startReachedSystemSinceStop = false
         awaitingStartTransition = false
         startNoLongerAwaited()
-        if let manager, Self.disarmOnDemandForUserStop(manager) {
+         
+         
+         
+         
+         
+        if let manager, Self.disarmOnDemandForUserStop(manager) || onDemandPauseSaveInFlight || onDemandPauseSaveUnconfirmed {
              
              
             try? await saveToPreferences(manager, whileIntent: writeIntent, disarmOnly: true)
@@ -1121,14 +1219,21 @@ final class VPNController: ObservableObject {
      
      
      
-    private func resolveLastDisconnectError(on connection: NEVPNConnection) async {
+     
+    func resolveLastDisconnectError(on connection: NEVPNConnection) async {
         let intent = profileWriteIntentGeneration
+         
+        var refusedRecord: StartupOutcomeRecord?
         await VPNStartAuthorization.resolveFailure(
-            fetch: { [self] in await fetchLastDisconnectError(on: connection) },
+            fetch: { [self] in
+                if let read = lastDisconnectErrorReader { return await read(connection) }
+                return await fetchLastDisconnectError(on: connection)
+            },
             isCurrent: { [self] in
-                manager?.connection === connection
+                let status = connectionStatus(connection)
+                return manager?.connection === connection
                     && profileWriteIntentGeneration == intent
-                    && (connection.status == .disconnected || connection.status == .invalid)
+                    && (status == .disconnected || status == .invalid)
             },
             publish: { [self] error in
                 if let error {
@@ -1147,11 +1252,270 @@ final class VPNController: ObservableObject {
                  
                 let record = error?.domain == ClashTunnelStart.startErrorDomain ? startupRecord() : nil
                 let verdict = MacVPNDisconnectErrorPresentation.verdict(
-                    for: error, status: connection.status, record: record, issuedAt: lastStartIssuedAt)
+                    for: error, status: connectionStatus(connection), record: record, issuedAt: lastStartIssuedAt)
                 lastError = verdict.message
                 lastErrorOffersVPNProfileReset = verdict.offersVPNProfileReset
                 startRefusedByCore = verdict.refusal
+                if verdict.refusal != nil { refusedRecord = record }
             })
+         
+         
+         
+        if let refusedRecord, let manager, manager.connection === connection {
+            await pauseOnDemandIfTheCoreRefuses(refusedRecord, on: manager, after: "disconnect", recordNotOlderThan: nil)
+        }
+    }
+
+     
+
+     
+     
+     
+     
+     
+     
+     
+     
+    func applyOnDemand(to manager: NETunnelProviderManager) throws {
+         
+        try Self.armOnDemand(manager, configuration: OnDemandSettings.configuration())
+        onDemandWrites &+= 1
+        readerOnDemandWritePending = true
+    }
+
+
+
+     
+     
+     
+     
+    private var onDemandPauseMayAct: Bool {
+
+
+        return !ClashMacAppGroupAccess.isWithheldFromThisProcess
+    }
+
+     
+     
+     
+     
+     
+     
+     
+    func onDemandPauseNoteForTheReasonSheet(refusesConfiguration: Bool,
+                                            about refused: StartupOutcomeRecord.Revision?) -> ClashDisplayText? {
+        guard refusesConfiguration, let pause = onDemandPausedForRefusal, pause.isAbout(refused),
+              manager?.isOnDemandEnabled == false
+        else { return nil }
+        return .copy(OnDemandRefusalPause.note)
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @discardableResult
+    func pauseOnDemandTheSystemKeepsStartingIntoARefusal(
+        after trigger: String = "foreground",
+        recordNotOlderThan: TimeInterval? = OnDemandRefusalPause.loopRecordFreshness
+    ) async -> Bool {
+        guard onDemandPauseMayAct, !isStarting, !isPreparingStart, !awaitingStartTransition,
+              !systemVPNProfileResetInFlight, !profileWriter.isBusy,
+              let manager, manager.isOnDemandEnabled
+        else { return false }
+        let status = connectionStatus(manager.connection)
+        guard status == .disconnected || status == .invalid else { return false }
+        return await pauseOnDemandIfTheCoreRefuses(startupRecord(), on: manager, after: trigger,
+                                                   recordNotOlderThan: recordNotOlderThan)
+    }
+
+     
+     
+    private static func statusMayMoveThePause(_ status: NEVPNStatus) -> Bool {
+        [.disconnected, .invalid, .connected, .reasserting].contains(status)
+    }
+
+     
+    private func onDemandPauseNow() -> Date {
+
+
+        return Date()
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    func reviewTheOnDemandPause() {
+        guard onDemandPauseMayAct else { return }
+        guard let pause = onDemandPausedForRefusal, let manager else { return sayTheRefusalOfThePause(nil) }
+        let status = connectionStatus(manager.connection)
+        if status == .connected || status == .reasserting { return retireTheOnDemandPause(why: "connected") }
+         
+         
+        if manager.isOnDemandEnabled, !readerOnDemandWritePending { return retireTheOnDemandPause(why: "on-demand-on") }
+         
+         
+        guard let published = onDemandPausePublished() else { return sayTheRefusalOfThePause(nil) }
+        guard pause.isAbout(StartupOutcomeRecord.Revision(profileID: published.profileID, revision: published.revision)) else {
+            return retireTheOnDemandPause(why: "published-changed")
+        }
+        let record = startupRecord()
+        guard pause.stands(given: record) else { return sayTheRefusalOfThePause(nil) }
+         
+         
+        sayTheRefusalOfThePause(CoreStartRefusal.from(record: record, sameAs: record?.message))
+    }
+
+    private func sayTheRefusalOfThePause(_ refusal: CoreStartRefusal?) {
+        if refusalOfThePause != refusal { refusalOfThePause = refusal }
+    }
+
+     
+     
+    private func forgetTheOnDemandPause() {
+        if onDemandPausedForRefusal != nil { onDemandPausedForRefusal = nil }
+        OnDemandRefusalPause.clear(in: preferences)
+        sayTheRefusalOfThePause(nil)
+    }
+
+     
+     
+     
+     
+    private func retireTheOnDemandPause(why: String) {
+        forgetTheOnDemandPause()
+        onDemandPauseLog("vpn on-demand pause over  reason=\(why)")
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @discardableResult
+    private func pauseOnDemandIfTheCoreRefuses(
+        _ record: StartupOutcomeRecord?, on manager: NETunnelProviderManager, after trigger: String,
+        recordNotOlderThan: TimeInterval?
+    ) async -> Bool {
+         
+        guard onDemandPauseMayAct, manager.isOnDemandEnabled,
+              let pause = OnDemandRefusalPause.pause(
+                  for: record, published: onDemandPausePublished(),
+                  onDemandEnabled: manager.isOnDemandEnabled, readerIsStopping: userStopInFlight && !startReachedSystemSinceStop,
+                  notOlderThan: recordNotOlderThan, now: onDemandPauseNow())
+        else { return false }
+        let intent = profileWriteIntentGeneration
+        let writes = onDemandWrites
+        guard Self.disarmOnDemandForUserStop(manager) else { return false }
+        onDemandPauseSaveInFlight = true
+        defer { onDemandPauseSaveInFlight = false }
+        var indeterminate = false
+        do {
+            try await boundedSave(manager, whileIntent: intent, disarmOnly: true)
+        } catch is NETimeoutError {
+             
+             
+             
+             
+             
+            indeterminate = true
+            onDemandPauseSaveUnconfirmed = true
+        } catch {
+             
+             
+             
+             
+            let restored = profileWriteIntentGeneration == intent && onDemandWrites == writes
+            if restored { manager.isOnDemandEnabled = true }
+            onDemandPauseLog("vpn on-demand pause not saved  after=\(trigger) restored=\(restored) error=\(error)")
+            return false
+        }
+         
+         
+        guard onDemandWrites == writes, profileWriteIntentGeneration == intent else { return false }
+        onDemandPausedForRefusal = pause
+        pause.save(to: preferences)
+        if indeterminate {
+            onDemandPauseLog("vpn on-demand pause indeterminate: the save timed out and may still land  id=\(pause.profileID) revision=\(pause.revision) after=\(trigger)")
+        } else {
+            onDemandPauseLog(pause.logLine(profileName: onDemandPauseLabel(pause.profileID), after: trigger))
+        }
+        reviewTheOnDemandPause()
+        return true
+    }
+
+     
+     
+     
+    private func onDemandPausePublished() -> ActiveConfigurationPointer? {
+        guard let container = onDemandPauseContainer,
+              let store = try? ConfigResourceStore(containerURL: container)
+        else { return nil }
+        return store.activeIdentityWithoutLock()
+    }
+
+     
+     
+    private var onDemandPauseContainer: URL? {
+
+
+        return ClashMacAppGroupAccess.readableContainer()
+    }
+
+     
+     
+    private func onDemandPauseLabel(_ profileID: String) -> String? {
+
+
+        guard let container = ClashMacAppGroupAccess.readableContainer() else { return nil }
+        return ProfileStore(fileURL: container.appendingPathComponent("working/store/profiles.json"))
+            .load().first { $0.id == profileID }?.label
+    }
+
+    private func onDemandPauseLog(_ line: String) {
+
+
+        ClashLogStore.shared.append(line, stream: .app, level: .warning)
     }
 
      
@@ -1525,11 +1889,15 @@ final class VPNController: ObservableObject {
              
             let stopAtStart = stopGeneration
             if await start(sinceStop: stopAtStart) {
-                outcome = await settleStart(issuedAt: issued, since: stopAtStart, success: .applied(warning: nil))
+                outcome = await settleStart(issuedAt: issued, since: stopAtStart, success: .applied(warning: nil),
+                                            handingOver: expected?.profileID)
                 settledByTheExtension = true
             } else {
                  
-                outcome = stopGeneration == stopAtStart ? .failed(lastErrorReason) : .savedForNext
+                 
+                 
+                outcome = stopGeneration == stopAtStart
+                    ? .failed(handoverFailureReason(handingOver: expected?.profileID)) : .savedForNext
             }
         case .reload:
              
@@ -1635,7 +2003,7 @@ final class VPNController: ObservableObject {
                         ClashLogStore.shared.append(
                             "reload refused after reconnect, restarting  reason=\(answered)",
                             stream: .app, level: .warning)
-                        outcome = await restartOutcome(since: applyEpoch)
+                        outcome = await restartOutcome(since: applyEpoch, handingOver: expected?.profileID)
                         settledByTheExtension = true
                     case .notSent(let again):
                         ClashLogStore.shared.append(
@@ -1654,7 +2022,7 @@ final class VPNController: ObservableObject {
                     ClashLogStore.shared.append(
                         "reload not delivered, tunnel stuck in transition, restarting  reason=\(why)",
                         stream: .app, level: .warning)
-                    outcome = await restartOutcome(since: applyEpoch)
+                    outcome = await restartOutcome(since: applyEpoch, handingOver: expected?.profileID)
                     settledByTheExtension = true
                 default:
                      
@@ -1697,7 +2065,7 @@ final class VPNController: ObservableObject {
                 ClashLogStore.shared.append(
                     "reload refused, restarting  reason=\(why)",
                     stream: .app, level: .warning)
-                outcome = await restartOutcome(since: applyEpoch)
+                outcome = await restartOutcome(since: applyEpoch, handingOver: expected?.profileID)
                 settledByTheExtension = true
             }
         case .restart:
@@ -1740,7 +2108,7 @@ final class VPNController: ObservableObject {
                  
                 return nil
             } else {
-                outcome = await restartOutcome(since: applyEpoch)
+                outcome = await restartOutcome(since: applyEpoch, handingOver: expected?.profileID)
                 settledByTheExtension = true
             }
         }
@@ -1753,7 +2121,7 @@ final class VPNController: ObservableObject {
         return outcome
     }
 
-    private func restartOutcome(since epoch: UInt) async -> TunnelApplyOutcome {
+    private func restartOutcome(since epoch: UInt, handingOver profileID: String?) async -> TunnelApplyOutcome {
         let issued = Date()
         guard stopGeneration == epoch else {
             {
@@ -1767,11 +2135,11 @@ final class VPNController: ObservableObject {
         guard await forceRestart() else {
              
              
-            return stopGeneration == epoch &+ 1 ? .failed(lastErrorReason) : .savedForNext
+            return stopGeneration == epoch &+ 1 ? .failed(handoverFailureReason(handingOver: profileID)) : .savedForNext
         }
          
          
-        return await settleStart(issuedAt: issued, since: epoch &+ 1, success: .restarted)
+        return await settleStart(issuedAt: issued, since: epoch &+ 1, success: .restarted, handingOver: profileID)
     }
 
      
@@ -1782,7 +2150,7 @@ final class VPNController: ObservableObject {
      
      
     private func settleStart(issuedAt: Date, since stopEpoch: UInt,
-                             success: TunnelApplyOutcome) async -> TunnelApplyOutcome {
+                             success: TunnelApplyOutcome, handingOver profileID: String?) async -> TunnelApplyOutcome {
          
          
         var ticks = 0
@@ -1817,7 +2185,9 @@ final class VPNController: ObservableObject {
         if !connected { answerLibraryGone(issuedAt: issuedAt, sinceStop: stopEpoch) }
         guard let settled = StartupOutcomeRecord.settlement(
             of: StartupOutcomeRecord.read(from: ClashMacAppGroupAccess.readableContainer()),
-            issuedAt: issuedAt, connected: connected, fallbackReason: lastErrorReason) else {
+            issuedAt: issuedAt, connected: connected,
+             
+            fallbackReason: connected ? "" : handoverFailureReason(handingOver: profileID)) else {
             return success
         }
         if case .keptRunning(let reason) = settled {
@@ -2006,10 +2376,7 @@ final class VPNController: ObservableObject {
     {
         do {
             let manager = try await currentOrNewManager()
-            try Self.armOnDemand(
-                manager,
-                configuration: OnDemandSettings.configuration()
-            )
+            try applyOnDemand(to: manager)
             try await saveToPreferences(manager)
             self.manager = manager
             lastError = ""
@@ -2122,11 +2489,27 @@ final class VPNController: ObservableObject {
         }
     }
 
+     
+     
+     
+    private func boundedSave(_ manager: NETunnelProviderManager, whileIntent intent: UInt64, disarmOnly: Bool) async throws {
+        try await Self.withNETimeout(seconds: preferencesReadTimeout, .nePreferencesTimeout) { [self] in
+            try await saveToPreferences(manager, whileIntent: intent, disarmOnly: disarmOnly)
+        }
+    }
+
     private func rawSaveToPreferences(
         _ manager: NETunnelProviderManager, disarmOnly: Bool = false
     ) async throws {
         let frozen = IPStackSystemProfileSnapshot(manager)
+         
+         
+         
+        let carriesReadersOnDemand = !disarmOnly && readerOnDemandWritePending
+        let writes = onDemandWrites
         try await profileWriter.saveConfirmed(frozen, to: manager, disarmOnly: disarmOnly) {
+
+
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, Error>) in
                 manager.saveToPreferences { error in
@@ -2138,6 +2521,16 @@ final class VPNController: ObservableObject {
                 }
             }
         }
+         
+         
+        if disarmOnly { onDemandPauseSaveUnconfirmed = false }
+         
+         
+        guard carriesReadersOnDemand else { return }
+        if onDemandWrites == writes { readerOnDemandWritePending = false }
+         
+        guard onDemandPauseMayAct else { return }
+        forgetTheOnDemandPause()
     }
 
     private func loadFromPreferences(_ manager: NETunnelProviderManager) async throws {

@@ -24,8 +24,19 @@ public struct ConfigurationLibraryRemoval: Equatable, Sendable {
     }
 
      
+     
+    public struct PlacedLocalRuleSet: Equatable, Sendable {
+        public let index: Int
+        public let set: ConfigurationLocalRuleSet
+    }
+
+     
     public let sources: [PlacedSource]
     public let rules: [PlacedRuleScheme]
+     
+     
+     
+    public internal(set) var localRuleSets: [PlacedLocalRuleSet] = []
     public let updateIssues: [ConfigurationUpdateIssue]
      
     public internal(set) var payloads: [ConfigurationSourcePayload]
@@ -50,7 +61,9 @@ public struct ConfigurationLibraryRemoval: Equatable, Sendable {
         init(_ scheme: ConfigurationRuleScheme) { source = nil; self.scheme = scheme }
     }
 
-    public var isEmpty: Bool { sources.isEmpty && rules.isEmpty && updateIssues.isEmpty && recipes.isEmpty }
+    public var isEmpty: Bool {
+        sources.isEmpty && rules.isEmpty && updateIssues.isEmpty && recipes.isEmpty && localRuleSets.isEmpty
+    }
 
      
      
@@ -74,7 +87,12 @@ public struct ConfigurationLibraryRemoval: Equatable, Sendable {
             guard let left = leftRecipes[placed.id] else { return false }
             return Self.sameChoices(now, as: left)
         }
-        return sourcesOK && rulesOK && recipesOK
+         
+         
+        let setsOK = localRuleSets.allSatisfy { placed in
+            !(library.localRuleSets ?? []).contains { $0.id == placed.set.id }
+        }
+        return sourcesOK && rulesOK && recipesOK && setsOK
     }
 
      
@@ -90,11 +108,17 @@ public struct ConfigurationLibraryRemoval: Equatable, Sendable {
      
      
      
-    static func restoring(_ before: ConfigurationRecipe, onto now: ConfigurationRecipe) -> ConfigurationRecipe {
+     
+     
+     
+     
+    static func restoring(_ before: ConfigurationRecipe, onto now: ConfigurationRecipe,
+                          left: ConfigurationRecipe? = nil) -> ConfigurationRecipe {
         let current = Dictionary(now.sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var restored = now
         restored.sources = before.sources.map { current[$0.id] ?? $0 }
         restored.nodeScopes = before.nodeScopes
+        if let left, now.ruleSource == left.ruleSource { restored.ruleSource = before.ruleSource }
         return restored
     }
 }
@@ -127,6 +151,10 @@ extension ConfigurationLibraryStore {
         }
         var removal = ConfigurationLibraryRemoval(sources: sources, rules: rules, updateIssues: issues, payloads: payloads,
                                                   leftSources: leftSources, leftRules: leftRules)
+        let setsLeft = Set((candidate.localRuleSets ?? []).map(\.id))
+        removal.localRuleSets = (before.localRuleSets ?? []).enumerated().compactMap { index, set in
+            setsLeft.contains(set.id) ? nil : ConfigurationLibraryRemoval.PlacedLocalRuleSet(index: index, set: set)
+        }
         let after = Dictionary(candidate.recipes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for recipe in before.recipes {
             guard let left = after[recipe.id], left != recipe else { continue }
@@ -193,6 +221,13 @@ extension ConfigurationLibraryStore {
                 candidate.rules.insert(placed.scheme, at: min(placed.index, candidate.rules.count))
             }
         }
+        if !removal.localRuleSets.isEmpty {
+            var sets = candidate.localRuleSets ?? []
+            for placed in removal.localRuleSets.sorted(by: { $0.index < $1.index }) {
+                sets.insert(placed.set, at: min(placed.index, sets.count))
+            }
+            candidate.localRuleSets = sets
+        }
         if !removal.updateIssues.isEmpty {
             var issues = candidate.updateIssues ?? []
             for issue in removal.updateIssues where !issues.contains(issue) { issues.append(issue) }
@@ -204,7 +239,8 @@ extension ConfigurationLibraryStore {
         var compositions: [String: ConfigurationComposition] = [:]
         for recipe in removal.recipes {
             guard let index = candidate.recipes.firstIndex(where: { $0.id == recipe.id }) else { continue }
-            var restored = ConfigurationLibraryRemoval.restoring(recipe, onto: candidate.recipes[index])
+            var restored = ConfigurationLibraryRemoval.restoring(recipe, onto: candidate.recipes[index],
+                                                                 left: removal.leftRecipes[recipe.id])
             guard let composition = try? composition(of: restored, in: candidate, held: removal.payloads,
                                                      resolveInput: resolveInput) else { continue }
             restored.droppedRules = composition.droppedRules.isEmpty ? nil : composition.droppedRules

@@ -73,6 +73,7 @@
 "Clash couldn't connect. Try again." = "Clash couldn't connect. Try again.";
 "Clash couldn't do that" = "Clash couldn't do that";
 "Clash couldn't read its saved data" = "Clash couldn't read its saved data";
+"Clash couldn’t start: %@" = "Clash couldn’t start: %@";
 "Clash didn't confirm the change. Check whether it took effect." = "Clash didn't confirm the change. Check whether it took effect.";
 "Clash didn't respond in time" = "Clash didn't respond in time";
 "Clash disconnected. Connect again to continue." = "Clash disconnected. Connect again to continue.";
@@ -87,6 +88,7 @@
 "Configuration store limits are invalid" = "Configuration store limits are invalid";
 "Connect Automatically Not Changed" = "Connect Automatically Not Changed";
 "Connect Automatically Not Confirmed Yet" = "Connect Automatically Not Confirmed Yet";
+"Connect Automatically is paused. It resumes the next time you connect." = "Connect Automatically is paused. It resumes the next time you connect.";
 "Connect Clash first." = "Connect Clash first.";
 "Connect automatically" = "Connect automatically";
 "Connect directly, without a proxy" = "Connect directly, without a proxy";
@@ -424,6 +426,7 @@
 "There is no External Controller setting." = "There is no External Controller setting.";
 "This URL is a node list, not a configuration. Choose Default Rules or Lazy Rules for this profile." = "This URL is a node list, not a configuration. Choose Default Rules or Lazy Rules for this profile.";
 "This address is already in the list, as “%@”." = "This address is already in the list, as “%@”.";
+"This configuration can’t be used: %@" = "This configuration can’t be used: %@";
 "This configuration is too large to run an override script." = "This configuration is too large to run an override script.";
 "This group picks its own member." = "This group picks its own member.";
 "This item is still required, or is missing." = "This item is still required, or is missing.";

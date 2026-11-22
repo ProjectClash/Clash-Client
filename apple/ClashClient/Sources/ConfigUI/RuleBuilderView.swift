@@ -343,6 +343,7 @@ struct GeoValuePickerView: View {
                     text: $query,
                     prompt: Text("Search code or name")
                 )
+                .clashBottomSearchClearance()
             }
         }
         .clashPageTitle(.copy(title))

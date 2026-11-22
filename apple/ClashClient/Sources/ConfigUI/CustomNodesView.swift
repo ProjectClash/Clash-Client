@@ -181,10 +181,17 @@ struct CustomNodesView: View {
      
     @State private var fieldsLeftBehind = ""
      
+    @State private var pasteRefusal: ShareLinkPasteRefusal?
+     
      
      
      
     @State private var pastedNode: PastedNode?
+     
+     
+    @State private var writesAfterRefusal = false
+     
+    @Environment(\.configurationFieldCopy) private var fieldCopy
 
     init(
         profile: Profile,
@@ -236,11 +243,13 @@ struct CustomNodesView: View {
             ownsNavigationContainer: ownsNavigationContainer
         ) {
             VStack(spacing: 0) {
-                if let tabHeader { tabHeader(hasUnsavedEdits).disabled(isBusy) }
+                if let tabHeader { tabHeader(hasUnsavedEdits || pastedNode != nil).disabled(isBusy) }
                 content
             }
         }
         .accessibilityIdentifier("custom-nodes")
+         
+        .onDisappear { pasteRefusal = nil }
         .onChange(of: addRequested) { requested in
             guard requested else { return }
             addRequested = false
@@ -296,7 +305,9 @@ struct CustomNodesView: View {
          
          
         .clashRegistersDeparture(
-            isDirty: hasUnsavedEdits || !pendingRenames.isEmpty,
+             
+             
+            isDirty: hasUnsavedEdits || pastedNode != nil || !pendingRenames.isEmpty,
             isBusy: isBusy,
              
             saveAnswering: { answer in
@@ -342,7 +353,7 @@ struct CustomNodesView: View {
                  
                 if ownsNavigationContainer, !insideProductModal {
                     Button("Cancel") {
-                        if hasUnsavedEdits {
+                        if hasUnsavedEdits || pastedNode != nil {
                             asksAboutUnsaved = true
                         } else {
                             dismiss()
@@ -362,7 +373,9 @@ struct CustomNodesView: View {
                 } label: {
                     ClashActionProgressLabel(.copy(isFirstConfigurationStep ? "Next" : "Save"), isBusy: isBusy)
                 }
-                .disabled(isBusy || !hasUnsavedEdits)
+                 
+                 
+                .disabled(isBusy || !(hasUnsavedEdits || pastedNode != nil))
                 .accessibilityIdentifier("custom-nodes.save")
             }
         }
@@ -397,7 +410,10 @@ struct CustomNodesView: View {
             ClashCopy.key("Could Not Save"),
             isPresented: showsError
         ) {
-            Button("OK", role: .cancel) { errorMessage = "" }
+            Button("OK", role: .cancel) {
+                errorMessage = ""
+                writeTheRestAfterRefusal()
+            }
         } message: {
             Text(clash: .copy(errorMessage))
         }
@@ -409,7 +425,12 @@ struct CustomNodesView: View {
 
 
     private var showsError: Binding<Bool> {
-        Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })
+        Binding(get: { !errorMessage.isEmpty }, set: {
+            if !$0 {
+                errorMessage = ""
+                writeTheRestAfterRefusal()
+            }
+        })
     }
 
      
@@ -474,6 +495,23 @@ struct CustomNodesView: View {
 
              
              
+             
+            if let pasteRefusal {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ClashCopy.key(ShareLinkPasteRefusal.title)).font(.subheadline.weight(.semibold))
+                    Text(clash: pasteRefusal.reason)
+                        .font(.subheadline)
+                    if let words = pasteRefusal.coreSentence {
+                        Text(verbatim: words).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
+                .padding(.vertical, 2)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("custom-nodes.paste.refusal")
+            }
+
+             
+             
             if let pastedNode {
                  
                  
@@ -524,6 +562,29 @@ struct CustomNodesView: View {
         let json: String
         let name: String
         let type: String
+    }
+
+     
+     
+     
+     
+     
+     
+    static func savingWithPasted(
+        _ staged: [[String: Any]],
+        pasted: PastedNode,
+        catalog: ConfigurationFieldCatalog?,
+        copy: ConfigurationFieldCopy,
+        locale: Locale
+    ) -> (payload: [[String: Any]], refusal: ClashDisplayText?) {
+        do {
+            let json = try ProxyNodeDetailsView.newNodeJSON(
+                for: record(fromNodeJSON: pasted.json) ?? newNodeTemplate, catalog: catalog, copy: copy, locale: locale
+            )
+            return (try CustomNodeAppend.appended(payload: staged, editedJSON: json), nil)
+        } catch {
+            return (staged, ProxyNodeDetailsView.reason(for: error))
+        }
     }
 
      
@@ -738,6 +799,7 @@ struct CustomNodesView: View {
      
     private func importShareLinks(_ raw: String) {
         errorMessage = ""
+        pasteRefusal = nil
          
          
         Task { @MainActor in
@@ -746,11 +808,12 @@ struct CustomNodesView: View {
                     try ShareLinkNodeImport.imported(from: raw)
                 }.value
                 guard nodes.count == 1, let node = nodes.first else {
-                    errorMessage = "Paste one share link at a time. A whole panel's worth of links is a profile URL — add it as a profile."
+                    pasteRefusal = ShareLinkPasteRefusal(reason: .copy(
+                        "Paste one share link at a time. A whole panel's worth of links is a profile URL — add it as a profile."))
                     return
                 }
                 guard let record = Self.record(fromNodeJSON: node) else {
-                    errorMessage = ShareLinkNodeImportError.notNodes.localizedDescription
+                    pasteRefusal = ShareLinkPasteRefusal(ShareLinkNodeImportError.notNodes)
                     return
                 }
                 pastedNode = PastedNode(json: node, name: record.name, type: record.type)
@@ -759,7 +822,9 @@ struct CustomNodesView: View {
                  
                 fieldsLeftBehind = notHonoured.map(\.message).joined(separator: "\n")
             } catch {
-                errorMessage = error.localizedDescription
+                 
+                 
+                pasteRefusal = ShareLinkPasteRefusal(error)
             }
         }
     }
@@ -882,17 +947,31 @@ struct CustomNodesView: View {
      
      
      
-    private func commitEdits(completion: @escaping (Bool) -> Void = { _ in }) {
+     
+     
+     
+     
+     
+     
+     
+    private func commitEdits(takingPasted: Bool = true, completion: @escaping (Bool) -> Void = { _ in }) {
         guard !isBusy else { completion(false); return }
         isSaving = true
         Task { @MainActor in
             defer { isSaving = false }
-            await writeEdits(completion: completion)
+            await writeEdits(takingPasted: takingPasted, completion: completion)
         }
     }
 
+     
+    private func writeTheRestAfterRefusal() {
+        guard writesAfterRefusal else { return }
+        writesAfterRefusal = false
+        commitEdits(takingPasted: false)
+    }
+
     @MainActor
-    private func writeEdits(completion: (Bool) -> Void) async {
+    private func writeEdits(takingPasted: Bool, completion: (Bool) -> Void) async {
         let began = DispatchTime.now().uptimeNanoseconds
         defer {
             ClashPerf.note(
@@ -900,12 +979,31 @@ struct CustomNodesView: View {
                     + " rows=\(customRows.count) renames=\(pendingRenames.count)"
             )
         }
-        guard hasUnsavedEdits || !pendingRenames.isEmpty else {
+        guard hasUnsavedEdits || !pendingRenames.isEmpty || pastedNode != nil else {
+            completion(true)
+            return
+        }
+        var payload = customPayload
+        var tookPasted = false
+        if takingPasted, let pastedNode {
+             
+             
+            let catalog = try? await ProfilesViewModel.loadSyntaxCatalog().fieldCatalog
+            let saving = Self.savingWithPasted(payload, pasted: pastedNode, catalog: catalog, copy: fieldCopy, locale: locale)
+            if let refusal = saving.refusal {
+                errorMessage = ClashCopy.string(for: refusal, locale: locale)
+                writesAfterRefusal = hasUnsavedEdits || !pendingRenames.isEmpty
+                completion(false)
+                return
+            }
+            payload = saving.payload
+            tookPasted = true
+        }
+        guard tookPasted || hasUnsavedEdits || !pendingRenames.isEmpty else {
             completion(true)
             return
         }
         do {
-            var payload = customPayload
             for rename in pendingRenames {
                 payload = ProxyNodeRename.applying(
                     to: payload, from: rename.old, to: rename.new
@@ -935,6 +1033,11 @@ struct CustomNodesView: View {
             pendingRenames = []
             customRows = InlineProxyRow.rows(from: payload)
             openedWith = customRows
+             
+            if tookPasted {
+                pastedNode = nil
+                fieldsLeftBehind = ""
+            }
             applyEdits?()
             completion(true)
             onSaved?()
@@ -949,6 +1052,9 @@ struct CustomNodesView: View {
     private func discardEdits() {
         customRows = openedWith
         pendingRenames = []
+         
+        pastedNode = nil
+        fieldsLeftBehind = ""
     }
 
      

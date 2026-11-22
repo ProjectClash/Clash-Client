@@ -30,6 +30,38 @@ enum ClashHomeHeaderCompaction {
         let applied = min(max(distance - precedingReduction, 0), reduction)
         return expanded - applied
     }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    static func statusSlotHeight(oneLine: CGFloat, measured: CGFloat, wraps: Bool, lines: Int) -> CGFloat {
+        guard wraps else { return oneLine }
+        return min(max(measured, oneLine), oneLine * CGFloat(max(lines, 1)) * 1.5)
+    }
+}
+
+ 
+struct ClashHomeMeasuredLine: Equatable {
+    var id = ""
+    var height: CGFloat = 0
+
+     
+    func height(of id: String?) -> CGFloat {
+        id == self.id ? height : 0
+    }
+
+     
+     
+    func differs(from other: ClashHomeMeasuredLine) -> Bool {
+        id != other.id || abs(height - other.height) > 0.5
+    }
 }
 
 final class ClashHomeHeaderCompactionState: ObservableObject {

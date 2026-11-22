@@ -291,7 +291,7 @@ public struct ClashActiveRulesView: View {
                         )
                         .foregroundStyle(.secondary)
 
-                        Text(clash: .copy(emptyMessage))
+                        Text(clash: .copy(Self.emptyMessage(isConnected: isConnected)))
                             .foregroundStyle(.secondary)
 
                         if isRefreshing {
@@ -354,6 +354,7 @@ public struct ClashActiveRulesView: View {
             }
         }
         .searchable(text: $query, prompt: "Search active rules")
+        .clashBottomSearchClearance()
         .clashPageTitle("Active Rules")
         .task {
             await refresh()
@@ -374,15 +375,32 @@ public struct ClashActiveRulesView: View {
             await countEntries()
         }
         .refreshable {
-            await refresh()
-             
-             
-             
-            ruleSetPass &+= 1
-            asked = Set(counted.keys.filter { $0.kind != .ruleSet })
-            await countEntries()
+            await refreshAgain()
         }
+#if os(macOS)
+         
+         
+         
+        .clashToolbarUnlessInPanel {
+            ToolbarItem(placement: .primaryAction) {
+                Button { Task { await refreshAgain() } } label: { Text("Refresh") }
+                    .disabled(isRefreshing)
+                    .accessibilityIdentifier("runtime.active-rules.refresh")
+            }
+        }
+#endif
         .accessibilityIdentifier("runtime.active-rules.list")
+    }
+
+     
+     
+     
+     
+    private func refreshAgain() async {
+        await refresh()
+        ruleSetPass &+= 1
+        asked = Set(counted.keys.filter { $0.kind != .ruleSet })
+        await countEntries()
     }
 
     private var filteredRules: [ClashRuntimeRule] {
@@ -427,12 +445,15 @@ public struct ClashActiveRulesView: View {
         }
     }
 
-    private var emptyMessage: String {
-        if isConnected {
-            "No active rules were returned. Pull to refresh."
-        } else {
-            "Connect Clash, then pull to refresh."
-        }
+     
+     
+    public static func emptyMessage(isConnected: Bool) -> String {
+#if os(macOS)
+        isConnected ? "Couldn't read the rules in use. Click Refresh to try again."
+            : "Not connected, so the rules in use can't be read. Connect, then click Refresh."
+#else
+        isConnected ? "No active rules were returned. Pull to refresh." : "Connect Clash, then pull to refresh."
+#endif
     }
 }
 

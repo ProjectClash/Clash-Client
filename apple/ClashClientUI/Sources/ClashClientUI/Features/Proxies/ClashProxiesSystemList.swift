@@ -50,6 +50,8 @@ struct ClashProxiesSystemList<Icon: View>: View {
     let memberOrder: (ClashProxyGroupSnapshot) -> [ClashProxyMemberSnapshot]
     let latencyPulse: AnyPublisher<ClashLatencyPulse, Never>?
     let latencyPulseSnapshot: (() -> ClashLatencyPulse)?
+     
+    var nodeSourcesPage: (() -> AnyView)? = nil
     let density: ClashProxiesRowDensity
      
      
@@ -157,6 +159,9 @@ struct ClashProxiesSystemList<Icon: View>: View {
 
     private var listContent: some View {
         List {
+            if !isSearching {
+                nodeSourcesRow
+            }
             switch snapshot.proxies.effectiveCatalogState {
             case .disconnected:
                 stateRow(
@@ -186,6 +191,66 @@ struct ClashProxiesSystemList<Icon: View>: View {
 
             if !snapshot.proxies.providers.isEmpty {
                 providersSection
+            }
+            if !isSearching {
+                newGroupSection
+            }
+        }
+    }
+
+     
+     
+    @ViewBuilder
+    private var newGroupSection: some View {
+        if snapshot.proxies.configurationPage?.offersNewGroup == true {
+            Section {
+                Button {
+                    send(.newGroup)
+                } label: {
+                    Label {
+                        Text(ClashCopy.key("New Policy Group"))
+                    } icon: {
+                        icon(.plus)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .foregroundStyle(.tint)
+                .accessibilityIdentifier("proxies.newGroup")
+            }
+        }
+    }
+
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+    @ViewBuilder
+    private var nodeSourcesRow: some View {
+        if let names = snapshot.proxies.configurationPage?.nodeSourceNames, let nodeSourcesPage {
+            Section {
+                ClashRoutedViewLink {
+                    nodeSourcesPage()
+                } label: {
+                    HStack(spacing: ClashTheme.Spacing.row) {
+                        Text(ClashCopy.key("Node Sources"))
+                        Spacer(minLength: 8)
+                         
+                         
+                        Text(clash: ClashProfileSourcesSummary.value(names))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .accessibilityIdentifier("proxies.nodeSources")
             }
         }
     }
@@ -297,7 +362,13 @@ struct ClashProxiesSystemList<Icon: View>: View {
                         locateRequest = ClashProxyLocateRequest(group: group.name, member: member, opened: opened,
                                                                 awaitsWhole: carried)
                     }
-                }
+                },
+                 
+                showsTest: snapshot.proxies.offersLatencyTests,
+                 
+                 
+                info: snapshot.proxies.configurationPage?.offersGroupDetails == true
+                    ? { send(.inspectGroup(name: group.name)) } : nil
             )
             .equatable()
         }
@@ -321,6 +392,18 @@ struct ClashProxiesSystemList<Icon: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("proxies.refusal.\(group.name)")
+            }
+             
+             
+            if snapshot.proxies.configurationPage?.groupsAwaitingDownload.contains(group.name) == true {
+                Button {
+                    send(.updateNodeSources)
+                } label: {
+                    Text(ClashCopy.key("Update Node Sources"))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .foregroundStyle(.tint)
+                .accessibilityIdentifier("proxies.group.updateNodeSources.\(group.name)")
             }
             if isOpen {
                 memberRows(group)
@@ -393,7 +476,8 @@ struct ClashProxiesSystemList<Icon: View>: View {
                     : nil,
                  
                  
-                showsLatency: !snapshot.proxies.isEmptyGroup(member),
+                 
+                showsLatency: snapshot.proxies.offersLatencyTests && !snapshot.proxies.isEmptyGroup(member),
                 nodeScripts: snapshot.proxies.scriptsForNodes,
                 runScript: { send(.runNodeScript(id: $0.id, node: member.name)) }
             )
@@ -452,6 +536,7 @@ struct ClashProxiesSystemList<Icon: View>: View {
                         )
                             ? { send(.inspectMember(name: node.name)) }
                             : nil,
+                        showsLatency: snapshot.proxies.offersLatencyTests,
                         nodeScripts: snapshot.proxies.scriptsForNodes,
                         runScript: { send(.runNodeScript(id: $0.id, node: node.name)) }
                     )
@@ -483,7 +568,9 @@ struct ClashProxiesSystemList<Icon: View>: View {
                          
                          
                          
-                        if provider.isUpdatable {
+                         
+                         
+                        if provider.isUpdatable, snapshot.proxies.offersProviderUpdates {
                             Button {
                                 send(.updateProvider(name: provider.name))
                             } label: {
@@ -724,6 +811,7 @@ struct ClashProxyMemberListRow: View, Equatable {
     @State private var latencyTap: ClashLatencyTap?
     @State private var liveRoute: String?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.locale) private var locale
 
     private var shownLatency: ClashProxyLatencyState {
         liveLatency ?? initialLatency
@@ -1005,7 +1093,7 @@ struct ClashProxyMemberListRow: View, Equatable {
         } else if row.isEmptyGroup {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text(clash: .verbatim(row.type.uppercased()))
+                    Text(clash: ClashProxyGroupKindName.text(for: row.type, locale: locale, otherwise: row.type.uppercased()))
                     Text(clash: .copy("· No nodes"))
                 }
                 .lineLimit(1)
@@ -1030,7 +1118,7 @@ struct ClashProxyMemberListRow: View, Equatable {
              
              
             HStack(spacing: 4) {
-                Text(clash: .verbatim(row.type.uppercased()))
+                Text(clash: ClashProxyGroupKindName.text(for: row.type, locale: locale, otherwise: row.type.uppercased()))
                     .fixedSize()
                 ClashRegionalFlag.label("· \(route)", pointSize: 11, relativeTo: .caption2)
                     .lineLimit(1)
@@ -1040,7 +1128,7 @@ struct ClashProxyMemberListRow: View, Equatable {
             .foregroundStyle(.secondary)
             .lineLimit(1)
         } else {
-            Text(clash: .verbatim(row.type.uppercased()))
+            Text(clash: ClashProxyGroupKindName.text(for: row.type, locale: locale, otherwise: row.type.uppercased()))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -1147,6 +1235,8 @@ struct ClashProxyGroupHeaderRow: View, Equatable {
             && a.showsUnpin == b.showsUnpin
             && a.countSlot == b.countSlot
             && (a.locate == nil) == (b.locate == nil)
+            && a.showsTest == b.showsTest
+            && (a.info == nil) == (b.info == nil)
     }
 
     let group: ClashProxyGroupSnapshot
@@ -1178,6 +1268,11 @@ struct ClashProxyGroupHeaderRow: View, Equatable {
      
      
     var locate: (() -> Void)? = nil
+     
+     
+    var showsTest = true
+     
+    var info: (() -> Void)? = nil
 
      
      
@@ -1255,6 +1350,7 @@ struct ClashProxyGroupHeaderRow: View, Equatable {
     }
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.locale) private var locale
     @State private var live: LiveLatency?
 
     private var latency: ClashProxyLatencyState {
@@ -1278,7 +1374,8 @@ struct ClashProxyGroupHeaderRow: View, Equatable {
                     HStack(spacing: 8) {
                         unfixButton
                         locateButton
-                        testButton
+                        if showsTest { testButton }
+                        infoButton
                         Spacer(minLength: 8)
                         countButton
                     }
@@ -1288,7 +1385,8 @@ struct ClashProxyGroupHeaderRow: View, Equatable {
                     titleButton
                     unfixButton
                     locateButton
-                    testButton
+                    if showsTest { testButton }
+                    infoButton
                     countButton
                 }
             }
@@ -1375,7 +1473,8 @@ struct ClashProxyGroupHeaderRow: View, Equatable {
     private var subtitleParts: some View {
          
          
-        Text(clash: .verbatim(group.type.uppercased()))
+         
+        Text(clash: ClashProxyGroupKindName.text(for: group.type, locale: locale, otherwise: group.type.uppercased()))
             .fixedSize()
         if group.isEmpty {
             Text(clash: .copy("· No nodes"))
@@ -1384,7 +1483,7 @@ struct ClashProxyGroupHeaderRow: View, Equatable {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        if !group.isEmpty,
+        if showsTest, !group.isEmpty,
            case .measured(let milliseconds) = latency {
             Text(clash: .verbatim("(\(milliseconds) ms)"))
                 .monospacedDigit()
@@ -1433,6 +1532,23 @@ struct ClashProxyGroupHeaderRow: View, Equatable {
             .buttonStyle(.borderless)
             .accessibilityLabel(Text(ClashCopy.key("Jump to Current Node")))
             .accessibilityIdentifier("proxies.locate.\(group.name)")
+        }
+    }
+
+     
+     
+    @ViewBuilder
+    private var infoButton: some View {
+        if let info {
+            Button(action: info) {
+                Image(systemName: "info.circle")
+                    .font(.body)
+                    .frame(minWidth: 28, minHeight: 44)
+                    .contentShape(Rectangle().inset(by: -8))
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(Text(ClashCopy.key("Policy Group Details")))
+            .accessibilityIdentifier("proxies.group.info.\(group.name)")
         }
     }
 

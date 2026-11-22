@@ -73,6 +73,13 @@ public enum ClashFeedbackCopy {
     }
 
      
+     
+     
+    public static func removeActionName(_ name: String) -> ClashDisplayText {
+        .format("Remove “%@”", [name])
+    }
+
+     
     public static let couldNotUndo: ClashDisplayText = .copy("Couldn’t Undo")
 
      
@@ -120,7 +127,7 @@ public enum ClashFeedbackCopy {
     public static let keys: [String] = [
         "Copied", "Copied %@", "Updated “%@”", "“%@” Is Up to Date", "Couldn’t Update “%@”",
         "Updated %@, %@ Failed", "None Updated, %@ Failed", "Up to Date", "All %@ Are Up to Date", "Updated %@", "Nothing to Update", "Updating…",
-        "Added “%@”", "Deleted “%@”", "Couldn’t Delete “%@”", "Restored “%@”", "Delete “%@”", "Couldn’t Undo",
+        "Added “%@”", "Deleted “%@”", "Couldn’t Delete “%@”", "Restored “%@”", "Delete “%@”", "Remove “%@”", "Couldn’t Undo",
         "Saved", "Couldn’t Save", "Exported “%@”", "Removed Saved Credentials from the Link",
         "Switched to “%@”", "Couldn’t Switch to “%@”", "Outbound Mode Not Changed", "Couldn’t Check the External IP",
         "Details", "Try Again", "Undo", "Show in Finder",

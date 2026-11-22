@@ -120,6 +120,53 @@ extension View {
 }
 
  
+ 
+ 
+ 
+ 
+ 
+@MainActor
+enum InstallLinkNoticeRelay {
+    static let operation = "profiles.install-link"
+
+    static func say(_ notice: ProfilesViewModel.InstallLinkNotice, to center: ClashFeedbackCenter) {
+        let presentation: ClashFeedbackPresentation
+        switch notice.kind {
+        case .schemeKept:
+             
+            presentation = .information(title: notice.title, message: notice.message,
+                                        accessibilityIdentifier: "feedback.profiles.install-link")
+        case .originalUnavailable:
+             
+            presentation = .warning(title: notice.title, message: notice.message,
+                                    accessibilityIdentifier: "feedback.profiles.install-link")
+        }
+        center.show(presentation, operation: operation)
+    }
+}
+
+ 
+ 
+private struct InstallLinkNoticeRelayHost: ViewModifier {
+    let profiles: ProfilesViewModel
+    @Environment(\.clashFeedback) private var center
+
+    func body(content: Content) -> some View {
+        content.onReceive(profiles.installLinkNotices) { notice in
+            guard let center else { return }
+            InstallLinkNoticeRelay.say(notice, to: center)
+        }
+    }
+}
+
+extension View {
+     
+    func clashInstallLinkNoticeRelay(_ profiles: ProfilesViewModel) -> some View {
+        modifier(InstallLinkNoticeRelayHost(profiles: profiles))
+    }
+}
+
+ 
 private struct ClashFeedbackSceneProbe: UIViewRepresentable {
     let found: (UIWindowScene) -> Void
 

@@ -178,7 +178,12 @@ struct BackupRestoreView: View {
             } header: {
                 Text("Local")
             } footer: {
-                Text("This file carries your credentials so a restore works straight away. Treat it as private.")
+                VStack(alignment: .leading, spacing: ClashTheme.Spacing.tight) {
+                    Text("This file carries your credentials so a restore works straight away. Treat it as private.")
+                     
+                     
+                    Text("Restoring this backup with an earlier version of Clash brings back nodes removed from configurations.")
+                }
             }
 
             if let status {

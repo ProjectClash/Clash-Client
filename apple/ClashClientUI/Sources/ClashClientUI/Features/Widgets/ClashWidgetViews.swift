@@ -64,6 +64,10 @@ public enum ClashWidgetSize {
  
 public struct ClashWidgetMainModel: Equatable {
     public let title: String
+     
+     
+     
+    public let group: String?
     public let node: String?
     public let phase: ClashWidgetPhase
     public let mode: ClashWidgetMode?
@@ -80,9 +84,13 @@ public struct ClashWidgetMainModel: Equatable {
 
      
      
-    public var headline: String { node ?? title }
      
-    public var subtitle: String? { node == nil ? nil : title }
+    public var headline: String {
+        guard let group else { return node ?? title }
+        return node.map { "\(group) · \($0)" } ?? group
+    }
+     
+    public var subtitle: String? { node == nil && group == nil ? nil : title }
 
      
      
@@ -104,10 +112,18 @@ public struct ClashWidgetMainModel: Equatable {
          
          
          
-        let firstGroup = facts?.firstGroup
-        let resting = firstGroup.flatMap { facts?.selections[$0] }
-            ?? (snapshot?.group?.name == firstGroup ? snapshot?.group?.now : nil)
-        node = connected ? fresh?.egress : (firstGroup == nil ? nil : resting)
+         
+         
+         
+         
+         
+        let resting = connected ? nil : facts?.firstGroup
+        let picked = resting.flatMap { name -> String? in
+            guard facts?.selectors.map({ $0.contains(name) }) ?? true else { return nil }
+            return facts?.selections[name] ?? (snapshot?.group?.name == name ? snapshot?.group?.now : nil)
+        }
+        group = resting
+        node = connected ? fresh?.egress : picked
         mode = connected ? fresh?.mode : (configuredMode ?? facts?.mode)
         since = connected ? fresh?.startedAt : nil
         updatedAt = fresh?.at

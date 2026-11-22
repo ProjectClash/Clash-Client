@@ -522,6 +522,13 @@ struct ProviderMaterializationResult: Equatable {
      
      
     var seedPaths: [String: String] = [:]
+     
+     
+     
+     
+     
+    var sourceSHA256: [String: String] = [:]
+    var sourceByteCounts: [String: Int] = [:]
 }
 
  
@@ -948,6 +955,8 @@ final class ProviderMaterializer {
         var acquiredAt: [String: Date] = [:]
         var coreRouteSeeds: Set<String> = []
         var seedPaths: [String: String] = [:]
+        var sourceSHA256: [String: String] = [:]
+        var sourceByteCounts: [String: Int] = [:]
         guard !plan.providers.isEmpty else {
             return ProviderMaterializationResult(
                 paths: mapping,
@@ -1415,7 +1424,14 @@ final class ProviderMaterializer {
                 if !acquired.answeredByRound { fetchedCount += 1 }
                 payloadSourceURLs[provider.path] = provider.url
                 payloadRequests[provider.path] = ProviderRequestIdentity.of(provider)
-                if localOverrides[provider.name] == nil { downloadedNames.insert(provider.name) }
+                if localOverrides[provider.name] == nil {
+                    downloadedNames.insert(provider.name)
+                     
+                     
+                     
+                    sourceSHA256[provider.name] = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+                    sourceByteCounts[provider.name] = payload.count
+                }
             }
             if acquired.refreshed {
                 refreshedNames.insert(provider.name)
@@ -1574,7 +1590,9 @@ final class ProviderMaterializer {
             staleFallbacks: staleFallbackNames,
             libraryCopyDates: libraryCopyDates,
             acquiredAt: acquiredAt,
-            seedPaths: seedPaths
+            seedPaths: seedPaths,
+            sourceSHA256: sourceSHA256,
+            sourceByteCounts: sourceByteCounts
         )
     }
 

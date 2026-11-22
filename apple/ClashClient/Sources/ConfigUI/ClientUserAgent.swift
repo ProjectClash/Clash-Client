@@ -14,7 +14,7 @@ import Clash
  
 enum ClientUserAgent {
     enum Preset: String, CaseIterable, Identifiable {
-        case clash
+        case clash = "clash"
         case flclash
         case clashVerge
 
