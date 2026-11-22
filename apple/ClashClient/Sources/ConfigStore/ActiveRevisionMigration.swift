@@ -89,7 +89,11 @@ final class ActiveRevisionMigrator {
                     profileID: currentPointer.profileID,
                     revision: currentPointer.revision
                 )
-                if validates(active) {
+                let inputsChanged = ProfileInputsStamp.inputsChanged(
+                    currentPointer,
+                    workingDirectory: store.workingDirectoryURL
+                )
+                if !inputsChanged, validates(active) {
                     return StartupConfigurationPreparation(
                         configuration: active,
                         recovery: .current
@@ -112,8 +116,12 @@ final class ActiveRevisionMigrator {
                     }
                     expectedPointer = rebuiltPointer
                 } catch {
-                     
-                     
+                    if validates(active) {
+                        return StartupConfigurationPreparation(
+                            configuration: active,
+                            recovery: .current
+                        )
+                    }
                 }
             }
 

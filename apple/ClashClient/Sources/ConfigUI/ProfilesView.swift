@@ -1405,6 +1405,7 @@ final class ProfilesViewModel: ObservableObject {
     private var republishedObserver: NSObjectProtocol?
     private var profileEditedObserver: NSObjectProtocol?
     private var providerContentObserver: NSObjectProtocol?
+    private var profileStoreDirectoryObserver: NSObjectProtocol?
     private var foregroundObserver: NSObjectProtocol?
      
      
@@ -1646,6 +1647,9 @@ final class ProfilesViewModel: ObservableObject {
         if let providerContentObserver {
             NotificationCenter.default.removeObserver(providerContentObserver)
         }
+        if let profileStoreDirectoryObserver {
+            NotificationCenter.default.removeObserver(profileStoreDirectoryObserver)
+        }
         if let scriptLibraryObserver {
             NotificationCenter.default.removeObserver(scriptLibraryObserver)
         }
@@ -1675,6 +1679,10 @@ final class ProfilesViewModel: ObservableObject {
      
      
     private func observeStoreReplacement() {
+        // The container may not be known yet on the first load; asking again on
+        // later loads starts the watch once it is, because this runs each time.
+        ProfileStoreDirectoryWatcher.shared.watch(
+            directory: workingDir?.appendingPathComponent("store"))
         guard storeReplacementObserver == nil else { return }
         storeReplacementObserver = NotificationCenter.default.addObserver(
             forName: .clashProfileStoreReplaced,
@@ -1816,6 +1824,20 @@ final class ProfilesViewModel: ObservableObject {
                 self.load()
             }
         }
+         
+         
+         
+         
+         
+        profileStoreDirectoryObserver = NotificationCenter.default.addObserver(
+            forName: .clashProfileStoreDirectoryDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.profilesChangedOutsideTheModel()
+            }
+        }
 #if os(iOS)
          
          
@@ -1855,6 +1877,22 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
+    // A write landed in the store from another process. Re-read it, and if the
+    // active profile's CLI-edited inputs changed, publish them again so the
+    // tunnel stops running the old rules.
+    private func profilesChangedOutsideTheModel() {
+        guard let profileStore else { return }
+        let stored = profileStore.load().sorted { ($0.order, $0.id) < ($1.order, $1.id) }
+        guard stored != profiles else { return }
+        load()
+        guard let workingDir, let container,
+              let store = try? ConfigResourceStore(containerURL: container),
+              let pointer = try? store.activePointer(),
+              ProfileInputsStamp.inputsChanged(pointer, workingDirectory: workingDir)
+        else { return }
+        restageIfActive(pointer.profileID)
+    }
+
     func recomposeIfModulesMovedSincePublication() {
         guard let container, !appIsInBackground() else { return }
         let locations = ModuleLocations(container: container)
@@ -8579,7 +8617,7 @@ final class ProfilesViewModel: ObservableObject {
      
      
      
-    private func withProfileLock<T>(_ body: () throws -> T) rethrows -> T {
+    private func withProfileLock<T>(_ body: () throws -> T) throws -> T {
         profileLockDepth += 1
         defer {
             profileLockDepth -= 1
@@ -8589,7 +8627,10 @@ final class ProfilesViewModel: ObservableObject {
                 pending.forEach { $0() }
             }
         }
-        return try ProfileStore.withWriteLock(body)
+        guard let profileStore else { return try ProfileStore.withWriteLock(body) }
+        // Load-then-save sections hold the same lock file the App store and the
+        // kernel use, so a CLI write cannot land in the middle.
+        return try profileStore.withWriteLock(body)
     }
 
      

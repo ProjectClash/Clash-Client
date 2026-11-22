@@ -53,7 +53,34 @@ final class ProfileStore {
     }
 
     func save(_ profiles: [Profile]) throws {
-        try Self.withWriteLock { try write(profiles) }
+        try withWriteLock { try write(profiles) }
+    }
+
+    // Every write takes the in-process lock, then the cross-process lock file
+    // the kernel and the tunnel extension use, so a concurrent CLI write cannot
+    // land between our read and our save.
+    func withWriteLock<T>(_ body: () throws -> T) throws -> T {
+        try Self.withWriteLock {
+            try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            let lock = crossProcessLock()
+            try lock.lock()
+            defer { lock.unlock() }
+            return try body()
+        }
+    }
+
+    // Guarded by `writeLock`; one lock object per store directory so a nested
+    // hold on the same thread re-enters instead of deadlocking on flock.
+    nonisolated(unsafe) private static var crossProcessLocks: [String: ProfileStoreCrossProcessLock] = [:]
+
+    private func crossProcessLock() -> ProfileStoreCrossProcessLock {
+        let directory = fileURL.deletingLastPathComponent().standardizedFileURL.path
+        if let lock = Self.crossProcessLocks[directory] { return lock }
+        let lock = ProfileStoreCrossProcessLock(
+            directory: URL(fileURLWithPath: directory, isDirectory: true))
+        Self.crossProcessLocks[directory] = lock
+        return lock
     }
 
      
@@ -98,7 +125,7 @@ final class ProfileStore {
     @discardableResult
     func updateIfPresent(id: String, when condition: (Profile) -> Bool = { _ in true },
                          _ change: (inout Profile) throws -> Void) throws -> Profile? {
-        try Self.withWriteLock {
+        try withWriteLock {
             var profiles = load()
             guard let index = profiles.firstIndex(where: { $0.id == id }), condition(profiles[index]) else {
                 return nil
@@ -111,6 +138,9 @@ final class ProfileStore {
 
 
 
+    // In-process only. Code that reads and then saves the whole list needs the
+    // instance variant, which holds the cross-process lock for the whole
+    // read-modify-write.
     static func withWriteLock<T>(_ body: () throws -> T) rethrows -> T {
         writeLock.lock()
         lockDepth += 1
@@ -131,7 +161,7 @@ final class ProfileStore {
     static let didChangeNotification = Notification.Name("ClashProfileStoreDidChange")
 
     func upsert(_ profile: Profile) throws {
-        try Self.withWriteLock {
+        try withWriteLock {
             var profiles = load()
             if let idx = profiles.firstIndex(where: { $0.id == profile.id }) {
                 profiles[idx] = profile
@@ -143,7 +173,7 @@ final class ProfileStore {
     }
 
     func remove(id: String) throws {
-        try Self.withWriteLock { try write(load().filter { $0.id != id }) }
+        try withWriteLock { try write(load().filter { $0.id != id }) }
     }
 
      
@@ -153,7 +183,7 @@ final class ProfileStore {
      
     @discardableResult
     func updateAll(_ change: (inout [Profile]) throws -> Void) throws -> Bool {
-        try Self.withWriteLock {
+        try withWriteLock {
             var profiles = load()
             let before = profiles
             try change(&profiles)
@@ -167,7 +197,7 @@ final class ProfileStore {
      
     @discardableResult
     func insertIfAbsent(_ profile: Profile) throws -> Bool {
-        try Self.withWriteLock {
+        try withWriteLock {
             var profiles = load()
             guard !profiles.contains(where: { $0.id == profile.id }) else { return false }
             profiles.append(profile)

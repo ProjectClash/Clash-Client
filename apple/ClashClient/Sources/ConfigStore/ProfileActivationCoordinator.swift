@@ -3482,6 +3482,7 @@ final class ProfileActivationCoordinator {
         }
         PublishedSourceLedger.record(published, digest: sourceDigest?.ledger)
         PublishedRulesAsWritten.record(published, section: rulesAsWritten, workingDirectory: coreHomeDir)
+        ProfileInputsStamp.record(published, profile: profile, workingDirectory: coreHomeDir)
          
          
          

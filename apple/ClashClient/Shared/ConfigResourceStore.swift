@@ -209,6 +209,8 @@ final class ConfigResourceStore {
         activeDirectoryURL.appendingPathComponent(Name.compatibilityConfiguration)
     }
 
+    var workingDirectoryURL: URL { workingURL }
+
     init(
         containerURL: URL,
         maximumConfigurationBytes: Int = ConfigResourceStore.defaultMaximumConfigurationBytes,
