@@ -733,7 +733,7 @@ struct ProxyNodeDetailsView: View {
 
     @Environment(\.clashInsideProductModalPresentation)
     private var insideProductModal
-    @Environment(\.presentationMode) private var presentationMode
+    @State private var dismissal = ProxyNodeEditorDismissal()
     @Environment(\.clashPopRoute) private var popRoute
     @Environment(\.configurationFieldCopy) private var fieldCopy
     @Environment(\.locale) private var locale
@@ -870,6 +870,7 @@ struct ProxyNodeDetailsView: View {
                 }
             }
         }
+        .background(ProxyNodeEditorDismissalCapture(dismissal: dismissal))
          
          
          
@@ -2048,9 +2049,9 @@ struct ProxyNodeDetailsView: View {
         } else {
 #if os(macOS)
             if let popRoute { popRoute(ClashPopToken()) }
-            else { presentationMode.wrappedValue.dismiss() }
+            else { dismissal() }
 #else
-            presentationMode.wrappedValue.dismiss()
+            dismissal()
 #endif
         }
     }
@@ -2583,6 +2584,26 @@ private struct DialerProxyPickerView: View {
 struct ProxyNodePendingText {
     let isPending: () -> Bool
     let apply: () -> ClashDisplayText?
+}
+
+@MainActor
+final class ProxyNodeEditorDismissal {
+    fileprivate var action: () -> Void = {}
+    func callAsFunction() { action() }
+}
+
+private struct ProxyNodeEditorDismissalCapture: View {
+    let dismissal: ProxyNodeEditorDismissal
+    @Environment(\.presentationMode) private var presentationMode
+
+    var body: some View {
+        let presentationMode = presentationMode
+        let _ = { dismissal.action = { presentationMode.wrappedValue.dismiss() } }()
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
 }
 
  
