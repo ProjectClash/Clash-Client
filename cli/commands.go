@@ -32,6 +32,7 @@ func init() {
 		"conn":        cmdConn,
 		"traffic":     cmdTraffic,
 		"rules":       cmdRules,
+		"profiles":    cmdAppProfiles,
 		"configs":     cmdConfigs,
 		"dns":         cmdDNS,
 		"logs":        cmdLogs,
@@ -987,7 +988,11 @@ func cmdLogs(s *session, p parsedArguments) error {
 }
 
 func cmdRules(s *session, p parsedArguments) error {
-	return listRules(s, p.positional[1:])
+	rest := p.positional[1:]
+	if len(rest) > 0 && (rest[0] == "append" || rest[0] == "remove") {
+		return cmdRulesEdit(s, p, rest[0], rest[1:])
+	}
+	return listRules(s, rest)
 }
 
 func listRules(s *session, rest []string) error {
@@ -1213,8 +1218,11 @@ func ruleMatch(s *session, target string, pairs []string, resolve bool) error {
 
 func cmdDNS(s *session, p parsedArguments) error {
 	args := p.positional[1:]
+	if len(args) > 0 && args[0] == "policy" {
+		return cmdDNSPolicy(s, p)
+	}
 	if len(args) < 2 || (args[0] != "query" && args[0] != "explain") {
-		return usage("clash-cli dns query <域名> [type] | dns explain <域名> [type]")
+		return usage("clash-cli dns query <域名> [type] | dns explain <域名> [type] | dns policy [set|clear]")
 	}
 	recordType := "A"
 	if len(args) > 2 {

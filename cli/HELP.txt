@@ -1,6 +1,6 @@
 ---
 name: clash-cli
-description: 通过 Clash App 内置的 clash-cli，在 Mac 终端里实时监控和控制 Clash App（本机 Mac，或局域网里的 iPhone / iPad / Apple TV）。支持状态/连接/流量/规则查询、规则命中分析、节点与策略组切换、节点测速、DNS 查询。当用户提到 Clash App、切换节点、查看连接、实时流量、规则匹配、节点测速、外部控制器时使用。
+description: 通过 Clash App 内置的 clash-cli，在 Mac 终端里实时监控和控制 Clash App（本机 Mac，或局域网里的 iPhone / iPad / Apple TV）。支持状态/连接/流量/规则查询、规则命中分析、节点与策略组切换、节点测速、DNS 查询，以及 App 配置里追加规则与 DNS 策略的读写。当用户提到 Clash App、切换节点、查看连接、实时流量、规则匹配、节点测速、外部控制器、追加规则、nameserver-policy 时使用。
 ---
 
 # Clash App 控制器（Clash App 内置的 clash-cli）
@@ -60,7 +60,9 @@ clash-cli status
 | `clash-cli traffic [秒]` | 实时流量（瞬时速率 + 累计） |
 | `clash-cli connections [N]` | 活跃连接列表（host → 策略链 → 命中规则 → 上下行），默认前 20 |
 | `clash-cli configs` | 当前运行配置（端口/tun/dns 等），只输出 JSON，可直接接 `jq`；`--json` 是控制器原样的回答。端口实际监听在哪看 `clash-cli status`：port、socks-port、mixed-port、redir-port、tproxy-port 先看 `allow-lan`，关着时只在 127.0.0.1 上，`bind-address` 写什么都不起作用；开着时才按 `bind-address`（没写就是 `*`），再由 `lan-allowed-ips`/`lan-disallowed-ips` 筛设备。App 里「允许局域网连接」关着时会把 `allow-lan` 改成 false。`listeners:` 里自己写的监听不归它管 |
-| `clash-cli rules [N]` | 规则列表（默认前 10，0 = 全部） |
+| `clash-cli rules [N]` | 规则列表（默认前 10，0 = 全部）；这是运行态，改配置见 §4 的配置库 |
+| `clash-cli profiles` | App 里的配置列表（`*` 当前），带追加规则条数；`--json` 是控制器原样的回答 |
+| `clash-cli dns policy [--profile <id\|名称>]` | 这份配置的 DNS 策略：`nameserver-policy` 与 `fake-ip-filter`（缺省当前配置） |
 | `clash-cli rule match <域名\|IP\|URL>` | **规则命中分析**：这条连接会命中哪条规则、走哪条链 |
 | `clash-cli provider list` | 节点集与规则集 |
 | `clash-cli dns query <域名> [type]` | 走内核 DNS 查询，返回 Answer 数组 |
@@ -98,7 +100,7 @@ clash-cli status
 ## 4. 影响边界（写操作）
 
 - **写操作**：`proxy set`、`mode`、`group unfix`、`group test`、`provider update`、`conn close <id|all>`、`flush`
-  会改变运行状态，执行前先确认目标存在（`proxy get`、`proxies`、`connections`）。
+  会改变运行状态；`rules append|remove`、`dns policy set|clear` 会改配置库（见本节末尾）。执行前先确认目标存在（`proxy get`、`proxies`、`connections`、`profiles`）。
   每次写操作前，人读输出会先打印要改的是哪台设备、哪个内核版本。
 - `provider update` 让隧道向服务器检查一次，按结果报：已更新（条数前后对比）、没有变化、打开 Clash 后生效（新内容已取到，App 打开后用上；原因在 --json 的 pendingReason 里）；
   检查失败时报集合名和内核给的原因（原样），退出码 1。检查失败或控制器报错时退出码非 0（隧道还在检查、等不及回答的 504 也算控制器报错）。
@@ -108,17 +110,58 @@ clash-cli status
 - **`reload`、`check` 不可用**：配置由 Clash App 管理（组合、切换、检查都在 App 里），这两个命令返回退出码 5。
   要换配置、更新订阅或检查配置文件，请在 App 里操作。
 
+### 配置库：`rules append|remove`、`dns policy`
+
+这一组命令改的是 App 的**配置库**（`~/Library/Group Containers/group.com.hako.network/working/store/profiles.json` 里的
+`override.appendRules`、`override.prependRules`，以及 `legacyRuntimePatchJSON` 里的 `dns.nameserver-policy`、`dns.fake-ip-filter`），
+**不是现在的运行态**：改动**下次连接生效**（现在连着的连接仍按旧规则），也不重建派生产物（那是 App 在连接时做的）。
+内核没给 `app-store-v1` 能力时，这些命令退出码 5，并说明「还不支持 App 配置读写（app-store-v1）」。
+
+写配置库只接受本机 **App Group socket**（App 和内核在同一个工作目录里的 `clash.sock`）。控制器监听——默认的
+`127.0.0.1:9090`，以及局域网档——对这些接口只读：那里的写入会被拒绝（退出码 1，并提示改用 `--socket`），
+读取不受影响。局域网写入要等安全评审后再开放。
+
+```bash
+clash-cli --socket "$HOME/Library/Group Containers/group.com.hako.network/working/clash.sock" profiles
+clash-cli --socket "$HOME/Library/Group Containers/group.com.hako.network/working/clash.sock" \
+    rules append 'DOMAIN-SUFFIX,corp.example.com,DIRECT'
+```
+
+```bash
+clash-cli profiles                        # 列配置，* 是当前；--json 拿原样回答
+clash-cli rules append 'DOMAIN-SUFFIX,corp.example.com,DIRECT' \
+                       'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve'
+clash-cli rules remove 'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve'
+clash-cli rules append 'DOMAIN,foo.example.com,PROXY' --profile XSUS   # 指定配置（id 或名称）
+clash-cli dns policy                      # 看 nameserver-policy / fake-ip-filter
+clash-cli dns policy set '+.corp.example.com=10.78.226.116,10.78.226.117'
+clash-cli dns policy clear                # 清空 nameserver-policy
+clash-cli dns policy clear --fake-ip-filter
+```
+
+- `--profile` 缺省是当前配置（`profiles` 里带 `*` 的那个），也可以给 id 或名称；有同名配置时要求用 id。
+- `rules append` 合并写入并去重：本来就在的规则跳过，输出里说明跳过几条；`rules remove` 只删完全一致的规则。
+  去重后没有变化时不写入，只报现有条数。
+- `dns policy set` 按域名合并：同一个域名再设一次会整体替换它的地址列表；要清空某个域名就用 `dns policy clear`。
+  `dns policy clear` 默认只清 `nameserver-policy`，加 `--fake-ip-filter` 时只清 `fake-ip-filter`（两者互斥，各跑一次）。
+- 写入由内核在跨进程锁里原子落盘（先写临时文件再改名），并保留配置里其它字段（`prependRules`、`tun`、`sniffer`、未知字段）不被改动；
+  App 与内核共用同一个锁文件，App 之后的保存不会把这里的改动盖掉。
+- 校验在控制器那侧：每条规则 1..512 字节、不含换行、最多 5000 条；域名非空且 ≤253 字节，地址是合法 IP 或
+  `https://`/`tls://`/`quic://`/`h3://`/`dhcp://` 前缀且 ≤512 字节。非法时控制器回 400、不落盘，CLI 原样转述（退出码 1）。
+
 ## 5. 环境与安全注意事项
 
 - 拿到密钥的人可以完全控制 Clash（模式、局域网共享、选节点、断连接、清缓存）。不要把密钥贴进公开的地方；
   在 App 里「重新生成」后旧密钥立即失效，用旧密钥打开的流也会断开。
 - 局域网档只走 TLS，并只接受局域网来源；本机档只听 127.0.0.1。
-- 环境变量：`CLASH_API`（默认 `http://127.0.0.1:9090`）、`CLASH_SECRET`、`CLASH_FINGERPRINT`、`CLASH_TIMEOUT`（默认 8 秒）。
+- 环境变量：`CLASH_API`（默认 `http://127.0.0.1:9090`）、`CLASH_SECRET`、`CLASH_FINGERPRINT`、`CLASH_SOCKET`、
+  `CLASH_TIMEOUT`（默认 8 秒）。
 - 全局选项（放在命令前后都行；与环境变量同时给出时用选项的值）：`-u` / `--url`、`--secret`、`--secret-stdin`、
-  `--fingerprint`、`--timeout`、`--json`。`CLASH_TIMEOUT` 写得不合法时无论给不给 `--timeout` 都报退出码 2。
+  `--fingerprint`、`--socket`、`--timeout`、`--json`。`--socket` 走本机 App Group socket 而不是 TCP 控制器；
+  配置库写入只在这个 socket 上生效。`CLASH_TIMEOUT` 写得不合法时无论给不给 `--timeout` 都报退出码 2。
 - 切换节点时节点名必须与策略组成员**精确匹配**（含空格/emoji/特殊字符，如「🇭🇰香港trojan1」）。
-- 退出码：0 成功；1 控制器报错；2 用法；3 连不上；4 密钥被拒；5 不是 Clash App 的控制器或不支持（含 `reload`、`check`）；
-  6 证书指纹不符或未确认。
+- 退出码：0 成功；1 控制器报错；2 用法；3 连不上；4 密钥被拒；5 不是 Clash App 的控制器或不支持（含 `reload`、`check`，
+  以及内核没有 `app-store-v1` 时的配置读写）；6 证书指纹不符或未确认。
 - 已知指纹记在 `~/.config/clash-cli/known_hosts`（App 内置版在沙盒容器里：
   `~/Library/Containers/<App 标识>.clash-cli/Data/.config/clash-cli/known_hosts`）。
 

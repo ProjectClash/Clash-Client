@@ -14,12 +14,12 @@ type parsedArguments struct {
 func (p parsedArguments) has(name string) bool { return p.flags[name] != "" }
 
 var (
-	globalValueOptions  = map[string]string{"u": "url", "url": "url", "secret": "secret", "fingerprint": "fingerprint", "timeout": "timeout"}
+	globalValueOptions  = map[string]string{"u": "url", "url": "url", "secret": "secret", "fingerprint": "fingerprint", "timeout": "timeout", "socket": "socket"}
 	globalBoolOptions   = map[string]string{"json": "json", "secret-stdin": "secret-stdin"}
 	commandValueOptions = map[string]string{"level": "level", "test-url": "test-url", "delay-timeout": "delay-timeout",
-		"geodata-dir": "geodata-dir", "interval": "interval"}
+		"geodata-dir": "geodata-dir", "interval": "interval", "profile": "profile"}
 	commandBoolOptions = map[string]string{"f": "follow", "follow": "follow", "resolve": "resolve", "all": "all",
-		"h": "help", "help": "help"}
+		"fake-ip-filter": "fake-ip-filter", "h": "help", "help": "help"}
 )
 
 func parseArguments(args []string, options *globalOptions) (parsedArguments, error) {
@@ -62,6 +62,8 @@ func parseArguments(args []string, options *globalOptions) (parsedArguments, err
 				options.secret = v
 			case "fingerprint":
 				options.fingerprint = v
+			case "socket":
+				options.socket = v
 			case "timeout":
 				timeout, err := parseTimeout(v)
 				if err != nil {

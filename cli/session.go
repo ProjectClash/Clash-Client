@@ -62,9 +62,23 @@ func connect(env environment, options globalOptions, out *output) (*session, err
 	base.Path, base.RawQuery, base.Fragment = "", "", ""
 	hostport := controllerHostPort(base)
 
+	dial := (&net.Dialer{Timeout: options.timeout}).DialContext
+	if options.socket != "" {
+		// Profile writes (rules append/remove, dns policy) are only accepted on
+		// the App's App Group socket; a controller listener is read-only for
+		// them. --socket dials that socket directly, for the same routes.
+		socket := options.socket
+		dial = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: options.timeout}).DialContext(ctx, "unix", socket)
+		}
+		base = &url.URL{Scheme: "http", Host: "app-group"}
+		hostport = socket
+		options.url = "unix:" + socket
+	}
+
 	transport := &http.Transport{
 		Proxy:               nil,
-		DialContext:         (&net.Dialer{Timeout: options.timeout}).DialContext,
+		DialContext:         dial,
 		TLSHandshakeTimeout: options.timeout,
 		ForceAttemptHTTP2:   true,
 	}
@@ -404,7 +418,19 @@ func (s *session) call(method, path string, query url.Values, body any, into any
 	return nil
 }
 
+// appStoreLocalWritesOnly is the refusal marker the kernel sets when a write
+// did not arrive on the App Group socket.
+const appStoreLocalWritesOnly = "app-store-local-writes-only"
+
 func peerFailure(response *http.Response) error {
+	if response.Header.Get("X-Clash-Refusal") == appStoreLocalWritesOnly {
+		hint := ""
+		if socket := appGroupSocketHint(); socket != "" {
+			hint = "（这台 Mac 上找到 " + socket + "）"
+		}
+		return failure(exitPeerError, "local-writes-only",
+			"App 只在本机 App Group socket 上接受配置库的写入，控制器监听只读；用 --socket%s 或设 CLASH_SOCKET 再试", hint)
+	}
 	data, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	message := strings.TrimSpace(string(data))
 	var upstream struct {
@@ -466,4 +492,21 @@ func (s *session) streamEnded(cause error) error {
 		return failure(exitUnreachable, "stream-ended", "控制器关闭了这条流：%v", cause)
 	}
 	return failure(exitUnreachable, "stream-ended", "控制器关闭了这条流")
+}
+
+// appGroupSocketHint looks for the App's control socket so a refused write can
+// name it. The identifier differs between builds, so the directory is globbed
+// instead of hardcoded.
+func appGroupSocketHint() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	matches, _ := filepath.Glob(filepath.Join(home, "Library", "Group Containers", "*", "working", "clash.sock"))
+	for _, match := range matches {
+		if _, err := os.Stat(match); err == nil {
+			return match
+		}
+	}
+	return ""
 }
