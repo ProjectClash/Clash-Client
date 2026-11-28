@@ -1,0 +1,55 @@
+// swift-tools-version: 5.9
+// Generated into $TMPDIR by work-probe/stage.sh from work-probe/Package.swift.in.
+// @REPO@ is replaced with the worktree's absolute path.
+import PackageDescription
+
+let certificates: [Target.Dependency] = [
+    .product(name: "X509", package: "swift-certificates"),
+    .product(name: "Crypto", package: "swift-crypto"),
+    .product(name: "_CryptoExtras", package: "swift-crypto"),
+    .product(name: "SwiftASN1", package: "swift-asn1"),
+]
+
+// The tunnel side: the same package products the ClashmacOSExtension target links.
+// MODULES_ENGINE_TESTS turns on the engine's own test seams (ModuleServerTrust.anchors and two
+// test-only helpers); no runtime path changes with it. PROBE_IOS_LIMITS only matters to the
+// substituted ModuleBodies.swift of the *IOS variants.
+func tunnel(_ name: String, iOSLimits: Bool) -> Target {
+    .executableTarget(
+        name: name, dependencies: certificates, path: "Sources/\(name)",
+        swiftSettings: [.define("MODULES_ENGINE_TESTS")] + (iOSLimits ? [.define("PROBE_IOS_LIMITS")] : []),
+        linkerSettings: [.linkedLibrary("resolv")])
+}
+
+let package = Package(
+    name: "ModuleEngineProbe",
+    platforms: [.macOS(.v13)],
+    dependencies: [
+        .package(path: "@REPO@/third_party/swift-certificates"),
+        .package(path: "@REPO@/apple/ClashClientKit"),
+        .package(path: "@REPO@/apple/ClashClientUI"),
+        .package(path: "@PKG@/deps/ClashMacClient"),
+        .package(url: "https://github.com/apple/swift-crypto.git", exact: "3.15.1"),
+        .package(url: "https://github.com/apple/swift-asn1.git", exact: "1.7.3"),
+    ],
+    targets: [
+        // The App side: the ClashmacOS target's sources with the App's own local packages and the
+        // locked Go kernel (Clash.xcframework, symlinked in by stage.sh). Built in debug: Xcode
+        // 26.3's optimizer crashes on ClashClientKit.
+        .binaryTarget(name: "Clash", path: "Clash.xcframework"),
+        .executableTarget(
+            name: "ProbePublisher",
+            dependencies: certificates + [
+                .product(name: "ClashClientKit", package: "ClashClientKit"),
+                .product(name: "ClashClientUI", package: "ClashClientUI"),
+                .product(name: "ClashMacClient", package: "ClashMacClient"),
+                "Clash",
+            ],
+            path: "Sources/ProbePublisher",
+            linkerSettings: [.linkedLibrary("resolv")]),
+        tunnel("ProbeTunnelAfter", iOSLimits: false),
+        tunnel("ProbeTunnelBefore", iOSLimits: false),
+        tunnel("ProbeTunnelAfterIOS", iOSLimits: true),
+        tunnel("ProbeTunnelBeforeIOS", iOSLimits: true),
+    ]
+)
