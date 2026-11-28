@@ -706,6 +706,12 @@ enum ModuleBodyRewrite {
         ModuleGatedMatcher.evaluationDeadline + Double(length) / 4_096 * 0.001
     }
 
+    static let growthBytes = 64 << 10
+
+    static func maximumLength(forBodyBytes bytes: Int) -> Int {
+        max(bytes, ModuleBodyLimits.current.defaultBytes) + growthBytes
+    }
+
      
      
      
@@ -721,13 +727,20 @@ enum ModuleBodyRewrite {
      
      
      
-    static func apply(_ rules: [ModuleBodyRule], to body: Data, budget: inout ModuleRequestBudget) -> ModuleBodyRewriteOutcome {
+    static func apply(_ rules: [ModuleBodyRule], to body: Data, budget: inout ModuleRequestBudget,
+                      maximumLength: Int? = nil) -> ModuleBodyRewriteOutcome {
+        var grewTooLarge = false
+        return apply(rules, to: body, budget: &budget, maximumLength: maximumLength, grewTooLarge: &grewTooLarge)
+    }
+
+    static func apply(_ rules: [ModuleBodyRule], to body: Data, budget: inout ModuleRequestBudget,
+                      maximumLength: Int?, grewTooLarge: inout Bool) -> ModuleBodyRewriteOutcome {
          
         let reading = ModuleRequestBudget.threadNanoseconds()
         let decoded = String(data: body, encoding: .utf8)
         budget.charge(ModuleRequestBudget.threadNanoseconds() &- reading)
         guard var text = decoded else { return .notText }
-        let maximumLength = max(body.count, ModuleBodyLimits.current.defaultBytes)
+        let maximumLength = max(maximumLength ?? Self.maximumLength(forBodyBytes: body.count), body.count)
         var changed = false
         for rule in rules {
             for pair in rule.pairs where rule.carried.runs(.rule(rule.index)) {
@@ -752,6 +765,7 @@ enum ModuleBodyRewrite {
                 case .timedOut:
                     rule.carried.stopped(.rule(rule.index), .timedOut)
                 case .grewTooLarge:
+                    grewTooLarge = true
                     rule.carried.stopped(.rule(rule.index), .grewTooLarge)
                 }
             }
@@ -2953,6 +2967,7 @@ enum ModuleBodySteps {
     static func apply(_ steps: [ModuleBodyStep], to body: Data, budget: inout ModuleRequestBudget, memoryLeft: Int? = nil) -> Result {
         var result = Result()
         let jsonCap = max(body.count, ModuleBodyLimits.current.defaultBytes)
+        var textCap = ModuleBodyRewrite.maximumLength(forBodyBytes: body.count)
         var text = body
         var changed = false
          
@@ -3027,7 +3042,9 @@ enum ModuleBodySteps {
             switch step.work {
             case .replace(let rule):
                 _ = close()
-                switch ModuleBodyRewrite.apply([rule], to: text, budget: &budget) {
+                var grewTooLarge = false
+                switch ModuleBodyRewrite.apply([rule], to: text, budget: &budget, maximumLength: textCap,
+                                               grewTooLarge: &grewTooLarge) {
                 case .rewritten(let next):
                     text = next
                     changed = true
@@ -3036,6 +3053,10 @@ enum ModuleBodySteps {
                     break
                 case .notText:
                     result.notText = true
+                }
+                if grewTooLarge {
+                    result.notes.append((step.origin, step.what, "what it would make is larger than the \(textCap) bytes this body may grow to; "
+                        + "that replacement is skipped, and after \(ModuleGatedMatcher.timeoutsBeforeLeftOut) stops the rule is left out for the rest of the run"))
                 }
             case .json(let compiled):
                 guard var value = open(step) else { continue }
@@ -3093,6 +3114,7 @@ enum ModuleBodySteps {
                  
                 drop()
                 text = data
+                textCap = ModuleBodyRewrite.maximumLength(forBodyBytes: data.count)
                 changed = true
                 result.contentType = contentType
                 result.acted.append((step.origin, step.what))
